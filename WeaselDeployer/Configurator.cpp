@@ -118,10 +118,15 @@ int Configurator::Run(bool installing) {
   bool skip_ui_style_settings =
       installing && !api->is_first_run(ui_style_settings.settings());
 
-  (skip_switcher_settings ||
-   configure_switcher(api, switcher_settings, &reconfigured)) &&
-      (skip_ui_style_settings ||
-       configure_ui(api, &ui_style_settings, &reconfigured));
+  // 两步独立执行：取消其中一个对话框不能跳过另一个（K18）。
+  // 各步仅在用户确认且保存成功时置 reconfigured，取消不影响退出码，
+  // 退出码仍由 installing/reconfigured 决定是否重新部署。
+  if (!skip_switcher_settings) {
+    configure_switcher(api, switcher_settings, &reconfigured);
+  }
+  if (!skip_ui_style_settings) {
+    configure_ui(api, &ui_style_settings, &reconfigured);
+  }
 
   api->custom_settings_destroy((RimeCustomSettings*)switcher_settings);
 
