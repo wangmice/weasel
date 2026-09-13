@@ -32,7 +32,9 @@ WeaselTSF::WeaselTSF() {
 
   _fCUASWorkaroundTested = _fCUASWorkaroundEnabled = FALSE;
 
-  _cand = new CCandidateList(this);
+  // Attach (no AddRef): ~WeaselTSF's CComPtr release must be able to drop
+  // the reference count to zero (a plain assignment would leak one).
+  _cand.Attach(new CCandidateList(this));
 
   DllAddRef();
 }
@@ -112,11 +114,13 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 
   _UninitThreadMgrEventSink();
 
+  // While the thread manager is still valid: DestroyAll ends the UIElement,
+  // which makes the UIElementMgr drop its reference to the candidate list.
+  _cand->DestroyAll();
+
   _pThreadMgr = NULL;
 
   _tfClientId = TF_CLIENTID_NULL;
-
-  _cand->DestroyAll();
 
   return S_OK;
 }

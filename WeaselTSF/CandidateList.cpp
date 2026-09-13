@@ -8,7 +8,7 @@
 using namespace std;
 using namespace weasel;
 
-CCandidateList::CCandidateList(com_ptr<WeaselTSF> pTextService)
+CCandidateList::CCandidateList(WeaselTSF* pTextService)
     : _ui(make_unique<UI>()), _tsf(pTextService), _pbShow(TRUE) {
   _cRef = 1;
 }
@@ -232,7 +232,9 @@ void CCandidateList::Destroy() {
 }
 
 void CCandidateList::DestroyAll() {
-  // EndUI();
+  // End the UIElement so the UIElementMgr drops its reference; without it
+  // the element outlives WeaselTSF while keeping this object alive.
+  EndUI();
   Show(FALSE);
   _DisposeUIWindowAll();
 }

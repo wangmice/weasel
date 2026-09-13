@@ -4,7 +4,7 @@
 
 class CLangBarItemButton : public ITfLangBarItemButton, public ITfSource {
  public:
-  CLangBarItemButton(com_ptr<WeaselTSF> pTextService,
+  CLangBarItemButton(WeaselTSF* pTextService,
                      REFGUID guid,
                      weasel::UIStyle& style);
   ~CLangBarItemButton();
@@ -37,7 +37,9 @@ class CLangBarItemButton : public ITfLangBarItemButton, public ITfSource {
 
  private:
   GUID _guid;
-  com_ptr<WeaselTSF> _pTextService;
+  // Non-owning back pointer: its lifetime is strictly nested in WeaselTSF;
+  // holding a COM reference here would create a reference cycle.
+  WeaselTSF* _pTextService;
   com_ptr<ITfLangBarItemSink> _pLangBarItemSink;
   LONG _cRef; /* COM Reference count */
   DWORD _status;

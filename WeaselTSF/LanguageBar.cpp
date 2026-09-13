@@ -49,7 +49,7 @@ static bool open(const std::wstring& path) {
                                   SW_SHOWNORMAL) > 32;
 }
 
-CLangBarItemButton::CLangBarItemButton(com_ptr<WeaselTSF> pTextService,
+CLangBarItemButton::CLangBarItemButton(WeaselTSF* pTextService,
                                        REFGUID guid,
                                        weasel::UIStyle& style)
     : _status(0),
@@ -371,9 +371,10 @@ BOOL WeaselTSF::_InitLanguageBar() {
   if (_pThreadMgr->QueryInterface(&pLangBarItemMgr) != S_OK)
     return FALSE;
 
-  if ((_pLangBarButton = new CLangBarItemButton(this, GUID_LBI_INPUTMODE,
-                                                _cand->style())) == NULL)
-    return FALSE;
+  // Attach (no AddRef): the releasing CComPtr assignment in
+  // _UninitLanguageBar then drops the last reference instead of leaking one.
+  _pLangBarButton.Attach(
+      new CLangBarItemButton(this, GUID_LBI_INPUTMODE, _cand->style()));
 
   if (pLangBarItemMgr->AddItem(_pLangBarButton) != S_OK) {
     _pLangBarButton = NULL;

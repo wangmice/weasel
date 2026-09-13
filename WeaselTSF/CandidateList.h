@@ -7,7 +7,7 @@ class WeaselTSF;
 class CCandidateList : public ITfIntegratableCandidateListUIElement,
                        public ITfCandidateListUIElementBehavior {
  public:
-  CCandidateList(com_ptr<WeaselTSF> pTextService);
+  CCandidateList(WeaselTSF* pTextService);
   ~CCandidateList();
 
   // IUnknown
@@ -79,7 +79,9 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
 
   std::unique_ptr<weasel::UI> _ui;
   DWORD _cRef;
-  com_ptr<WeaselTSF> _tsf;
+  // Non-owning back pointer: its lifetime is strictly nested in WeaselTSF;
+  // holding a COM reference here would create a reference cycle.
+  WeaselTSF* _tsf;
   DWORD uiid;
   TfIntegratableCandidateListSelectionStyle _selectionStyle =
       STYLE_ACTIVE_SELECTION;
