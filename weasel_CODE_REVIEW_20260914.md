@@ -70,9 +70,9 @@
 | B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | ✅ 已修复（22cf921+7a67c20，批次3） |
 | B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | ✔ | ✅ 已修复（35c1b48，批次3） |
 | B10 | P2 | bug | WeaselUI/WeaselPanel.h:158-162 | m_istorepos/m_offsetys 等未初始化即读 | ✔ | ✅ 已修复（2570084，批次3） |
-| B11 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp | 每键 ~7 次 rime 交叉：直通键无早退、get_status×2、get_property 每键 | — | 部分：c（client_app 缓存）已随 ad4e3fa（批次4）落地；a/b 未修复 |
+| B11 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp | 每键 ~7 次 rime 交叉：直通键无早退、get_status×2、get_property 每键 | — | ✅ 已修复（c=ad4e3fa 批次4；a/b=eb5900a 批次5） |
 | B12 | P2 | perf | WeaselUI/WeaselPanel.cpp 等 | 每键整窗重算重绘：布局重建、双 layout、全幅模糊 | — | 未修复 |
-| B13 | P2 | perf | include/WeaselIPCData.h:103,166 | notequal/operator== 按值深拷贝候选向量（每键 6 份） | — | 未修复 |
+| B13 | P2 | perf | include/WeaselIPCData.h:103,166 | notequal/operator== 按值深拷贝候选向量（每键 6 份） | — | ✅ 已修复（a3d94fa，批次5） |
 | B14 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp:73-87 | explorer.exe 每键 detached 线程 + Sleep(100) | — | ✅ 已修复（ad4e3fa（含 B11c），批次4） |
 | B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | ✔ | 未修复 |
 | B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | ✅ | 未修复 |
@@ -88,14 +88,14 @@
 | B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | ✔ | ✅ 已修复（23d69ba，批次3） |
 | B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | ✅ 已修复（d43914f，批次4） |
 | B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | ✔ | 未修复 |
-| B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | 未修复 |
+| B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | ✅ 已修复（f354257，批次5） |
 | B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | ✔ | ✅ 已修复（d416100，批次2） |
 | B31 | P3 | bug | include/WeaselUtility.h:14-32 | getUsername 二次调用失败未校验 | ✔ | 未修复 |
 | B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | ✔ | 未修复 |
 | B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | ⚠ | 未修复 |
 | B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | 未修复 |
 | B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | 未修复 |
-| B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | 未修复 |
+| B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | ✅ 已修复（53541b8，批次5） |
 | B37 | P3 | bug | WeaselUI/WeaselPanel.cpp | _DrawCandidates 的 comments.at(i)/GetLabelText 的 labels.at(id) 在向量短于 candies 时抛 out_of_range（批次3 测试中实际触发；现被 B8 防护兜住不再致命） | ✔（批次3 实测触发） | ✅ 已修复（9b71523，批次4） |
 
 ---
@@ -890,3 +890,11 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `d43914f` fix(WeaselUI): scope fullscreen font adjustment to the fullscreen layout — B27。panel 侧借用边界：全屏布局存活期内允许 pDWR 缩放、换回普通布局时恢复快照，_InitFontRes 重建使快照失效。
 - `9b71523` fix(WeaselUI): treat short label/comment vectors as empty, not exceptions — B37。新增 Layout::TextAt 统一收口（越界返回空 Text），三布局 4 处同族 comments.at(i) 一并修复；TestWeaselUI 4 断言 + 负向验证。
 - 构建：release/debug 全量 build ok；8 个测试目标全过（TestPipeChannel 44 用例）。
+
+### 批次 5（2026-09-14）：B13、B36、B11(a)(b)、B29（击键路径性能）
+
+- `a3d94fa` perf(IPC): pass candidate vectors and status by const reference in dedup compares — B13。notequal/Status::operator== 改 const 引用（配套补 Text/TextRange/TextAttribute 比较 const 限定）。micro-bench：9 候选去重命中负载 200 万轮 3090.7ms → 131.3ms（23.5×）。
+- `53541b8` perf(utility): build escape/unescape with plain string ops, not stringstream — B36。转义语义逐字符一致；TestResponseParser 新增 test_7 往返/不膨胀用例。micro-bench：escape+unescape 200k 次 152.4ms → 17.5ms（8.7×）。
+- `eb5900a` perf(RimeWithWeasel): early-exit passthrough keys and reuse fetched rime status — B11(a)(b)。直通键（!handled && !state_changed）跳过 get_context 与整套 UI 刷新；_Respond 快照复用消掉每键第二次 get_status。协议兼容性考证（librime IsComposing/HasMenu 语义 + TSF 客户端按行解析）确认直通键响应字节流不变；顺带收口 _Respond 路径 schema 字段判空（B30 同型）。
+- `f354257` perf(RimeWithWeasel): generate session id from a const session map — B29。
+- 构建：release/debug 全量 build ok；全部测试目标通过。
