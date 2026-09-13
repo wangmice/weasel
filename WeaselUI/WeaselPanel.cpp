@@ -1285,7 +1285,11 @@ void WeaselPanel::MoveTo(RECT const& rc) {
   // RECT 用堆拷贝传递，由 OnMoveTo 负责释放。
   if (!_IsUiThread()) {
     RECT* pRc = new RECT(rc);
-    PostMessage(WM_WEASEL_MOVETO, reinterpret_cast<WPARAM>(pRc));
+    if (!PostMessage(WM_WEASEL_MOVETO, reinterpret_cast<WPARAM>(pRc))) {
+      // 投递失败（窗口即将销毁或队列满）：释放快照避免泄漏，
+      // 位置会随下一次 MoveTo 重试（与 ApplyUpdate/ApplyStyle 一致）
+      delete pRc;
+    }
     return;
   }
   m_redraw_by_monitor_change = false;
