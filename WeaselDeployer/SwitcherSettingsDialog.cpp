@@ -53,6 +53,10 @@ void SwitcherSettingsDialog::Populate() {
       ++k;
     }
   }
+  // schema_id/name/reserved 均借用 SwitcherSettings 内部数据，条目数组本身
+  // 需由调用方释放；对未填充（失败）或已销毁的列表重复调用是安全的空操作。
+  api_->schema_list_destroy(&available);
+  api_->schema_list_destroy(&selected);
   auto hotkeys_str = api_->get_hotkeys(settings_);
   if (hotkeys_str) {
     std::wstring txt = u8tow(hotkeys_str);

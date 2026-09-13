@@ -7,6 +7,10 @@ UIStyleSettings::UIStyleSettings() {
   settings_ = api_->custom_settings_init("weasel", "Weasel::UIStyleSettings");
 }
 
+UIStyleSettings::~UIStyleSettings() {
+  api_->custom_settings_destroy(settings_);
+}
+
 bool UIStyleSettings::GetPresetColorSchemes(
     std::vector<ColorSchemeInfo>* result) {
   if (!result)
