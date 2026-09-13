@@ -454,11 +454,7 @@ void PipeServer::Listen(ServerHandler const& handler) {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     try {
       pipe = _ConnectServerPipe(pname);
-      // Copy the handler into the worker: it must not reference anything
-      // on this thread's stack.
-      auto worker = std::make_shared<boost::thread>(
-          [this, pipe, handler] { _ProcessPipeThread(pipe, handler); });
-      _RegisterWorker(pipe, worker);
+      _LaunchWorker(pipe, handler);
     } catch (...) {  // pipe errors and thread spawn failures alike
       _FinalizePipe(pipe);
       boost::this_thread::sleep_for(kListenRetryBackoff);
@@ -494,9 +490,18 @@ void PipeServer::DrainWorkers() {
       worker->join();
 }
 
-void PipeServer::_RegisterWorker(HANDLE pipe,
-                                 std::shared_ptr<boost::thread> worker) {
+void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
+  // The lock must cover thread creation AND registration: a worker whose
+  // client dropped instantly may call _RemoveWorker the moment it starts,
+  // and that removal must queue behind this critical section - otherwise it
+  // erases nothing (the entry is not there yet) and the registration that
+  // follows lingers in m_workers as an already-closed handle, which
+  // DrainWorkers would later misuse for CancelIoEx/DisconnectNamedPipe.
   std::lock_guard<std::mutex> lock(m_workers_mutex);
+  // Copy the handler into the worker: it must not reference anything
+  // on this thread's stack.
+  auto worker = std::make_shared<boost::thread>(
+      [this, pipe, handler] { _ProcessPipeThread(pipe, handler); });
   m_workers[pipe] = std::move(worker);
 }
 

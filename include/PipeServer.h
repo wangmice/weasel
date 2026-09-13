@@ -30,7 +30,9 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
 
  protected:
   void _ProcessPipeThread(HANDLE pipe, ServerHandler const& handler);
-  void _RegisterWorker(HANDLE pipe, std::shared_ptr<boost::thread> worker);
+  /* Create the worker thread and register it under one lock so a worker
+   * that finishes instantly can never overtake its own registration. */
+  void _LaunchWorker(HANDLE pipe, ServerHandler const& handler);
   void _RemoveWorker(HANDLE pipe);
 
   std::mutex m_workers_mutex;

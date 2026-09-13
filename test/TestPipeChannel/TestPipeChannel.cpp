@@ -95,6 +95,11 @@ class ExposedServer : public weasel::PipeServer {
   void ExposedReceive(HANDLE pipe, LPVOID msg, size_t len) {
     _Receive(pipe, msg, len);
   }
+  /* number of currently registered connection workers */
+  size_t ExposedWorkerCount() {
+    std::lock_guard<std::mutex> lock(m_workers_mutex);
+    return m_workers.size();
+  }
 };
 
 /* 1.1: a client that connects between CreateNamedPipe and ConnectNamedPipe
@@ -451,6 +456,63 @@ static void test_failed_listener_backs_off() {
   }
 }
 
+/* B18: a connection worker may exit (_RemoveWorker + close its pipe) at any
+ * instant after its thread starts; its registration must never be overtaken
+ * by that removal or m_workers keeps a closed handle. Fast-dropping clients
+ * churn the register/remove window; afterwards the registry must be empty
+ * and the server must still serve new connections. */
+static void test_fast_disconnect_leaves_no_stale_worker() {
+  std::wstring name = unique_pipe_name(L"b18");
+  ExposedServer* server = new ExposedServer(std::wstring(name));
+  auto handler = [](weasel::PipeMessage msg,
+                    weasel::PipeServer::Respond resp) { resp(msg.wParam + 1); };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  const int kRounds = 30;
+  int connected = 0;
+  for (int i = 0; i < kRounds; ++i) {
+    HANDLE c = INVALID_HANDLE_VALUE;
+    for (int waited = 0; waited < 2000 && c == INVALID_HANDLE_VALUE;
+         waited += 10) {
+      c = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                        OPEN_EXISTING, 0, NULL);
+      if (c == INVALID_HANDLE_VALUE)
+        Sleep(10);
+    }
+    if (c == INVALID_HANDLE_VALUE)
+      break;
+    ++connected;
+    // drop immediately: the worker fails its first read and exits at once
+    ::CloseHandle(c);
+  }
+  check(connected == kRounds, "B18: fast-drop clients all connected");
+
+  // every churned worker must have unregistered itself; a stale entry would
+  // be an already-closed handle lingering in m_workers
+  check(wait_until([&] { return server->ExposedWorkerCount() == 0; }, 5000),
+        "B18: no stale worker entries after fast disconnects");
+
+  // the server keeps serving well-behaved clients after the churn
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "B18: server accepts new connection");
+  weasel::PipeMessage req{WEASEL_IPC_ECHO, 41, 0};
+  bool served = false;
+  try {
+    served = (client.Transact(req) == 42);
+  } catch (...) {
+  }
+  check(served, "B18: new client served after churn");
+
+  listener.interrupt();
+  server->WakeListener();
+  check(listener.timed_join(boost::posix_time::seconds(5)),
+        "B18: listener exits");
+  boost::thread drainer([server] { server->DrainWorkers(); });
+  check(drainer.timed_join(boost::posix_time::seconds(5)),
+        "B18: DrainWorkers completes");
+  delete server;
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -461,6 +523,7 @@ int main() {
   test_transact_recovery_without_resend();
   test_command_response_body();
   test_failed_listener_backs_off();
+  test_fast_disconnect_leaves_no_stale_worker();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;
