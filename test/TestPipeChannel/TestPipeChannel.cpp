@@ -127,9 +127,57 @@ static void test_pipe_connected_race() {
   ::CloseHandle(instance);
 }
 
+/* 1.2: a client that stops reading must not block the server from serving
+ * other clients (regression for FlushFileBuffers under the api mutex) */
+static void test_hung_client_does_not_freeze_others() {
+  std::wstring name = unique_pipe_name(L"flush");
+  weasel::PipeServer* server =
+      new weasel::PipeServer(std::wstring(name));
+  std::mutex api_mutex;  // mirrors ServerImpl's request serialization
+  auto handler = [&api_mutex](weasel::PipeMessage msg,
+                              weasel::PipeServer::Respond resp) {
+    std::lock_guard<std::mutex> lock(api_mutex);
+    resp(msg.wParam + 1);
+  };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  // client A: raw pipe client that sends a request and never reads the reply
+  HANDLE a = INVALID_HANDLE_VALUE;
+  for (int waited = 0; waited < 2000; waited += 25) {
+    a = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                      OPEN_EXISTING, 0, NULL);
+    if (a != INVALID_HANDLE_VALUE)
+      break;
+    Sleep(25);
+  }
+  check(a != INVALID_HANDLE_VALUE, "1.2: hung client connected");
+  weasel::PipeMessage req{WEASEL_IPC_ECHO, 1, 0};
+  DWORD written = 0;
+  ::WriteFile(a, &req, sizeof(req), &written, NULL);
+
+  // client B: ordinary request/response, must complete promptly
+  ClientChannel b{std::wstring(name)};
+  check(connect_with_retry(b), "1.2: B connect");
+  bool b_ok = false;
+  boost::thread b_thread([&b, &b_ok] {
+    weasel::PipeMessage r{WEASEL_IPC_ECHO, 41, 0};
+    try {
+      b_ok = (b.Transact(r) == 42);
+    } catch (...) {
+    }
+  });
+  bool served_in_time = b_thread.timed_join(boost::posix_time::seconds(3));
+  check(served_in_time, "1.2: B served while A hangs");
+  check(b_ok, "1.2: B got correct reply");
+  if (!served_in_time)
+    b_thread.detach();  // worker is stuck on the hung client; drop it
+  ::CloseHandle(a);
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
+  test_hung_client_does_not_freeze_others();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;

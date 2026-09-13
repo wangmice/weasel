@@ -70,10 +70,12 @@ HANDLE PipeChannelBase::_TryConnect() {
 
 size_t PipeChannelBase::_WritePipe(HANDLE pipe, size_t s, char* b) {
   DWORD lwritten;
+  // No FlushFileBuffers here: message-mode WriteFile delivers atomically,
+  // while flushing blocks until the peer has read, so a single hung client
+  // would freeze every other client while the server holds its api mutex.
   if (!::WriteFile(pipe, b, s, &lwritten, NULL) || lwritten <= 0) {
     _ThrowLastError;
   }
-  ::FlushFileBuffers(pipe);
   return lwritten;
 }
 

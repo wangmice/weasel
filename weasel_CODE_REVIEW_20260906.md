@@ -464,3 +464,4 @@ W6 推翻依据（V6）：本机 SDK `um\d2d1.h` 中 `D2D1_TEXT_ANTIALIAS_MODE`�
 |---|---|---|---|
 | （基建）PipeServer 抽头文件 + TestPipeChannel 测试靶 | ✅ | `refactor(WeaselIPCServer)` | 冒烟往返测试通过（私有管道名，不影响运行中的 WeaselServer） |
 | 1.1 `ERROR_PIPE_CONNECTED` 当致命错误掐断连接 | ✅ | `fix(WeaselIPC)` | TestPipeChannel 集成测试：客户端在 CreateNamedPipe 与 ConnectNamedPipe 之间连接 → 接受连接并可正常收发消息（旧代码此处抛 535 → Listen 断连） |
+| 1.2 `FlushFileBuffers` 持全局锁阻塞 + `_Send` 失败重发重复击键 | ✅ | `fix(WeaselIPC)` | TestPipeChannel 集成测试：客户端 A 发请求后不读响应（挂起），B 的请求 3s 内正常返回；反向验证：还原 flush 后该测试 FAIL（B 被拖死）。重发路径已删除（可能已投递的请求不再二次发送）。服务端 resp 移出 `g_api_mutex` 的部分随 1.5 的 Run 重构落地 |

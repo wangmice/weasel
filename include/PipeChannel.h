@@ -169,12 +169,9 @@ class PipeChannel : public PipeChannelBase {
     if (data_sz > buff_size)
       data_sz = buff_size;
 
-    try {
-      _WritePipe(pipe, data_sz, pbuff);
-    } catch (...) {
-      _Reconnect();
-      _WritePipe(pipe, data_sz, pbuff);
-    }
+    // No resend on failure: a request may already have been delivered, and
+    // duplicating it would process one keystroke twice.
+    _WritePipe(pipe, data_sz, pbuff);
     ClearBufferStream();
   }
 
