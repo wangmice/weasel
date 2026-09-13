@@ -99,7 +99,8 @@ STDMETHODIMP CEndCompositionEditSession::DoEditSession(TfEditCookie ec) {
   if (!_pTextService || !_pContext)
     return S_OK;
 
-  _pTextService->_ClearCompositionDisplayAttributes(ec, _pContext);
+  _pTextService->_ClearCompositionDisplayAttributes(ec, _pContext,
+                                                    _pComposition);
 
   com_ptr<ITfRange> pCompositionRange;
   if (_clear && _pComposition->GetRange(&pCompositionRange) == S_OK)

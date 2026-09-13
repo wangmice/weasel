@@ -2,12 +2,20 @@
 
 #include "WeaselTSF.h"
 
-void WeaselTSF::_ClearCompositionDisplayAttributes(TfEditCookie ec,
-                                                   _In_ ITfContext* pContext) {
+void WeaselTSF::_ClearCompositionDisplayAttributes(
+    TfEditCookie ec,
+    _In_ ITfContext* pContext,
+    _In_opt_ ITfComposition* pComposition) {
+  // Operate on the caller's composition, not the service member: an
+  // async end session can run after _FinalizeComposition() nulled it (or
+  // after a new composition replaced it).
+  if (pComposition == nullptr)
+    return;
+
   ITfRange* pRangeComposition = nullptr;
   ITfProperty* pDisplayAttributeProperty = nullptr;
 
-  if (FAILED(_pComposition->GetRange(&pRangeComposition))) {
+  if (FAILED(pComposition->GetRange(&pRangeComposition))) {
     return;
   }
 
