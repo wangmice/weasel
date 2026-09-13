@@ -2,6 +2,11 @@
 #include "Layout.h"
 using namespace weasel;
 
+const Text& Layout::TextAt(const std::vector<Text>& texts, int index) {
+  static const Text kEmpty;
+  return (index >= 0 && (size_t)index < texts.size()) ? texts[index] : kEmpty;
+}
+
 Layout::Layout(const UIStyle& style,
                const Context& context,
                const Status& status,

@@ -111,9 +111,9 @@ void VHorizontalLayout::DoLayout(CDCHandle dc, PDWR pDWR) {
       bool cmtFontNotTrans =
           (i == id && (_style.hilited_comment_text_color & 0xff000000)) ||
           (i != id && (_style.comment_text_color & 0xff000000));
-      if (!comments.at(i).str.empty() && cmtFontValid && cmtFontNotTrans) {
+      const std::wstring& comment = TextAt(comments, i).str;
+      if (!comment.empty() && cmtFontValid && cmtFontNotTrans) {
         h += _style.hilite_spacing;
-        const std::wstring& comment = comments.at(i).str;
         GetTextSizeDW(comment, comment.length(), pDWR->pCommentTextFormat, pDWR,
                       &size);
         _candidateCommentRects[i].SetRect(w, 0, w + size.cx * cmtFontValid,
@@ -361,8 +361,8 @@ void VHorizontalLayout::DoLayoutWithWrap(CDCHandle dc, PDWR pDWR) {
       bool cmtFontNotTrans =
           (i == id && (_style.hilited_comment_text_color & 0xff000000)) ||
           (i != id && (_style.comment_text_color & 0xff000000));
-      if (!comments.at(i).str.empty() && cmtFontValid && cmtFontNotTrans) {
-        const std::wstring& comment = comments.at(i).str;
+      const std::wstring& comment = TextAt(comments, i).str;
+      if (!comment.empty() && cmtFontValid && cmtFontNotTrans) {
         GetTextSizeDW(comment, comment.length(), pDWR->pCommentTextFormat, pDWR,
                       &size);
         h += _style.hilite_spacing;

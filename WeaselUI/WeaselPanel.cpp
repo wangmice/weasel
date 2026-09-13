@@ -982,7 +982,7 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
                  labeltxtFormat.Get());
       }
       // Draw text
-      std::wstring text = candidates.at(i).str;
+      const std::wstring& text = Layout::TextAt(candidates, i).str;
       if (!text.empty()) {
         rect = m_layout->GetCandidateTextRect((int)i);
         if (m_istorepos)
@@ -991,7 +991,8 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
                  txtFormat.Get());
       }
       // Draw comment
-      std::wstring comment = comments.at(i).str;
+      // comments 可能短于 candies：越界按空注释处理（见 Layout::TextAt）
+      const std::wstring& comment = Layout::TextAt(comments, i).str;
       if (!comment.empty() && COLORNOTTRANSPARENT(comment_text_color)) {
         rect = m_layout->GetCandidateCommentRect((int)i);
         if (m_istorepos)

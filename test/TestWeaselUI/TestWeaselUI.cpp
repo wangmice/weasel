@@ -129,8 +129,9 @@ static void test_update_cancels_countdown(UiThread& t) {
 }
 
 /* Build a composing context with count candidates and numbered labels.
- * candies/labels/comments must be the same length: the panel reads them
- * pairwise while drawing, exactly like the vectors rime serializes. */
+ * candies/labels/comments may legitimately differ in length: rime always
+ * serializes them pairwise, but IPC deserialization or a host writing the
+ * context directly carries no such guarantee (B37). */
 static weasel::Context make_candidate_ctx(int count, int highlighted) {
   weasel::Context ctx;
   for (int i = 0; i < count; ++i) {
@@ -145,6 +146,55 @@ static weasel::Context make_candidate_ctx(int count, int highlighted) {
   }
   ctx.cinfo.highlighted = highlighted;
   return ctx;
+}
+
+/* B37: candies longer than labels/comments must render as empty strings at
+ * the missing indices instead of throwing out_of_range from GetLabelText
+ * (layout) and comments.at() (paint). The panel's B8 shielding keeps the
+ * process alive either way, so the observable is whether a full
+ * layout+paint cycle succeeds: m_octx only settles equal to the landed
+ * context when no exception keeps triggering _RequestPaintRecovery. */
+static weasel::Context make_mismatched_ctx(int candies,
+                                           int labels,
+                                           int comments) {
+  weasel::Context ctx;
+  auto push = [](std::vector<weasel::Text>& v, const wchar_t* s) {
+    weasel::Text t;
+    t.str = s;
+    v.push_back(t);
+  };
+  for (int i = 0; i < candies; ++i)
+    push(ctx.cinfo.candies, L"candidate");
+  for (int i = 0; i < labels; ++i)
+    push(ctx.cinfo.labels, std::to_wstring(i + 1).c_str());
+  for (int i = 0; i < comments; ++i)
+    push(ctx.cinfo.comments, L"comment");
+  ctx.cinfo.highlighted = 0;
+  return ctx;
+}
+
+static void test_mismatched_candidate_vectors(UiThread& t) {
+  // 5 个候选 / 1 个标签 / 0 条注释：此前两处 at() 越界各会抛一次
+  // out_of_range（布局期 GetLabelText 与绘制期 comments.at）
+  weasel::Status status;
+  status.composing = true;
+
+  t.ui.Update(make_mismatched_ctx(5, 1, 0), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.candies.size() == 5; }, 3000),
+        "B37: mismatched context lands");
+  // 布局 + 绘制全链路成功时 m_octx 才会与 m_ctx 一致并保持；仍抛异常则
+  // _RequestPaintRecovery 会不断清空 m_octx（旧值 3 来自前一个用例）
+  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 5; },
+                   3000),
+        "B37: layout+paint completes with short labels/comments");
+  Sleep(500);  // 让恢复重投（若有）跑完后再确认不回退
+  check(t.ui.octx().cinfo.candies.size() == 5,
+        "B37: paint result stays settled");
+
+  // 恢复等长向量后一切如常
+  t.ui.Update(make_candidate_ctx(3, 1), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.highlighted == 1; }, 3000),
+        "B37: equal-length context still works after mismatch");
 }
 
 /* B9: highlighted may arrive out of range (unvalidated IPC data or a host
@@ -238,6 +288,7 @@ int main() {
   test_highlighted_clamped(t);
   test_hr_tolerates_s_false();
   test_layout_failure_is_shielded(t);
+  test_mismatched_candidate_vectors(t);
 
   t.RequestStop();
   check(ui_thread.timed_join(boost::posix_time::seconds(5)),

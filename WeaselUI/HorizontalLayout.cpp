@@ -111,8 +111,8 @@ void HorizontalLayout::DoLayout(CDCHandle dc, PDWR pDWR) {
       bool cmtFontNotTrans =
           (i == id && (_style.hilited_comment_text_color & 0xff000000)) ||
           (i != id && (_style.comment_text_color & 0xff000000));
-      if (!comments.at(i).str.empty() && cmtFontValid && cmtFontNotTrans) {
-        const std::wstring& comment = comments.at(i).str;
+      const std::wstring& comment = TextAt(comments, i).str;
+      if (!comment.empty() && cmtFontValid && cmtFontNotTrans) {
         GetTextSizeDW(comment, comment.length(), pDWR->pCommentTextFormat, pDWR,
                       &size);
         w += _style.hilite_spacing;

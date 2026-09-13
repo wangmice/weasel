@@ -94,6 +94,9 @@ class Layout {
   virtual std::wstring GetLabelText(const std::vector<Text>& labels,
                                     int id,
                                     const wchar_t* format) const = 0;
+  // candies/labels/comments 同属一个候选信息，但不保证等长（IPC 反序列化 /
+  // 宿主写入无长度约束）：按下标取文本时越界一律按空文本处理，不得抛异常
+  static const Text& TextAt(const std::vector<Text>& texts, int index);
   virtual bool IsInlinePreedit() const = 0;
   virtual bool ShouldDisplayStatusIcon() const = 0;
   virtual void GetTextSizeDW(const std::wstring& text,
