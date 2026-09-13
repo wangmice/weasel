@@ -228,8 +228,25 @@ void CCandidateList::UpdateInputPosition(RECT const& rc) {
   _ui->UpdateInputPosition(rc);
 }
 
+// Candidate UI lifecycle (state machine):
+//
+//   StartUI:     !_uiStarted -> begun. BeginUIElement registers this object
+//                with the thread's UIElementMgr (id stored in uiid); if the
+//                host shows UI elements, _MakeUIWindow creates the panel.
+//                No-op while _uiStarted.
+//   EndUI:       _uiStarted -> !begun. EndUIElement(uiid) plus
+//                _DisposeUIWindow; idempotent.
+//   Destroy:     composition episode ended (abort / focus loss / profile
+//                deactivation): EndUI + hide. The element must end here so
+//                the next composition can StartUI and rebuild the window.
+//   DestroyAll:  Deactivate teardown: Destroy plus full resource release.
+//
+// Invariants:
+//   _uiStarted == true  <=>  an element registered under uiid is begun
+//   panel window exists only between _MakeUIWindow and _DisposeUIWindow
+//     (weasel::UI ops on a disposed window are guarded no-ops)
 void CCandidateList::Destroy() {
-  // EndUI();
+  EndUI();
   Show(FALSE);
   _DisposeUIWindow();
 }
