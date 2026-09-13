@@ -34,7 +34,7 @@
 | K1 | **P1** | WeaselDeployer/Configurator.cpp:220-228 | SyncUserData 失败不调 EndMaintenance → 服务端永久维护态、全系统禁输 | ✔ | ✅ 已修复（f3a888f，批次1） |
 | K2 | P2 | WeaselTSF/KeyEventSink.cpp:7-60 | static 三件套跨实例/线程共享；pfEaten 未写即存 static | ✔ | 未修复 |
 | K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | ✔ | 未修复 |
-| K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | ✅ | 未修复 |
+| K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | ✅ | ✅ 已修复（cd59189，批次2） |
 | K5 | P2 | WeaselTSF/Register.cpp:10,226-231 | "Microsft" 拼写 + HKCR 下清理对真实 TIP 键结构上无效 | ✔ | 未修复 |
 | K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | ✔ | 未修复 |
 | K7 | P2 | SwitcherSettingsDialog.cpp:20-23; UIStyleSettings.cpp:5-8 | schema list / settings 无对应 destroy | ✔ | 未修复 |
@@ -62,8 +62,8 @@
 |---|---|---|---|---|---|---|
 | B1 | **P1** | bug | WeaselUI/WeaselUI.cpp:50-94 等 | Show/Hide/ShowWithTimeout 未 marshal，管道线程持 g_api_mutex 跨线程 ShowWindow → 与消息线程互等死锁 | ✔ | ✅ 已修复（1878ff6，批次1） |
 | B2 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘刷新在管道线程读 ui.style_/status_（= A9） | ✔ | 未修复 |
-| B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | ✅ | 未修复 |
-| B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | 未修复 |
+| B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | ✅ | ✅ 已修复（22cf009，批次2） |
+| B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | ✅ 已修复（6d43edc，批次2） |
 | B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | 未修复 |
 | B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | ✔ | 未修复 |
 | B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | ❌ | 未修复 |
@@ -78,8 +78,8 @@
 | B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | ✅ | 未修复 |
 | B17 | P3 | bug | WeaselIPCServer/WeaselServerImpl.cpp:445-461 | Listen catch(...) 后无退避，管道创建持续失败时 100% CPU | ✔ | ✅ 已修复（7c086f0，批次1） |
 | B18 | P3 | bug | WeaselServerImpl.cpp:450-519 | worker 先于 _RegisterWorker 结束 → m_workers 残留已关闭句柄 | ✔ | ✅ 已修复（7aa084b，批次1） |
-| B19 | P3 | bug | WeaselUI/WeaselPanel.cpp:1261-1264 | MoveTo marshal 不检查 PostMessage 返回值泄漏 RECT | ✔ | 未修复 |
-| B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | ✔ | 未修复 |
+| B19 | P3 | bug | WeaselUI/WeaselPanel.cpp:1261-1264 | MoveTo marshal 不检查 PostMessage 返回值泄漏 RECT | ✔ | ✅ 已修复（cc3507b，批次2） |
+| B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | ✔ | ✅ 已修复（116238a，批次2） |
 | B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | 未修复 |
 | B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | ✔ | 未修复 |
 | B23 | P3 | bug | WeaselUI/StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | ✅ | 未修复 |
@@ -89,7 +89,7 @@
 | B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | 未修复 |
 | B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | ✔ | 未修复 |
 | B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | 未修复 |
-| B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | ✔ | 未修复 |
+| B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | ✔ | ✅ 已修复（d416100，批次2） |
 | B31 | P3 | bug | include/WeaselUtility.h:14-32 | getUsername 二次调用失败未校验 | ✔ | 未修复 |
 | B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | ✔ | 未修复 |
 | B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | ⚠ | 未修复 |
@@ -859,3 +859,13 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `7c086f0` fix(WeaselIPCServer): back off before retrying a failed pipe listen — B17。50ms 退避（interrupt 可打断，不影响停机）；TestPipeChannel 新增忙循环回归用例（负向验证过：去退避则 FAIL）。
 - `7aa084b` fix(WeaselIPCServer): register pipe workers before they can finish — B18。_LaunchWorker 在同一临界区内建线程并登记；TestPipeChannel 新增 30 轮瞬断冲击用例。
 - 构建：release/debug 全量 build ok；既有测试全过（TestResponseParser 基线即 exit 3，见 B20，非本批引入）。
+
+### 批次 2（2026-09-14）：B3、B4、B20、K4、B19、B30
+
+- `22cf009` fix(WeaselUI): pass a length, not an end offset, to substr in GetPreeditSize — B3。
+- `6d43edc` fix(WeaselIPC): require all three cursor fields when parsing ctx.preedit.cursor — B4（守卫改 vec.size()<3 丢弃属性）。TestResponseParser 从基线即 exit 3 修诊断为过时明文协议 + text_wiarchive 构造期异常在 try 外（B5 附带项的位置），改造 test_4/5/6；负向验证：还原 B4 则 test_5 FAIL。
+- `116238a` fix(WeaselIPC): guard p_config, not p_context, in Configurator::Store — B20。新增 test_6（有 context 无 config 不崩）；负向验证：还原则 0xC0000005。
+- `cd59189` fix(WeaselTSF): stop counting a trailing NUL in candidate BSTR length — K4。抽出 BstrUtil.h 的 AllocBstr 并新增 TestBstrUtil；负向验证：还原 +1 则 4 处 FAIL。
+- `cc3507b` fix(WeaselUI): free the marshalled RECT when MoveTo's PostMessage fails — B19。
+- `d416100` fix(RimeWithWeasel): null-check schema_name/schema_id before u8tow — B30。
+- 构建：release/debug 全量 build ok；8 个测试目标全过（TestWeaselIPC/TestWeaselUI 因历史 targetdir 写法需直跑 exe，均 exit 0）。
