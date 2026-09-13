@@ -123,7 +123,9 @@ HRESULT DirectWriteResources::InitResources(const wstring& label_font_face,
 
       HR(_pTextFormat->SetParagraphAlignment(
           DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
-      HR(_pTextFormat->SetWordWrapping(wrapping));
+      // 用形参 wrap：pPreeditTextFormat 由此拿到逐字换行（wrapping_preedit，
+      // 与上游 0.16.2 的展开写法一致），其余格式用整词换行
+      HR(_pTextFormat->SetWordWrapping(wrap));
       _SetFontFallback(_pTextFormat, fontFaceStrVector);
       if (_style.linespacing && _style.baseline)
         _pTextFormat->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM,
