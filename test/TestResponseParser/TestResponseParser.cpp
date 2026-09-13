@@ -5,6 +5,7 @@
 #include <boost/archive/text_woarchive.hpp>
 #include <boost/detail/lightweight_test.hpp>
 #include <ResponseParser.h>
+#include <WeaselUtility.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -145,6 +146,39 @@ void test_6() {
   BOOST_TEST(config.inline_preedit);
 }
 
+// escape_string/unescape_string 转义往返（B36）：只动 \\、\n、\t 三种字符，
+// 其余（含用户输入的 %、= 等）原样透传不膨胀；逃逸语义与旧 stringstream
+// 实现逐字符一致，协议两侧对称
+void test_7() {
+  const std::wstring inputs[] = {
+      L"",
+      L"plain text",
+      L"line1\nline2\tend",
+      L"back\\slash \\\\ nested",
+      L"100% \\path\\to\\file %x00 \\n \\t",
+      L"候選=3.14\t註釋\\x\n写作串",
+      L"trailing escape\\",
+  };
+  for (const auto& s : inputs) {
+    std::wstring roundtrip = unescape_string(escape_string(s));
+    BOOST_TEST(roundtrip == s);
+  }
+  // 窄字符特化与宽字符特化行为一致（输入限 ASCII）
+  const std::string narrow = "line1\nline2\tback\\slash %x00";
+  BOOST_TEST(unescape_string(escape_string(narrow)) == narrow);
+
+  BOOST_TEST(escape_string(std::wstring(L"a\nb")) == L"a\\nb");
+  BOOST_TEST(escape_string(std::wstring(L"a\tb")) == L"a\\tb");
+  BOOST_TEST(escape_string(std::wstring(L"a\\b")) == L"a\\\\b");
+  // 用户输入的 % 序列不膨胀
+  std::wstring pct(L"%x00 %s %%");
+  BOOST_TEST(escape_string(pct) == pct);
+
+  // 非约定转义还原为裸字符；结尾孤立反斜杠丢弃（与旧实现一致）
+  BOOST_TEST(unescape_string(std::wstring(L"\\a\\b\\\\")) == L"ab\\");
+  BOOST_TEST(unescape_string(std::wstring(L"end\\")) == L"end");
+}
+
 int _tmain(int argc, _TCHAR* argv[]) {
   test_1();
   test_2();
@@ -152,6 +186,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
   test_4();
   test_5();
   test_6();
+  test_7();
 
   return boost::report_errors();
 }

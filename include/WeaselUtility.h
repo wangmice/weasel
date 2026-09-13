@@ -141,46 +141,53 @@ const wchar_t EscapeChar<wchar_t>::linefeed_escape = L'n';
 template <>
 const wchar_t EscapeChar<wchar_t>::tab_escape = L't';
 
+// IPC 协议转义：仅处理反斜杠、\n、\t（两侧对称）。纯字符串操作实现，
+// 免去每次调用的 stringstream 构造与 locale 查询（每键 ~6N 次调用）
 template <typename CharT>
 inline std::basic_string<CharT> escape_string(
     const std::basic_string<CharT>& input) {
   using Esc = EscapeChar<CharT>;
-  std::basic_stringstream<CharT> res;
-  for (auto p = input.begin(); p != input.end(); ++p) {
-    if (*p == Esc::escape) {
-      res << Esc::escape << Esc::escape;
-    } else if (*p == Esc::linefeed) {
-      res << Esc::escape << Esc::linefeed_escape;
-    } else if (*p == Esc::tab) {
-      res << Esc::escape << Esc::tab_escape;
+  std::basic_string<CharT> res;
+  res.reserve(input.size());
+  for (CharT c : input) {
+    if (c == Esc::escape) {
+      res.push_back(Esc::escape);
+      res.push_back(Esc::escape);
+    } else if (c == Esc::linefeed) {
+      res.push_back(Esc::escape);
+      res.push_back(Esc::linefeed_escape);
+    } else if (c == Esc::tab) {
+      res.push_back(Esc::escape);
+      res.push_back(Esc::tab_escape);
     } else {
-      res << *p;
+      res.push_back(c);
     }
   }
-  return res.str();
+  return res;
 }
 
 template <typename CharT>
 inline std::basic_string<CharT> unescape_string(
     const std::basic_string<CharT>& input) {
   using Esc = EscapeChar<CharT>;
-  std::basic_stringstream<CharT> res;
+  std::basic_string<CharT> res;
+  res.reserve(input.size());
   for (auto p = input.begin(); p != input.end(); ++p) {
     if (*p == Esc::escape) {
       if (++p == input.end()) {
         break;
       } else if (*p == Esc::linefeed_escape) {
-        res << Esc::linefeed;
+        res.push_back(Esc::linefeed);
       } else if (*p == Esc::tab_escape) {
-        res << Esc::tab;
+        res.push_back(Esc::tab);
       } else {  // \a => a
-        res << *p;
+        res.push_back(*p);
       }
     } else {
-      res << *p;
+      res.push_back(*p);
     }
   }
-  return res.str();
+  return res;
 }
 
 // resource
