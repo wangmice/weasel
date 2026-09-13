@@ -172,6 +172,57 @@ static void test_highlighted_clamped(UiThread& t) {
         "B9: negative highlighted clamped to 0");
 }
 
+/* B8: HR() must tolerate S_FALSE (a success code) and still throw on real
+ * failures — it used to throw on anything != S_OK */
+static void test_hr_tolerates_s_false() {
+  bool threw = false;
+  try {
+    HR(S_FALSE);
+  } catch (const ComException&) {
+    threw = true;
+  }
+  check(!threw, "B8: HR(S_FALSE) does not throw");
+
+  threw = false;
+  try {
+    HR(E_FAIL);
+  } catch (const ComException&) {
+    threw = true;
+  }
+  check(threw, "B8: HR(E_FAIL) throws ComException");
+}
+
+/* B8: a style whose layout measurements fail in DirectWrite (negative
+ * max_width makes CreateTextLayout return E_INVALIDARG, so GetTextSizeDW
+ * throws via HR) must not kill the process: the exception has to be
+ * shielded inside the panel, and once a sane style arrives the panel must
+ * recover and keep updating */
+static void test_layout_failure_is_shielded(UiThread& t) {
+  weasel::UIStyle bad;
+  bad.font_face = L"Segoe UI";
+  bad.font_point = 12;
+  bad.max_width = -100;  // CreateTextLayout(width<0) -> E_INVALIDARG
+
+  weasel::Status status;
+  status.composing = true;
+
+  // 失败样式 + 有效候选：布局抛异常，必须被绘制路径内的 catch 挡住
+  // （否则异常穿 WNDPROC，UI 线程终止，整个测试进程崩溃）
+  t.ui.SetStyle(bad);
+  t.ui.Update(make_candidate_ctx(3, 2), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.highlighted == 2; }, 3000),
+        "B8: failing layout is shielded, process alive");
+
+  // 恢复正常样式：面板应继续工作
+  weasel::UIStyle good;
+  good.font_face = L"Segoe UI";
+  good.font_point = 12;
+  t.ui.SetStyle(good);
+  t.ui.Update(make_candidate_ctx(3, 1), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.highlighted == 1; }, 3000),
+        "B8: panel recovers after layout failures");
+}
+
 int main() {
   UiThread t;
   boost::thread ui_thread([&t] { t.Run(); });
@@ -185,6 +236,8 @@ int main() {
   test_show_with_timeout(t);
   test_update_cancels_countdown(t);
   test_highlighted_clamped(t);
+  test_hr_tolerates_s_false();
+  test_layout_failure_is_shielded(t);
 
   t.RequestStop();
   check(ui_thread.timed_join(boost::posix_time::seconds(5)),

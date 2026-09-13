@@ -152,6 +152,9 @@ class WeaselPanel
   // 触发 d2d1.dll 内部崩溃（0xC0000005）。
   bool _IsUiThread() const;
   void _InitFontRes(bool forced = false);
+  // 绘制 / 布局失败后的恢复（UI 线程调用）：清 m_octx 强制下次重绘、
+  // 重建 DWrite 资源、按剩余预算投递 WM_WEASEL_REFRESH 完整重算
+  void _RequestPaintRecovery();
   void _ApplyUpdate(Context const& ctx, Status const& status);
   // 显隐命令的落地与 marshal（仅 _ApplyVisibility 允许触碰窗口 API）
   void _SetVisibility(PanelVisibility cmd, UINT millisec);
@@ -232,4 +235,8 @@ class WeaselPanel
   int m_hoverIndex = -1;
   HMONITOR m_hMonitor = NULL;
   bool m_redraw_by_monitor_change = false;
+  // 自动恢复重试的剩余投递预算：完整绘成一帧后复位；耗尽后停止自动重试
+  // （等待下一次外部刷新），防止持续失败时消息自旋
+  static constexpr BYTE MAX_PAINT_RECOVERY = 2;
+  BYTE m_paint_recovery_left = MAX_PAINT_RECOVERY;
 };

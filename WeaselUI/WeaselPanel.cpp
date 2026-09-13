@@ -184,18 +184,25 @@ void WeaselPanel::Refresh() {
   // only RedrawWindow if no need to hide candidates window, or
   // inline_no_candidates
   if (!hide_candidates || inline_no_candidates) {
-    _InitFontRes();
-    _CreateLayout();
-
     CDCHandle dc = GetDC();
-    m_layout->DoLayout(dc, pDWR);
-    ReleaseDC(dc);
-    _ResizeWindow();
-    _RepositionWindow();
-    if (m_ctx != m_octx) {
-      m_octx = m_ctx;
-      RedrawWindow();
+    // 布局阶段的 DWrite 调用（GetTextSizeDW 等经 HR 抛出）不允许穿出消息
+    // 处理：唯一进程级 catch 在 server main，异常到达即整个输入服务退出。
+    // 失败帧丢弃，交给 _RequestPaintRecovery 重建资源后重画
+    try {
+      _InitFontRes();
+      _CreateLayout();
+      m_layout->DoLayout(dc, pDWR);
+      _ResizeWindow();
+      _RepositionWindow();
+      if (m_ctx != m_octx) {
+        m_octx = m_ctx;
+        RedrawWindow();
+      }
+    } catch (...) {
+      DEBUG << "WeaselPanel::Refresh: layout failed, frame skipped";
+      _RequestPaintRecovery();
     }
+    ReleaseDC(dc);
   }
 }
 
@@ -1015,125 +1022,171 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
   ::SelectObject(memDC, memBitmap);
   ReleaseDC(hdc);
   bool drawn = false;
+  // 本帧是否送上分层窗口：绘制异常时丢弃本帧（保留上一画面），恢复后重画
+  bool frame_ok = true;
   if (!hide_candidates) {
-    CRect auxrc = m_layout->GetAuxiliaryRect();
-    CRect preeditrc = m_layout->GetPreeditRect();
-    if (m_istorepos) {
-      CRect* rects = new CRect[m_candidateCount];
-      int* btmys = new int[m_candidateCount];
-      for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
-        rects[i] = m_layout->GetCandidateRect(i);
-        btmys[i] = rects[i].bottom;
+    // DWrite 资源缺失（上次恢复失败的遗留）：先尝试重建，仍失败则丢弃本帧，
+    // 等待下一次外部刷新（不自动重试，避免持续失败时自旋）
+    if (pDWR == NULL) {
+      try {
+        _InitFontRes(true);
+      } catch (...) {
       }
-      if (m_candidateCount) {
-        if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
-          m_offsety_preedit =
-              rects[m_candidateCount - 1].bottom - preeditrc.bottom;
+    }
+    if (pDWR != NULL) {
+      // 绘制阶段的异常（HR 抛出的 ComException、越界等）不允许穿出
+      // WNDPROC：唯一进程级 catch 在 server main，到达即整个输入服务退出。
+      // 丢弃本帧并请求恢复
+      try {
+        CRect auxrc = m_layout->GetAuxiliaryRect();
+        CRect preeditrc = m_layout->GetPreeditRect();
+        if (m_istorepos) {
+          CRect* rects = new CRect[m_candidateCount];
+          int* btmys = new int[m_candidateCount];
+          for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT;
+               ++i) {
+            rects[i] = m_layout->GetCandidateRect(i);
+            btmys[i] = rects[i].bottom;
+          }
+          if (m_candidateCount) {
+            if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
+              m_offsety_preedit =
+                  rects[m_candidateCount - 1].bottom - preeditrc.bottom;
+            if (!m_ctx.aux.str.empty())
+              m_offsety_aux = rects[m_candidateCount - 1].bottom - auxrc.bottom;
+          } else {
+            m_offsety_preedit = 0;
+            m_offsety_aux = 0;
+          }
+          int base_gap = 0;
+          if (!m_ctx.aux.str.empty())
+            base_gap = auxrc.Height() + m_style.spacing;
+          else if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
+            base_gap = preeditrc.Height() + m_style.spacing;
+
+          for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT;
+               ++i) {
+            if (i == 0)
+              m_offsetys[i] =
+                  btmys[m_candidateCount - i - 1] - base_gap - rects[i].bottom;
+            else
+              m_offsetys[i] = (rects[i - 1].top + m_offsetys[i - 1] -
+                               DPI_SCALE(m_style.candidate_spacing)) -
+                              rects[i].bottom;
+          }
+          delete[] rects;
+          delete[] btmys;
+        }
+        // background and candidates back, hilite back drawing start
+        if ((!m_ctx.empty() && !m_style.inline_preedit) ||
+            (m_style.inline_preedit &&
+             (m_candidateCount || !m_ctx.aux.empty()))) {
+          CRect backrc = m_layout->GetContentRect();
+          _HighlightText(memDC, backrc, m_style.back_color, m_style.shadow_color,
+                         DPI_SCALE(m_style.round_corner_ex), BackType::BACKGROUND,
+                         IsToRoundStruct(), m_style.border_color);
+        }
+        if (!m_ctx.aux.str.empty()) {
+          if (m_istorepos)
+            auxrc.OffsetRect(0, m_offsety_aux);
+          drawn |= _DrawPreeditBack(m_ctx.aux, memDC, auxrc);
+        }
+        if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty()) {
+          if (m_istorepos)
+            preeditrc.OffsetRect(0, m_offsety_preedit);
+          drawn |= _DrawPreeditBack(m_ctx.preedit, memDC, preeditrc);
+        }
+        if (m_candidateCount)
+          drawn |= _DrawCandidates(memDC, true);
+        // background and candidates back, hilite back drawing end
+
+        // begin  texts drawing, if pRenderTarget failed, force to reinit
+        // directwrite resources
+        if (FAILED(pDWR->pRenderTarget->BindDC(memDC, &rcw))) {
+          _InitFontRes(true);
+          pDWR->pRenderTarget->BindDC(memDC, &rcw);
+        }
+        pDWR->pRenderTarget->BeginDraw();
+        // draw auxiliary string
         if (!m_ctx.aux.str.empty())
-          m_offsety_aux = rects[m_candidateCount - 1].bottom - auxrc.bottom;
-      } else {
-        m_offsety_preedit = 0;
-        m_offsety_aux = 0;
+          drawn |= _DrawPreedit(m_ctx.aux, memDC, auxrc);
+        // draw preedit string
+        if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
+          drawn |= _DrawPreedit(m_ctx.preedit, memDC, preeditrc);
+        // draw candidates string
+        if (m_candidateCount)
+          drawn |= _DrawCandidates(memDC);
+        if (FAILED(pDWR->pRenderTarget->EndDraw())) {
+          _InitFontRes(true);
+          Refresh();
+        }
+        // end texts drawing
+
+        // status icon (I guess Metro IME stole my idea :)
+        if (m_layout->ShouldDisplayStatusIcon()) {
+          // decide if custom schema zhung icon to show
+          LoadIconNecessary(m_current_zhung_icon, m_style.current_zhung_icon,
+                            m_iconEnabled, IDI_ZH);
+          LoadIconNecessary(m_current_ascii_icon, m_style.current_ascii_icon,
+                            m_iconAlpha, IDI_EN);
+          LoadIconNecessary(m_current_half_icon, m_style.current_half_icon,
+                            m_iconHalf, IDI_HALF_SHAPE);
+          LoadIconNecessary(m_current_full_icon, m_style.current_full_icon,
+                            m_iconFull, IDI_FULL_SHAPE);
+          CRect iconRect(m_layout->GetStatusIconRect());
+          if (m_istorepos && !m_ctx.aux.str.empty())
+            iconRect.OffsetRect(0, m_offsety_aux);
+          else if (m_istorepos && !m_layout->IsInlinePreedit() &&
+                   !m_ctx.preedit.str.empty())
+            iconRect.OffsetRect(0, m_offsety_preedit);
+
+          CIcon& icon(
+              m_status.disabled ? m_iconDisabled
+              : m_status.ascii_mode
+                  ? m_iconAlpha
+                  : (m_status.type == SCHEMA
+                         ? m_iconEnabled
+                         : (m_status.full_shape ? m_iconFull : m_iconHalf)));
+          memDC.DrawIconEx(iconRect.left, iconRect.top, icon, 0, 0);
+          drawn = true;
+        }
+        // 完整绘成一帧：复位自动恢复预算
+        m_paint_recovery_left = MAX_PAINT_RECOVERY;
+        /* Nothing drawn, hide candidate window */
+        if (!drawn)
+          ShowWindow(SW_HIDE);
+      } catch (...) {
+        DEBUG << "WeaselPanel::DoPaint: paint failed, frame skipped";
+        _RequestPaintRecovery();
+        frame_ok = false;
       }
-      int base_gap = 0;
-      if (!m_ctx.aux.str.empty())
-        base_gap = auxrc.Height() + m_style.spacing;
-      else if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
-        base_gap = preeditrc.Height() + m_style.spacing;
-
-      for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
-        if (i == 0)
-          m_offsetys[i] =
-              btmys[m_candidateCount - i - 1] - base_gap - rects[i].bottom;
-        else
-          m_offsetys[i] = (rects[i - 1].top + m_offsetys[i - 1] -
-                           DPI_SCALE(m_style.candidate_spacing)) -
-                          rects[i].bottom;
-      }
-      delete[] rects;
-      delete[] btmys;
+    } else {
+      frame_ok = false;
     }
-    // background and candidates back, hilite back drawing start
-    if ((!m_ctx.empty() && !m_style.inline_preedit) ||
-        (m_style.inline_preedit && (m_candidateCount || !m_ctx.aux.empty()))) {
-      CRect backrc = m_layout->GetContentRect();
-      _HighlightText(memDC, backrc, m_style.back_color, m_style.shadow_color,
-                     DPI_SCALE(m_style.round_corner_ex), BackType::BACKGROUND,
-                     IsToRoundStruct(), m_style.border_color);
-    }
-    if (!m_ctx.aux.str.empty()) {
-      if (m_istorepos)
-        auxrc.OffsetRect(0, m_offsety_aux);
-      drawn |= _DrawPreeditBack(m_ctx.aux, memDC, auxrc);
-    }
-    if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty()) {
-      if (m_istorepos)
-        preeditrc.OffsetRect(0, m_offsety_preedit);
-      drawn |= _DrawPreeditBack(m_ctx.preedit, memDC, preeditrc);
-    }
-    if (m_candidateCount)
-      drawn |= _DrawCandidates(memDC, true);
-    // background and candidates back, hilite back drawing end
-
-    // begin  texts drawing, if pRenderTarget failed, force to reinit
-    // directwrite resources
-    if (FAILED(pDWR->pRenderTarget->BindDC(memDC, &rcw))) {
-      _InitFontRes(true);
-      pDWR->pRenderTarget->BindDC(memDC, &rcw);
-    }
-    pDWR->pRenderTarget->BeginDraw();
-    // draw auxiliary string
-    if (!m_ctx.aux.str.empty())
-      drawn |= _DrawPreedit(m_ctx.aux, memDC, auxrc);
-    // draw preedit string
-    if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
-      drawn |= _DrawPreedit(m_ctx.preedit, memDC, preeditrc);
-    // draw candidates string
-    if (m_candidateCount)
-      drawn |= _DrawCandidates(memDC);
-    if (FAILED(pDWR->pRenderTarget->EndDraw())) {
-      _InitFontRes(true);
-      Refresh();
-    }
-    // end texts drawing
-
-    // status icon (I guess Metro IME stole my idea :)
-    if (m_layout->ShouldDisplayStatusIcon()) {
-      // decide if custom schema zhung icon to show
-      LoadIconNecessary(m_current_zhung_icon, m_style.current_zhung_icon,
-                        m_iconEnabled, IDI_ZH);
-      LoadIconNecessary(m_current_ascii_icon, m_style.current_ascii_icon,
-                        m_iconAlpha, IDI_EN);
-      LoadIconNecessary(m_current_half_icon, m_style.current_half_icon,
-                        m_iconHalf, IDI_HALF_SHAPE);
-      LoadIconNecessary(m_current_full_icon, m_style.current_full_icon,
-                        m_iconFull, IDI_FULL_SHAPE);
-      CRect iconRect(m_layout->GetStatusIconRect());
-      if (m_istorepos && !m_ctx.aux.str.empty())
-        iconRect.OffsetRect(0, m_offsety_aux);
-      else if (m_istorepos && !m_layout->IsInlinePreedit() &&
-               !m_ctx.preedit.str.empty())
-        iconRect.OffsetRect(0, m_offsety_preedit);
-
-      CIcon& icon(
-          m_status.disabled ? m_iconDisabled
-          : m_status.ascii_mode
-              ? m_iconAlpha
-              : (m_status.type == SCHEMA
-                     ? m_iconEnabled
-                     : (m_status.full_shape ? m_iconFull : m_iconHalf)));
-      memDC.DrawIconEx(iconRect.left, iconRect.top, icon, 0, 0);
-      drawn = true;
-    }
-    /* Nothing drawn, hide candidate window */
-    if (!drawn)
-      ShowWindow(SW_HIDE);
   }
-  _LayerUpdate(rcw, memDC);
+  if (frame_ok)
+    _LayerUpdate(rcw, memDC);
 
   // clean objs
   ::DeleteDC(memDC);
   ::DeleteObject(memBitmap);
+}
+
+// 见 WeaselPanel.h：绘制 / 布局失败后的恢复
+void WeaselPanel::_RequestPaintRecovery() {
+  // 屏幕内容视为过期：下一次 Refresh 必然真正重绘
+  m_octx = Context();
+  // 重建 DWrite 资源；重建自身失败不外抛，交给后续刷新重试
+  try {
+    _InitFontRes(true);
+  } catch (...) {
+  }
+  // 经消息队列回到 UI 线程完整重算，避免在 DoPaint 内递归重绘；
+  // 预算耗尽后停止，待下一次外部刷新（按键等）再触发
+  if (m_paint_recovery_left > 0) {
+    --m_paint_recovery_left;
+    PostMessage(WM_WEASEL_REFRESH);
+  }
 }
 
 // 由于某些软件并不依赖 WM_PAINT 消息来重绘，在消息循环中直接忽略掉了 WM_PAINT
