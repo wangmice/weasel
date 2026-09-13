@@ -32,6 +32,17 @@ enum class BackType {
 #define WM_WEASEL_MOVETO (WM_APP + 0x1002)
 #define WM_WEASEL_UPDATE (WM_APP + 0x1003)
 #define WM_WEASEL_SETSTYLE (WM_APP + 0x1004)
+// 显隐命令：跨线程调用 Show/Hide/ShowWithTimeout 时经 WM_WEASEL_SHOW 投递，
+// wParam 携带命令，lParam 携带超时毫秒值，不涉及堆对象。
+#define WM_WEASEL_SHOW (WM_APP + 0x1005)
+
+// 提示窗显隐命令。枚举即命令的全部合法取值，经 WPARAM 传输故显式指定底层
+// 类型，避免隐式转换引入未经校验的值。
+enum class PanelVisibility : WPARAM {
+  Hide = 0,
+  Show = 1,
+  ShowWithTimeout = 2,
+};
 
 class WeaselPanel
     : public CWindowImpl<WeaselPanel, CWindow, CWeaselPanelTraits>,
@@ -41,6 +52,7 @@ class WeaselPanel
   MESSAGE_HANDLER(WM_CREATE, OnCreate)
   MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
   MESSAGE_HANDLER(WM_DPICHANGED, OnDpiChanged)
+  MESSAGE_HANDLER(WM_TIMER, OnAutoHideTimer)
   MESSAGE_HANDLER(WM_MOUSEACTIVATE, OnMouseActivate)
   MESSAGE_HANDLER(WM_LBUTTONUP, OnLeftClickedUp)
   MESSAGE_HANDLER(WM_LBUTTONDOWN, OnLeftClickedDown)
@@ -52,6 +64,7 @@ class WeaselPanel
   MESSAGE_HANDLER(WM_WEASEL_MOVETO, OnMoveTo)
   MESSAGE_HANDLER(WM_WEASEL_UPDATE, OnApplyUpdate)
   MESSAGE_HANDLER(WM_WEASEL_SETSTYLE, OnApplyStyle)
+  MESSAGE_HANDLER(WM_WEASEL_SHOW, OnShowCommand)
   CHAIN_MSG_MAP(CDoubleBufferImpl<WeaselPanel>)
   END_MSG_MAP()
 
@@ -75,6 +88,14 @@ class WeaselPanel
                        WPARAM wParam,
                        LPARAM lParam,
                        BOOL& bHandled);
+  LRESULT OnShowCommand(UINT uMsg,
+                        WPARAM wParam,
+                        LPARAM lParam,
+                        BOOL& bHandled);
+  LRESULT OnAutoHideTimer(UINT uMsg,
+                          WPARAM wParam,
+                          LPARAM lParam,
+                          BOOL& bHandled);
   LRESULT OnMouseActivate(UINT uMsg,
                           WPARAM wParam,
                           LPARAM lParam,
@@ -103,12 +124,23 @@ class WeaselPanel
   void ApplyUpdate(Context const& ctx, Status const& status);
   void ApplyStyle(UIStyle const& style);
 
+  // 界面显隐入口：跨线程（IPC 工作线程）调用时经 WM_WEASEL_SHOW marshal 回
+  // UI 线程执行。跨线程直接 ShowWindow 是同步 send，若窗口线程正阻塞在
+  // g_api_mutex 等待上会与之互等死锁。
+  void Show();
+  void Hide();
+  void ShowWithTimeout(UINT millisec);
+  bool IsShown() const { return m_shown; }
+  bool IsCountingDown() const { return m_autohide_counting; }
+
   static VOID CALLBACK OnTimer(_In_ HWND hwnd,
                                _In_ UINT uMsg,
                                _In_ UINT_PTR idEvent,
                                _In_ DWORD dwTime);
   static const int AUTOREV_TIMER = 20240315;
   static UINT_PTR ptimer;
+  // 提示窗自动隐藏定时器（ShowWithTimeout 启动，到期经 WM_TIMER 隐藏）
+  static const UINT AUTOHIDE_TIMER = 20121220;
 
  private:
   template <typename T>
@@ -121,6 +153,10 @@ class WeaselPanel
   bool _IsUiThread() const;
   void _InitFontRes(bool forced = false);
   void _ApplyUpdate(Context const& ctx, Status const& status);
+  // 显隐命令的落地与 marshal（仅 _ApplyVisibility 允许触碰窗口 API）
+  void _SetVisibility(PanelVisibility cmd, UINT millisec);
+  void _ApplyVisibility(PanelVisibility cmd, UINT millisec);
+  void _CancelAutoHide();
   void _CaptureRect(CRect& rect);
   bool m_mouse_entry = false;
   CPoint m_lastMousePos = {-1, -1};
@@ -182,6 +218,9 @@ class WeaselPanel
 
   bool hide_candidates;
   bool m_sticky;
+  // 提示窗显隐状态（UI 线程写）：m_autohide_counting 表示自动隐藏倒计时进行中
+  bool m_shown = false;
+  bool m_autohide_counting = false;
   // for multi font_face & font_point
   PDWR pDWR;
   std::function<void(size_t* const, size_t* const, bool* const, bool* const)>&

@@ -1252,6 +1252,31 @@ LRESULT WeaselPanel::OnApplyStyle(UINT uMsg,
   return 0;
 }
 
+LRESULT WeaselPanel::OnShowCommand(UINT uMsg,
+                                   WPARAM wParam,
+                                   LPARAM lParam,
+                                   BOOL& bHandled) {
+  bHandled = TRUE;
+  // wParam 携带 PanelVisibility 命令，lParam 携带 ShowWithTimeout 的超时值
+  _ApplyVisibility(static_cast<PanelVisibility>(wParam),
+                   static_cast<UINT>(lParam));
+  return 0;
+}
+
+LRESULT WeaselPanel::OnAutoHideTimer(UINT uMsg,
+                                     WPARAM wParam,
+                                     LPARAM lParam,
+                                     BOOL& bHandled) {
+  if (wParam != AUTOHIDE_TIMER) {
+    bHandled = FALSE;  // 其余定时器交由默认处理
+    return 0;
+  }
+  bHandled = TRUE;
+  // 自动隐藏倒计时到期：隐藏提示窗（_ApplyVisibility 一并停表清标志）
+  _ApplyVisibility(PanelVisibility::Hide, 0);
+  return 0;
+}
+
 void WeaselPanel::MoveTo(RECT const& rc) {
   if (!m_layout)
     return;  // avoid handling nullptr in _RepositionWindow
@@ -1327,7 +1352,9 @@ void WeaselPanel::ApplyUpdate(Context const& ctx, Status const& status) {
 }
 
 void WeaselPanel::_ApplyUpdate(Context const& ctx, Status const& status) {
-  // 现已在 UI 线程：内容与状态均未变化时跳过重绘
+  // 现已在 UI 线程：先结束可能进行中的自动隐藏倒计时（原 UIImpl::Update
+  // 开头的 Hide + KillTimer 前置逻辑），再判断内容是否变化
+  _CancelAutoHide();
   if (m_ctx == ctx && m_status == status)
     return;
   m_ctx = ctx;
@@ -1356,6 +1383,67 @@ void WeaselPanel::ApplyStyle(UIStyle const& style) {
     return;
   }
   m_style = style;
+}
+
+void WeaselPanel::Show() {
+  _SetVisibility(PanelVisibility::Show, 0);
+}
+
+void WeaselPanel::Hide() {
+  _SetVisibility(PanelVisibility::Hide, 0);
+}
+
+void WeaselPanel::ShowWithTimeout(UINT millisec) {
+  DLOG(INFO) << "ShowWithTimeout: " << millisec;
+  _SetVisibility(PanelVisibility::ShowWithTimeout, millisec);
+}
+
+void WeaselPanel::_SetVisibility(PanelVisibility cmd, UINT millisec) {
+  // 窗口未创建或已销毁：与旧 UIImpl 的守卫一致，直接跳过
+  if (!IsWindow())
+    return;
+  if (!_IsUiThread()) {
+    // 跨线程调用（IPC 工作线程）：ShowWindow/SetTimer 作用于他线程窗口会
+    // 触发同步 send，若窗口线程正阻塞在 g_api_mutex 上即互等死锁，必须
+    // marshal 回 UI 线程执行。命令与超时值直接由消息参数携带，投递失败
+    // 也没有需要回收的资源。
+    PostMessage(WM_WEASEL_SHOW, static_cast<WPARAM>(cmd),
+                static_cast<LPARAM>(millisec));
+    return;
+  }
+  _ApplyVisibility(cmd, millisec);
+}
+
+void WeaselPanel::_ApplyVisibility(PanelVisibility cmd, UINT millisec) {
+  // 仅允许在 UI 线程执行（同线程直调或经 WM_WEASEL_SHOW marshal 后）
+  switch (cmd) {
+    case PanelVisibility::Show:
+      ShowWindow(SW_SHOWNA);
+      m_shown = true;
+      KillTimer(AUTOHIDE_TIMER);
+      m_autohide_counting = false;
+      break;
+    case PanelVisibility::Hide:
+      ShowWindow(SW_HIDE);
+      m_shown = false;
+      KillTimer(AUTOHIDE_TIMER);
+      m_autohide_counting = false;
+      break;
+    case PanelVisibility::ShowWithTimeout:
+      ShowWindow(SW_SHOWNA);
+      m_shown = true;
+      // 同 id 的 SetTimer 会替换旧定时器，倒计时重新起算
+      SetTimer(AUTOHIDE_TIMER, millisec, NULL);
+      m_autohide_counting = true;
+      break;
+  }
+}
+
+void WeaselPanel::_CancelAutoHide() {
+  // 自动隐藏倒计时进行中：立即停表并隐藏提示窗。原 UIImpl::Update/Refresh
+  // 的前置逻辑，收敛到 UI 线程执行以保证与状态落地之间的顺序。
+  if (m_autohide_counting)
+    _ApplyVisibility(PanelVisibility::Hide, 0);
 }
 
 void WeaselPanel::_RepositionWindow(const bool& adj) {

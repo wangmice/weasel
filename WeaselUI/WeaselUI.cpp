@@ -8,90 +8,33 @@ class weasel::UIImpl {
  public:
   WeaselPanel panel;
 
-  UIImpl(weasel::UI& ui) : panel(ui), shown(false) {}
+  explicit UIImpl(weasel::UI& ui) : panel(ui) {}
   ~UIImpl() {}
+  // 窗口类操作（显隐、定时器、绘制）统一由 panel marshal 回 UI 线程执行，
+  // 本层不再直接触碰 HWND：跨线程 ShowWindow 是同步 send，窗口线程若正
+  // 阻塞在 g_api_mutex 上会与之互等死锁。
   void Refresh() {
     if (!panel.IsWindow())
       return;
-    if (timer) {
-      Hide();
-      KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
-      timer = 0;
-    }
+    // 与旧路径一致：自动隐藏倒计时进行中时先结束倒计时（Hide 一并停表）
+    if (panel.IsCountingDown())
+      panel.Hide();
     panel.Refresh();
   }
-  // 快照内容是否变化由 panel 在 UI 线程上判断；这里只负责与旧 Update 路径
-  // 一致的提示窗口清理，再经 panel 的 marshal 通道落地
   void Update(Context const& ctx, Status const& status) {
-    if (timer) {
-      Hide();
-      KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
-      timer = 0;
-    }
+    // 旧实现中 Update 开头的 Hide + KillTimer 前置逻辑由 panel 在落快照前
+    // 于 UI 线程完成（_ApplyUpdate），顺序与行为不变
     panel.ApplyUpdate(ctx, status);
   }
   void SetStyle(UIStyle const& style) { panel.ApplyStyle(style); }
-  void Show();
-  void Hide();
-  void ShowWithTimeout(size_t millisec);
-  bool IsShown() const { return shown; }
-
-  static VOID CALLBACK OnTimer(_In_ HWND hwnd,
-                               _In_ UINT uMsg,
-                               _In_ UINT_PTR idEvent,
-                               _In_ DWORD dwTime);
-  static const int AUTOHIDE_TIMER = 20121220;
-  static UINT_PTR timer;
-  bool shown;
+  void Show() { panel.Show(); }
+  void Hide() { panel.Hide(); }
+  void ShowWithTimeout(size_t millisec) {
+    panel.ShowWithTimeout(static_cast<UINT>(millisec));
+  }
+  bool IsShown() const { return panel.IsShown(); }
+  bool IsCountingDown() const { return panel.IsCountingDown(); }
 };
-
-UINT_PTR UIImpl::timer = 0;
-
-void UIImpl::Show() {
-  if (!panel.IsWindow())
-    return;
-  panel.ShowWindow(SW_SHOWNA);
-  shown = true;
-  if (timer) {
-    KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
-    timer = 0;
-  }
-}
-
-void UIImpl::Hide() {
-  if (!panel.IsWindow())
-    return;
-  panel.ShowWindow(SW_HIDE);
-  shown = false;
-  if (timer) {
-    KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
-    timer = 0;
-  }
-}
-
-void UIImpl::ShowWithTimeout(size_t millisec) {
-  if (!panel.IsWindow())
-    return;
-  DLOG(INFO) << "ShowWithTimeout: " << millisec;
-  panel.ShowWindow(SW_SHOWNA);
-  shown = true;
-  SetTimer(panel.m_hWnd, AUTOHIDE_TIMER, static_cast<UINT>(millisec),
-           &UIImpl::OnTimer);
-  timer = UINT_PTR(this);
-}
-VOID CALLBACK UIImpl::OnTimer(_In_ HWND hwnd,
-                              _In_ UINT uMsg,
-                              _In_ UINT_PTR idEvent,
-                              _In_ DWORD dwTime) {
-  DLOG(INFO) << "OnTimer:";
-  KillTimer(hwnd, idEvent);
-  UIImpl* self = (UIImpl*)timer;
-  timer = 0;
-  if (self) {
-    self->Hide();
-    self->shown = false;
-  }
-}
 
 bool UI::Create(HWND parent) {
   if (pimpl_) {
@@ -153,7 +96,7 @@ void UI::ShowWithTimeout(size_t millisec) {
 }
 
 bool UI::IsCountingDown() const {
-  return pimpl_ && pimpl_->timer != 0;
+  return pimpl_ && pimpl_->IsCountingDown();
 }
 
 bool UI::IsShown() const {
