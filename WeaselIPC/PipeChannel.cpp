@@ -101,13 +101,33 @@ void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len) {
   _GetContext()->has_body = false;
 }
 
-HANDLE PipeChannelBase::_ConnectServerPipe(std::wstring& pn) {
-  HANDLE pipe =
-      CreateNamedPipe(pn.c_str(), PIPE_ACCESS_DUPLEX,
-                      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                      PIPE_UNLIMITED_INSTANCES, buff_size, buff_size, 0, sa);
-  if (pipe == INVALID_HANDLE_VALUE || !::ConnectNamedPipe(pipe, NULL)) {
+HANDLE PipeChannelBase::_CreateServerPipe(std::wstring& pn) {
+  return ::CreateNamedPipe(
+      pn.c_str(), PIPE_ACCESS_DUPLEX,
+      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+      PIPE_UNLIMITED_INSTANCES, buff_size, buff_size, 0, sa);
+}
+
+HANDLE PipeChannelBase::_AcceptServerPipe(HANDLE pipe) {
+  // A client that finished CreateFile between instance creation and this
+  // call makes ConnectNamedPipe fail with ERROR_PIPE_CONNECTED, but the
+  // pipe is then already connected and usable.
+  if (!::ConnectNamedPipe(pipe, NULL) &&
+      ::GetLastError() != ERROR_PIPE_CONNECTED) {
     _ThrowLastError;
   }
   return pipe;
+}
+
+HANDLE PipeChannelBase::_ConnectServerPipe(std::wstring& pn) {
+  HANDLE pipe = _CreateServerPipe(pn);
+  if (_Invalid(pipe)) {
+    _ThrowLastError;
+  }
+  try {
+    return _AcceptServerPipe(pipe);
+  } catch (...) {
+    _FinalizePipe(pipe);
+    throw;
+  }
 }

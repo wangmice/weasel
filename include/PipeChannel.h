@@ -38,6 +38,10 @@ class PipeChannelBase {
   void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len);
   /* Try to get a connection from client */
   HANDLE _ConnectServerPipe(std::wstring& pn);
+  /* Create a new server-side pipe instance */
+  HANDLE _CreateServerPipe(std::wstring& pn);
+  /* Wait for a client to connect to an instance */
+  HANDLE _AcceptServerPipe(HANDLE pipe);
   inline bool _Invalid(HANDLE p) const { return p == INVALID_HANDLE_VALUE; }
 
   HANDLE* _GetPipeHandle() const {

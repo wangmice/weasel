@@ -73,8 +73,63 @@ static void test_roundtrip() {
   check(resp == 42, "smoke: roundtrip reply");
 }
 
+/* Expose protected seams for deterministic tests */
+class ExposedServer : public weasel::PipeServer {
+ public:
+  using PipeServer::PipeServer;
+  HANDLE ExposedCreate() { return _CreateServerPipe(pname); }
+  HANDLE ExposedAccept(HANDLE pipe) { return _AcceptServerPipe(pipe); }
+  void ExposedReceive(HANDLE pipe, LPVOID msg, size_t len) {
+    _Receive(pipe, msg, len);
+  }
+};
+
+/* 1.1: a client that connects between CreateNamedPipe and ConnectNamedPipe
+ * (ConnectNamedPipe failing with ERROR_PIPE_CONNECTED) must not be dropped */
+static void test_pipe_connected_race() {
+  std::wstring name = unique_pipe_name(L"e535");
+  ExposedServer server{std::wstring(name)};
+
+  HANDLE instance = server.ExposedCreate();
+  check(instance != INVALID_HANDLE_VALUE, "1.1: create instance");
+
+  HANDLE client = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                0, NULL, OPEN_EXISTING, 0, NULL);
+  check(client != INVALID_HANDLE_VALUE, "1.1: early client connect");
+
+  bool accepted = false;
+  try {
+    accepted = (server.ExposedAccept(instance) == instance);
+  } catch (DWORD err) {
+    std::cout << "  accept threw error " << err << std::endl;
+  }
+  check(accepted, "1.1: ERROR_PIPE_CONNECTED accepted as connected");
+
+  if (accepted) {
+    weasel::PipeMessage req{WEASEL_IPC_ECHO, 7, 0};
+    DWORD written = 0;
+    check(::WriteFile(client, &req, sizeof(req), &written, NULL) &&
+              written == sizeof(req),
+          "1.1: client sends on racing connection");
+    weasel::PipeMessage got{};
+    try {
+      server.ExposedReceive(instance, &got, sizeof(got));
+      check(got.Msg == WEASEL_IPC_ECHO && got.wParam == 7,
+            "1.1: server reads message on racing connection");
+    } catch (DWORD err) {
+      check(false, "1.1: server reads message on racing connection");
+      std::cout << "  receive threw error " << err << std::endl;
+    }
+  }
+
+  ::CloseHandle(client);
+  ::DisconnectNamedPipe(instance);
+  ::CloseHandle(instance);
+}
+
 int main() {
   test_roundtrip();
+  test_pipe_connected_race();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;
