@@ -52,7 +52,9 @@ void ContextUpdater::_StoreText(Text& target,
     if (k[2] == L"cursor") {
       std::vector<std::wstring> vec;
       split(vec, value, L",");
-      if (vec.size() < 2)
+      // 值格式为 start,end,cursor 三段，服务端固定发全（见 _Respond）；
+      // 不足三段视为截断响应，整体丢弃，避免越界读
+      if (vec.size() < 3)
         return;
 
       weasel::TextAttribute attr;
