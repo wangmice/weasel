@@ -138,7 +138,9 @@ class PipeChannel : public PipeChannelBase {
 
   char* SendBuffer() const { return _GetContext()->buffer.get() + _MsgSize; }
 
-  char* ReceiveBuffer() const { return _GetContext()->buffer.get() + _ResSize; }
+  // Request bodies land at buffer[0] via _Receive's ERROR_MORE_DATA path:
+  // the fixed-size header is consumed into the caller's variable first.
+  char* ReceiveBuffer() const { return _GetContext()->buffer.get(); }
 
   template <typename _TyHandler>
   bool HandleResponseData(_TyHandler const& handler) {

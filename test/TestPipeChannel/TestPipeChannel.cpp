@@ -14,8 +14,10 @@
 #include <boost/thread.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <string>
 
@@ -174,10 +176,51 @@ static void test_hung_client_does_not_freeze_others() {
   ::CloseHandle(a);
 }
 
+/* 1.3: the server must see the request body from its first line on
+ * (START_SESSION bodies historically lost their first 6 characters) */
+static void test_start_session_body_offset() {
+  std::wstring name = unique_pipe_name(L"body");
+  ExposedServer* server = new ExposedServer(std::wstring(name));
+  std::promise<std::wstring> body_promise;
+  auto body_future = body_promise.get_future();
+  bool captured = false;
+  auto handler = [server, &body_promise, &captured](
+                     weasel::PipeMessage msg,
+                     weasel::PipeServer::Respond resp) {
+    if (msg.Msg == WEASEL_IPC_START_SESSION && !captured) {
+      captured = true;
+      body_promise.set_value(std::wstring((LPWSTR)server->ReceiveBuffer()));
+    }
+    resp(7);
+  };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "1.3: connect");
+  client << L"action=session\n";
+  client << L"session.client_app=notepad.exe\n";
+  client << L".\n";
+  weasel::PipeMessage req{WEASEL_IPC_START_SESSION, 0, 0};
+  DWORD resp = client.Transact(req);
+  check(resp == 7, "1.3: start session reply");
+
+  check(body_future.wait_for(std::chrono::seconds(3)) ==
+            std::future_status::ready,
+        "1.3: body captured");
+  if (body_future.valid()) {
+    std::wstring body = body_future.get();
+    check(body.rfind(L"action=session", 0) == 0,
+          "1.3: body starts with 'action=session' line");
+    check(body.find(L"session.client_app=notepad.exe") != std::wstring::npos,
+          "1.3: client_app line intact");
+  }
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
   test_hung_client_does_not_freeze_others();
+  test_start_session_body_offset();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;
