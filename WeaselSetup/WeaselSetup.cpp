@@ -6,6 +6,7 @@
 #include "resource.h"
 #include "WeaselUtility.h"
 #include "PerUserReg.h"
+#include "SetupUtil.h"
 #include <thread>
 
 #include "InstallOptionsDlg.h"
@@ -219,8 +220,11 @@ static int Run(LPTSTR lpCmdLine) {
   }
 
   if (auto res = GetParamByPrefix(lpCmdLine, L"/userdir:")) {
-    return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
-                          L"RimeUserDir", res, REG_SZ);
+    // 剥离 /userdir:"..." 的引号；返回明确的成功/失败退出码（K15）
+    const LSTATUS ret =
+        SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
+                       L"RimeUserDir", unquote_argument(res), REG_SZ);
+    return ret == ERROR_SUCCESS ? 0 : 1;
   }
 
   if (!wcscmp(L"/ls", lpCmdLine)) {
