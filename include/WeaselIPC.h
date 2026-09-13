@@ -124,6 +124,8 @@ class Client {
   void EndMaintenance();
   // 测试连接
   bool Echo();
+  // 会话已建立在活连接上（失败后为 false，直到重新建立会话）
+  bool IsSessionActive();
   // 请求服务处理按键消息
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   // 上屏正在編輯的文字

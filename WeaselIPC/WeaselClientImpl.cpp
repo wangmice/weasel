@@ -196,7 +196,10 @@ LRESULT ClientImpl::_SendMessage(WEASEL_IPC_COMMAND Msg,
   try {
     PipeMessage req{Msg, wParam, lParam};
     return channel.Transact(req);
-  } catch (DWORD /* ex */) {
+  } catch (...) {
+    // The session died with the connection; lazily re-established by the
+    // next StartSession/EnsureServerConnected round.
+    session_id = 0;
     return 0;
   }
 }
@@ -278,6 +281,10 @@ void Client::TrayCommand(UINT menuId) {
 
 bool Client::Echo() {
   return m_pImpl->Echo();
+}
+
+bool Client::IsSessionActive() {
+  return m_pImpl->IsSessionActive();
 }
 
 bool Client::GetResponseData(ResponseHandler handler) {

@@ -237,6 +237,12 @@ void WeaselTSF::_Reconnect() {
 static unsigned int retry = 0;
 
 bool WeaselTSF::_EnsureServerConnected() {
+  // Trust an established session and skip the Echo roundtrip per key: a
+  // dead server breaks the pipe, the failed transact invalidates the
+  // session on the client, and only then do we pay for a full reconnect.
+  if (m_client.IsSessionActive())
+    return true;
+
   if (!m_client.Echo()) {
     _Reconnect();
     retry++;

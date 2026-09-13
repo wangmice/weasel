@@ -29,6 +29,9 @@ class ClientImpl {
   void TrayCommand(UINT menuId);
   bool GetResponseData(ResponseHandler const& handler);
 
+  /* True while a session is established on a live pipe connection */
+  bool IsSessionActive() const { return _Active(); }
+
  protected:
   void _InitializeClientInfo();
   bool _WriteClientInfo();

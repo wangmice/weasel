@@ -122,10 +122,18 @@ class PipeChannel : public PipeChannelBase {
   }
 
   _TyRes Transact(Msg& msg) {
-    _Ensure();
     HANDLE* phandle = _GetPipeHandle();
-    _Send(*phandle, msg);
-    return _ReceiveResponse();
+    if (!_Ensure())
+      throw (DWORD)ERROR_FILE_NOT_FOUND;  // server unreachable
+    try {
+      _Send(*phandle, msg);
+      return _ReceiveResponse();
+    } catch (...) {
+      // The connection died mid-request. Drop the request (it may already
+      // have been delivered) and re-establish so the next call can proceed.
+      _Reconnect();
+      throw;
+    }
   }
 
   void ClearBufferStream() {

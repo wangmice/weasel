@@ -301,6 +301,47 @@ static void test_ordered_shutdown() {
   check(failed_fast, "1.5: dead connection fails fast");
 }
 
+/* 1.6: a dropped connection must fail the in-flight request exactly once
+ * (no resend), and the channel must recover on the next call */
+static void test_transact_recovery_without_resend() {
+  std::wstring name = unique_pipe_name(L"rec");
+  auto* server = new weasel::PipeServer(std::wstring(name));
+  std::atomic<int> echo_count{0};
+  auto handler = [&echo_count](weasel::PipeMessage msg,
+                               weasel::PipeServer::Respond resp) {
+    if (msg.Msg == WEASEL_IPC_ECHO)
+      ++echo_count;
+    resp(echo_count.load());
+  };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "1.6: connect");
+  weasel::PipeMessage req{WEASEL_IPC_ECHO, 0, 0};
+  check(client.Transact(req) == 1, "1.6: first request served");
+  check(echo_count.load() == 1, "1.6: exactly one request delivered");
+
+  server->DrainWorkers();  // server drops the connection mid-life
+
+  bool threw = false;
+  try {
+    client.Transact(req);
+  } catch (...) {
+    threw = true;
+  }
+  check(threw, "1.6: request on dropped connection fails");
+  check(echo_count.load() == 1, "1.6: failed request not resent");
+
+  // Transact reconnected internally; the next request must succeed
+  bool recovered = false;
+  try {
+    recovered = (client.Transact(req) == 2);
+  } catch (...) {
+  }
+  check(recovered, "1.6: next request succeeds after auto-reconnect");
+  check(echo_count.load() == 2, "1.6: recovery delivered exactly once");
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -308,6 +349,7 @@ int main() {
   test_start_session_body_offset();
   test_connect_bounded_wait();
   test_ordered_shutdown();
+  test_transact_recovery_without_resend();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;
