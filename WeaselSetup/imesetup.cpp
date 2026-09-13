@@ -139,6 +139,30 @@ static std::wstring profile_to_title(const std::wstring& profile) {
   return std::wstring(langidText) + L":" + clsidTextService + profileGuid;
 }
 
+// WOW64 文件系统重定向守卫：Disable 成功后，无论以何种路径离开作用域
+// （含提前 return）都恢复重定向
+class Wow64FsRedirectionGuard {
+ public:
+  bool Disable() {
+    disabled_ = Wow64DisableWow64FsRedirection(&old_value_) != FALSE;
+    return disabled_;
+  }
+
+  // 显式恢复；从未禁用或已恢复时为空操作，可重复调用
+  bool Restore() {
+    if (!disabled_)
+      return true;
+    disabled_ = false;
+    return Wow64RevertWow64FsRedirection(old_value_) != FALSE;
+  }
+
+  ~Wow64FsRedirectionGuard() { Restore(); }
+
+ private:
+  PVOID old_value_ = NULL;
+  bool disabled_ = false;
+};
+
 int install_ime_file(std::wstring& srcPath,
                      const std::wstring& ext,
                      const std::wstring& profile,
@@ -168,14 +192,8 @@ int install_ime_file(std::wstring& srcPath,
   }
   retval += func(destPath, true, false, false, profile, silent);
   if (is_wow64()) {
-    PVOID OldValue = NULL;
-    // PW64DW64FR fnWow64DisableWow64FsRedirection =
-    // (PW64DW64FR)GetProcAddress(GetModuleHandle(_T("kernel32.dll")),
-    // "Wow64DisableWow64FsRedirection"); PW64RW64FR
-    // fnWow64RevertWow64FsRedirection =
-    // (PW64RW64FR)GetProcAddress(GetModuleHandle(_T("kernel32.dll")),
-    // "Wow64RevertWow64FsRedirection");
-    if (Wow64DisableWow64FsRedirection(&OldValue) == FALSE) {
+    Wow64FsRedirectionGuard redirect;
+    if (!redirect.Disable()) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
                             IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
       return 1;
@@ -237,7 +255,7 @@ int install_ime_file(std::wstring& srcPath,
       return 1;
     }
     retval += func(destPath, true, true, false, profile, silent);
-    if (Wow64RevertWow64FsRedirection(OldValue) == FALSE) {
+    if (!redirect.Restore()) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
                             IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
       return 1;
@@ -259,8 +277,8 @@ int uninstall_ime_file(const std::wstring& ext,
   delete_file(imePath);
   if (is_wow64()) {
     retval += func(imePath, false, true, false, profile, silent);
-    PVOID OldValue = NULL;
-    if (Wow64DisableWow64FsRedirection(&OldValue) == FALSE) {
+    Wow64FsRedirectionGuard redirect;
+    if (!redirect.Disable()) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
                             IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
       return 1;
@@ -284,7 +302,7 @@ int uninstall_ime_file(const std::wstring& ext,
     }
 
     delete_file(imePath);
-    if (Wow64RevertWow64FsRedirection(OldValue) == FALSE) {
+    if (!redirect.Restore()) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
                             IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
       return 1;
@@ -382,10 +400,11 @@ int register_text_service(const std::wstring& tsf_path,
 
 int install(const std::wstring& profile, bool silent) {
   std::wstring ime_src_path;
-  int retval = 0;
 
-  retval += install_ime_file(ime_src_path, L".dll", profile, silent,
-                             &register_text_service);
+  // 文件未就位即终止：后续注册表与 TSF 注册全部不做
+  if (0 != install_ime_file(ime_src_path, L".dll", profile, silent,
+                            &register_text_service))
+    return 1;
 
   // 写注册表
   WCHAR drive[_MAX_DRIVE];
@@ -459,9 +478,6 @@ int install(const std::wstring& profile, bool silent) {
   // maximium dump count 10
   SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpCount", 10,
                  REG_DWORD, true);
-
-  if (retval)
-    return 1;
 
   MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
                         IDS_STR_INSTALL_SUCCESS_CAP,
