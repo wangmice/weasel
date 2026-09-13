@@ -95,7 +95,9 @@ CSize StandardLayout::GetPreeditSize(CDCHandle dc,
         _range = attrs[j].range;
     if (_range.start < _range.end) {
       std::wstring before_str = preedit.substr(0, _range.start);
-      std::wstring hilited_str = preedit.substr(_range.start, _range.end);
+      // substr 第二参是长度：高亮段为 [start, end)
+      std::wstring hilited_str =
+          preedit.substr(_range.start, _range.end - _range.start);
       std::wstring after_str = preedit.substr(_range.end);
       GetTextSizeDW(before_str, before_str.length(), pTextFormat, pDWR,
                     &_beforesz);
