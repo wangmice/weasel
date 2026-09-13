@@ -264,12 +264,50 @@ static void test_connect_bounded_wait() {
   ::CloseHandle(instance);
 }
 
+/* 1.5: ordered shutdown must interrupt + join the listener and drain every
+ * worker within a bounded time, even with an idle client connection whose
+ * worker is blocked in ReadFile */
+static void test_ordered_shutdown() {
+  std::wstring name = unique_pipe_name(L"sd");
+  auto* server = new weasel::PipeServer(std::wstring(name));
+  auto handler = [](weasel::PipeMessage msg,
+                    weasel::PipeServer::Respond resp) { resp(1); };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "1.5: client connect");
+  weasel::PipeMessage req{WEASEL_IPC_ECHO, 0, 0};
+  check(client.Transact(req) == 1, "1.5: roundtrip");
+  // the connection worker is now blocked in ReadFile awaiting the next
+  // request that will never come
+
+  listener.interrupt();
+  server->WakeListener();
+  check(listener.timed_join(boost::posix_time::seconds(5)),
+        "1.5: listener exits after interrupt + wake");
+
+  boost::thread drainer([server] { server->DrainWorkers(); });
+  check(drainer.timed_join(boost::posix_time::seconds(5)),
+        "1.5: idle workers cancelled and joined");
+  delete server;
+  check(true, "1.5: server destroyed after all pipe threads joined");
+
+  bool failed_fast = false;
+  try {
+    client.Transact(req);  // broken pipe must throw, not hang
+  } catch (...) {
+    failed_fast = true;
+  }
+  check(failed_fast, "1.5: dead connection fails fast");
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
   test_hung_client_does_not_freeze_others();
   test_start_session_body_offset();
   test_connect_bounded_wait();
+  test_ordered_shutdown();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;

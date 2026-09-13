@@ -2,6 +2,7 @@
 #include "WeaselServerImpl.h"
 #include <PipeServer.h>
 #include <mutex>
+#include <vector>
 #include <Windows.h>
 #include <resource.h>
 #include <WeaselUtility.h>
@@ -27,13 +28,9 @@ ServerImpl::~ServerImpl() {
 }
 
 void ServerImpl::_Finailize() {
-  if (pipeThread != nullptr) {
-    pipeThread->interrupt();
-    pipeThread = nullptr;
-  } else {
-    // avoid finalize again
-    return;
-  }
+  // Ordered, idempotent teardown: join the pipe threads before the window
+  // goes away, so no worker can touch a destroyed handler or UI.
+  _StopPipeServer();
 
   if (IsWindow()) {
     DestroyWindow();
@@ -180,17 +177,39 @@ int ServerImpl::Run() {
   // auto listener = boost::bind(&PipeServer::Listen, channel.get(), handler);
   //
   auto listener = [this](PipeMessage msg, PipeServer::Respond resp) -> void {
-    std::lock_guard guard(g_api_mutex);
-    HandlePipeMessage(msg, resp);
+    // Defer the response write until the api lock is released: a slow or
+    // hung client must not extend the global critical section.
+    PipeServer::Msg result = 0;
+    {
+      std::lock_guard guard(g_api_mutex);
+      HandlePipeMessage(msg, [&result](PipeServer::Msg r) { result = r; });
+    }
+    resp(result);
   };
+  // Capture the listener by value: a stack reference would dangle as soon
+  // as Run() returns while the pipe thread is still draining requests.
   pipeThread = std::make_unique<boost::thread>(
-      [this, &listener]() { channel->Listen(listener); });
+      [this, listener]() { channel->Listen(listener); });
 
   CMessageLoop theLoop;
   _Module.AddMessageLoop(&theLoop);
   int nRet = theLoop.Run();
   _Module.RemoveMessageLoop();
+  // Stop the pipe server before the caller (WeaselServerApp::Run) starts
+  // destroying the handler and UI: late requests would touch freed objects.
+  _StopPipeServer();
   return nRet;
+}
+
+void ServerImpl::_StopPipeServer() {
+  if (!pipeThread)
+    return;
+  pipeThread->interrupt();
+  channel->WakeListener();
+  if (pipeThread->joinable())
+    pipeThread->join();
+  channel->DrainWorkers();
+  pipeThread.reset();
 }
 
 DWORD ServerImpl::OnEcho(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
@@ -415,17 +434,58 @@ PipeServer::PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s)
 
 void PipeServer::Listen(ServerHandler const& handler) {
   for (;;) {
+    boost::this_thread::interruption_point();
     HANDLE pipe = INVALID_HANDLE_VALUE;
     try {
-      boost::this_thread::interruption_point();
       pipe = _ConnectServerPipe(pname);
-      boost::thread th(
-          [&handler, pipe, this] { _ProcessPipeThread(pipe, handler); });
-    } catch (DWORD ex) {
+      // Copy the handler into the worker: it must not reference anything
+      // on this thread's stack.
+      auto worker = std::make_shared<boost::thread>(
+          [this, pipe, handler] { _ProcessPipeThread(pipe, handler); });
+      _RegisterWorker(pipe, worker);
+    } catch (...) {  // pipe errors and thread spawn failures alike
       _FinalizePipe(pipe);
     }
     boost::this_thread::interruption_point();
   }
+}
+
+void PipeServer::WakeListener() {
+  // A client-side connection to our own pipe makes ConnectNamedPipe return
+  // so an interrupted listener can reach its interruption point and exit.
+  HANDLE wake = ::CreateFileW(pname.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                              NULL, OPEN_EXISTING, 0, NULL);
+  if (wake != INVALID_HANDLE_VALUE)
+    ::CloseHandle(wake);
+}
+
+void PipeServer::DrainWorkers() {
+  std::vector<std::shared_ptr<boost::thread>> workers;
+  {
+    std::lock_guard<std::mutex> lock(m_workers_mutex);
+    for (auto& pair : m_workers) {
+      // Abort pending reads and break the connection so blocked workers
+      // fail their next I/O instead of waiting for their clients forever.
+      ::CancelIoEx(pair.first, NULL);
+      ::DisconnectNamedPipe(pair.first);
+      workers.push_back(pair.second);
+    }
+    m_workers.clear();
+  }
+  for (auto& worker : workers)
+    if (worker->joinable())
+      worker->join();
+}
+
+void PipeServer::_RegisterWorker(HANDLE pipe,
+                                 std::shared_ptr<boost::thread> worker) {
+  std::lock_guard<std::mutex> lock(m_workers_mutex);
+  m_workers[pipe] = std::move(worker);
+}
+
+void PipeServer::_RemoveWorker(HANDLE pipe) {
+  std::lock_guard<std::mutex> lock(m_workers_mutex);
+  m_workers.erase(pipe);
 }
 
 PipeServer::ServerRunner PipeServer::GetServerRunner(
@@ -441,8 +501,11 @@ void PipeServer::_ProcessPipeThread(HANDLE pipe, ServerHandler const& handler) {
       handler(msg, [this, pipe](Msg resp) { _Send(pipe, resp); });
     }
   } catch (...) {
-    _FinalizePipe(pipe);
   }
+  // Unregister before closing the handle so the registry never lends a
+  // closed (possibly reused) handle value to DrainWorkers.
+  _RemoveWorker(pipe);
+  _FinalizePipe(pipe);
 }
 
 // weasel::Server

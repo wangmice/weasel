@@ -96,6 +96,8 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
 
  private:
   void _Finailize();
+  /* Interrupt and join the pipe listener and its workers; idempotent */
+  void _StopPipeServer();
   template <typename _Resp>
   void HandlePipeMessage(PipeMessage pipe_msg, _Resp resp);
 

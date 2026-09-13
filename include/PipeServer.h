@@ -22,9 +22,16 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   void Listen(ServerHandler const& handler);
   /* Get a server runner */
   ServerRunner GetServerRunner(ServerHandler const& handler);
+  /* Unblock a listener blocked in ConnectNamedPipe (self-connection) */
+  void WakeListener();
+  /* Cancel and join every live connection worker; call only after the
+   * listener thread has been joined so no new workers can appear */
+  void DrainWorkers();
 
  protected:
   void _ProcessPipeThread(HANDLE pipe, ServerHandler const& handler);
+  void _RegisterWorker(HANDLE pipe, std::shared_ptr<boost::thread> worker);
+  void _RemoveWorker(HANDLE pipe);
 
   std::mutex m_workers_mutex;
   std::map<HANDLE, std::shared_ptr<boost::thread>> m_workers;
