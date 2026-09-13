@@ -115,49 +115,51 @@ LRESULT SwitcherSettingsDialog::OnClose(UINT, WPARAM, LPARAM, BOOL&) {
   return 0;
 }
 
+// rime-install.bat 的最长等待：超时后放弃等待并继续，避免卡死 UI 线程
+static constexpr DWORD kInstallSchemataTimeoutMs = 60u * 1000;
+
 LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
-  HKEY hKey;
-  std::wstring hPath;
-  if (is_wow64())
-    hPath = _T("Software\\WOW6432Node\\Rime\\Weasel");
-  else
-    hPath = _T("Software\\Rime\\Weasel");
-  LSTATUS ret = RegOpenKey(HKEY_LOCAL_MACHINE, hPath.c_str(), &hKey);
-  if (ret == ERROR_SUCCESS) {
-    WCHAR value[MAX_PATH];
-    DWORD len = sizeof(value);
-    DWORD type = 0;
-    DWORD data = 0;
-    ret =
-        RegQueryValueExW(hKey, L"WeaselRoot", NULL, &type, (LPBYTE)value, &len);
-    if (ret == ERROR_SUCCESS && type == REG_SZ) {
-      WCHAR parameters[MAX_PATH + 37];
-      wcscpy_s<_countof(parameters)>(
-          parameters,
-          (std::wstring(L"/k \"") + value + L"\\rime-install.bat\"").c_str());
-      SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO),
-                               SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
-                               hWndCtl,
-                               L"open",
-                               L"cmd",
-                               parameters,
-                               NULL,
-                               SW_SHOW,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL};
-      ShellExecuteExW(&cmd);
-      WaitForSingleObject(cmd.hProcess, INFINITE);
-      CloseHandle(cmd.hProcess);
-      api_->load_settings(reinterpret_cast<RimeCustomSettings*>(settings_));
-      Populate();
-    }
+  LPCWSTR hPath = is_wow64() ? L"Software\\WOW6432Node\\Rime\\Weasel"
+                             : L"Software\\Rime\\Weasel";
+  // RegGetStringValue 内部走 RegGetValueW，保证结果以 NUL 结尾
+  std::wstring weaselRoot;
+  if (RegGetStringValue(HKEY_LOCAL_MACHINE, hPath, L"WeaselRoot",
+                        weaselRoot) != ERROR_SUCCESS) {
+    LOG(ERROR) << "Error reading registry value WeaselRoot.";
+    return 0;
   }
-  RegCloseKey(hKey);
+  WCHAR parameters[MAX_PATH + 37];
+  wcscpy_s<_countof(parameters)>(
+      parameters,
+      (L"/k \"" + weaselRoot + L"\\rime-install.bat\"").c_str());
+  SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO),
+                           SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+                           hWndCtl,
+                           L"open",
+                           L"cmd",
+                           parameters,
+                           NULL,
+                           SW_SHOW,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL};
+  if (!ShellExecuteExW(&cmd)) {
+    LOG(ERROR) << "Error launching rime-install.bat.";
+    return 0;
+  }
+  if (cmd.hProcess) {
+    if (WaitForSingleObject(cmd.hProcess, kInstallSchemataTimeoutMs) !=
+        WAIT_OBJECT_0) {
+      LOG(WARNING) << "Timed out waiting for rime-install.bat; continuing.";
+    }
+    CloseHandle(cmd.hProcess);
+  }
+  api_->load_settings(reinterpret_cast<RimeCustomSettings*>(settings_));
+  Populate();
   return 0;
 }
 
