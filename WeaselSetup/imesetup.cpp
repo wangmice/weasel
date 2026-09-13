@@ -7,6 +7,7 @@
 #include <WeaselConstants.h>
 #include <WeaselUtility.h>
 #include "InstallOptionsDlg.h"
+#include "PerUserReg.h"
 
 // {A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}
 static const GUID c_clsidTextService = {
@@ -56,50 +57,6 @@ BOOL delete_file(const std::wstring& file) {
     }
   }
   return ret;
-}
-
-static std::wstring g_per_user_origin_sid;
-
-void set_per_user_origin_sid(const std::wstring& sid) {
-  if (sid.rfind(L"S-1-", 0) == 0)  // accept only well-formed SIDs
-    g_per_user_origin_sid = sid;
-}
-
-bool per_user_redirected() {
-  return !g_per_user_origin_sid.empty();
-}
-
-HKEY per_user_root() {
-  return per_user_redirected() ? HKEY_USERS : HKEY_CURRENT_USER;
-}
-
-std::wstring per_user_subkey(const wchar_t* sub) {
-  return per_user_redirected() ? g_per_user_origin_sid + L"\\" + sub
-                               : std::wstring(sub);
-}
-
-std::wstring per_user_default_dir() {
-  if (per_user_redirected()) {
-    // %APPDATA% of the elevated process belongs to the admin; read the
-    // invoking user's from their loaded profile environment
-    HKEY hKey;
-    if (RegOpenKeyW(HKEY_USERS,
-                    per_user_subkey(L"Volatile Environment").c_str(),
-                    &hKey) == ERROR_SUCCESS) {
-      WCHAR path[MAX_PATH] = {0};
-      DWORD len = sizeof(path) - sizeof(WCHAR);  // keep room for the NUL
-      DWORD type = 0;
-      bool ok = RegQueryValueExW(hKey, L"APPDATA", NULL, &type, (LPBYTE)path,
-                                 &len) == ERROR_SUCCESS &&
-                type == REG_SZ && path[0] != L'\0';
-      RegCloseKey(hKey);
-      if (ok)
-        return std::wstring(path) + L"\\Rime";
-    }
-  }
-  WCHAR _path[MAX_PATH] = {0};
-  ExpandEnvironmentStringsW(L"%APPDATA%\\Rime", _path, _countof(_path));
-  return std::wstring(_path);
 }
 
 typedef BOOL(WINAPI* PISWOW64P2)(HANDLE, USHORT*, USHORT*);

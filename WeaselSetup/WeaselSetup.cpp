@@ -5,7 +5,7 @@
 
 #include "resource.h"
 #include "WeaselUtility.h"
-#include <sddl.h>
+#include "PerUserReg.h"
 #include <thread>
 
 #include "InstallOptionsDlg.h"
@@ -17,27 +17,6 @@ CAppModule _Module;
 static int Run(LPTSTR lpCmdLine);
 static bool IsProcAdmin();
 static int RestartAsAdmin(LPTSTR lpCmdLine);
-
-static std::wstring current_user_sid() {
-  std::wstring sid;
-  HANDLE token = NULL;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-    return sid;
-  DWORD len = 0;
-  GetTokenInformation(token, TokenUser, NULL, 0, &len);
-  if (len) {
-    std::vector<BYTE> buf(len);
-    if (GetTokenInformation(token, TokenUser, buf.data(), len, &len)) {
-      LPWSTR str = NULL;
-      if (ConvertSidToStringSidW(((TOKEN_USER*)buf.data())->User.Sid, &str)) {
-        sid = str;
-        LocalFree(str);
-      }
-    }
-  }
-  CloseHandle(token);
-  return sid;
-}
 
 int WINAPI _tWinMain(HINSTANCE hInstance,
                      HINSTANCE /*hPrevInstance*/,
@@ -185,10 +164,7 @@ static int Run(LPTSTR lpCmdLine) {
   // "/origsid:<S-...>" is appended by RestartAsAdmin so the elevated process
   // can address the invoking user's hive. Strip the trailing parameter
   // before any command-line matching.
-  if (wchar_t* pos = wcsstr(lpCmdLine, L" /origsid:")) {
-    *pos = L'\0';
-    set_per_user_origin_sid(pos + wcslen(L" /origsid:"));
-  }
+  apply_orig_sid_param(lpCmdLine);
   constexpr bool silent = true;
   // parameter /? or /help to show commandline args
   if (!wcscmp(L"/?", lpCmdLine) || !wcscmp(L"/help", lpCmdLine)) {
@@ -318,10 +294,7 @@ int RestartAsAdmin(LPTSTR lpCmdLine) {
   SHELLEXECUTEINFO execInfo{0};
   TCHAR path[MAX_PATH];
   GetModuleFileName(GetModuleHandle(NULL), path, _countof(path));
-  std::wstring params = lpCmdLine;
-  std::wstring sid = current_user_sid();
-  if (!sid.empty())
-    params += L" /origsid:" + sid;
+  std::wstring params = with_orig_sid_param(lpCmdLine);
   execInfo.lpFile = path;
   execInfo.lpParameters = params.c_str();
   execInfo.lpVerb = _T("runas");
