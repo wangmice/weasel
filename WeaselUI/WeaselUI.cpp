@@ -20,6 +20,17 @@ class weasel::UIImpl {
     }
     panel.Refresh();
   }
+  // 快照内容是否变化由 panel 在 UI 线程上判断；这里只负责与旧 Update 路径
+  // 一致的提示窗口清理，再经 panel 的 marshal 通道落地
+  void Update(Context const& ctx, Status const& status) {
+    if (timer) {
+      Hide();
+      KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
+      timer = 0;
+    }
+    panel.ApplyUpdate(ctx, status);
+  }
+  void SetStyle(UIStyle const& style) { panel.ApplyStyle(style); }
   void Show();
   void Hide();
   void ShowWithTimeout(size_t millisec);
@@ -162,18 +173,21 @@ void UI::UpdateInputPosition(RECT const& rc) {
 }
 
 void UI::Update(const Context& ctx, const Status& status) {
-  if (ctx_ == ctx && status_ == status)
+  if (!pimpl_) {
+    // 窗口尚未创建（TSF 首次组合前）：不存在并发读者，直接落状态
+    ctx_ = ctx;
+    status_ = status;
     return;
-  ctx_ = ctx;
-  status_ = status;
-  if (style_.candidate_abbreviate_length > 0) {
-    for (auto& c : ctx_.cinfo.candies) {
-      if (c.str.length() > (size_t)style_.candidate_abbreviate_length) {
-        c.str =
-            c.str.substr(0, (size_t)style_.candidate_abbreviate_length - 1) +
-            L"..." + c.str.substr(c.str.length() - 1);
-      }
-    }
   }
-  Refresh();
+  // 写 ctx_/status_ 与 dedup 判断都收敛到 UI 线程（panel 内部 marshal），
+  // 调用线程（服务端为 IPC 工作线程）不再触碰这些共享状态
+  pimpl_->Update(ctx, status);
+}
+
+void UI::SetStyle(const UIStyle& style) {
+  if (!pimpl_) {
+    style_ = style;
+    return;
+  }
+  pimpl_->SetStyle(style);
 }

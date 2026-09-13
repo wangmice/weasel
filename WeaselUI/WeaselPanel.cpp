@@ -50,6 +50,13 @@ static inline void ReconfigRoundInfo(IsToRoundStruct& rd,
   }
 }
 
+// 跨线程投递的界面状态快照：发送方堆分配，UI 线程的消息处理函数消费后释放。
+// ctx_/status_/style_ 的写入只允许发生在 UI 线程，绘制线程才能安全读取。
+struct WeaselUIUpdate {
+  Context ctx;
+  Status status;
+};
+
 WeaselPanel::WeaselPanel(weasel::UI& ui)
     : m_layout(NULL),
       m_ctx(ui.ctx()),
@@ -1220,6 +1227,31 @@ LRESULT WeaselPanel::OnMoveTo(UINT uMsg,
   return 0;
 }
 
+LRESULT WeaselPanel::OnApplyUpdate(UINT uMsg,
+                                   WPARAM wParam,
+                                   LPARAM lParam,
+                                   BOOL& bHandled) {
+  bHandled = TRUE;
+  // 快照由跨线程的 ApplyUpdate() 在堆上分配，这里消费完即释放
+  std::unique_ptr<WeaselUIUpdate> pUpdate(
+      reinterpret_cast<WeaselUIUpdate*>(lParam));
+  if (pUpdate)
+    _ApplyUpdate(pUpdate->ctx, pUpdate->status);
+  return 0;
+}
+
+LRESULT WeaselPanel::OnApplyStyle(UINT uMsg,
+                                  WPARAM wParam,
+                                  LPARAM lParam,
+                                  BOOL& bHandled) {
+  bHandled = TRUE;
+  // UIStyle 由跨线程的 ApplyStyle() 在堆上分配，这里消费完即释放
+  std::unique_ptr<UIStyle> pStyle(reinterpret_cast<UIStyle*>(lParam));
+  if (pStyle)
+    m_style = *pStyle;  // 现已在 UI 线程，直接落地
+  return 0;
+}
+
 void WeaselPanel::MoveTo(RECT const& rc) {
   if (!m_layout)
     return;  // avoid handling nullptr in _RepositionWindow
@@ -1276,6 +1308,54 @@ void WeaselPanel::MoveTo(RECT const& rc) {
         m_layout->ShouldDisplayStatusIcon() || m_redraw_by_monitor_change)
       RedrawWindow();
   }
+}
+
+void WeaselPanel::ApplyUpdate(Context const& ctx, Status const& status) {
+  // 跨线程调用时（IPC 工作线程经 UI::Update() 进入）把快照 marshal 回 UI 线程：
+  // ctx_/status_ 的写入必须与绘制串行，否则绘制线程可能读到被改写一半的状态。
+  if (!_IsUiThread()) {
+    WeaselUIUpdate* pUpdate = new WeaselUIUpdate{ctx, status};
+    if (!PostMessage(WM_WEASEL_UPDATE, 0,
+                     reinterpret_cast<LPARAM>(pUpdate))) {
+      // 投递失败（窗口即将销毁或队列满）：丢弃本次更新，避免泄漏。
+      // 后续按键会带来新的更新，界面不会停留在坏状态。
+      delete pUpdate;
+    }
+    return;
+  }
+  _ApplyUpdate(ctx, status);
+}
+
+void WeaselPanel::_ApplyUpdate(Context const& ctx, Status const& status) {
+  // 现已在 UI 线程：内容与状态均未变化时跳过重绘
+  if (m_ctx == ctx && m_status == status)
+    return;
+  m_ctx = ctx;
+  m_status = status;
+  if (m_style.candidate_abbreviate_length > 0) {
+    for (auto& c : m_ctx.cinfo.candies) {
+      if (c.str.length() > (size_t)m_style.candidate_abbreviate_length) {
+        c.str =
+            c.str.substr(0, (size_t)m_style.candidate_abbreviate_length - 1) +
+            L"..." + c.str.substr(c.str.length() - 1);
+      }
+    }
+  }
+  Refresh();
+}
+
+void WeaselPanel::ApplyStyle(UIStyle const& style) {
+  // 跨线程调用时（IPC 工作线程经 UI::SetStyle() 进入）marshal 回 UI 线程落地。
+  // 只赋值不重绘：与原先直接写 ui.style() 的行为一致，重绘由随后的
+  // ApplyUpdate/Refresh 触发。
+  if (!_IsUiThread()) {
+    UIStyle* pStyle = new UIStyle(style);
+    if (!PostMessage(WM_WEASEL_SETSTYLE, 0, reinterpret_cast<LPARAM>(pStyle))) {
+      delete pStyle;
+    }
+    return;
+  }
+  m_style = style;
 }
 
 void WeaselPanel::_RepositionWindow(const bool& adj) {

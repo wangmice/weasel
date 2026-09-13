@@ -56,8 +56,12 @@ class UI {
   // 置输入焦点位置（光标跟随时移动候选窗）但不重绘
   void UpdateInputPosition(RECT const& rc);
 
-  // 更新界面显示内容
+  // 更新界面显示内容。线程安全：非 UI 线程调用时把快照 marshal 回界面线程落地
   void Update(Context const& ctx, Status const& status);
+
+  // 更新界面样式（不触发重绘，重绘由随后的 Update/Refresh 触发）。
+  // 线程安全：非 UI 线程调用时 marshal 回界面线程落地
+  void SetStyle(UIStyle const& style);
 
   Context& ctx() { return ctx_; }
   Context& octx() { return octx_; }

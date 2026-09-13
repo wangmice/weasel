@@ -23,11 +23,15 @@ enum class BackType {
 
 // 自定义消息：把跨线程的 UI 调用 marshal 回窗口所属线程（UI 线程）执行。
 // Direct2D 的 ID2D1RenderTarget 不是线程安全的，必须保证所有绘制 / 资源重建
-// 都在同一个线程上串行发生
+// 都在同一个线程上串行发生；ctx_/status_/style_ 的写入同样只允许发生在
+// UI 线程，避免另一线程在绘制中读到被改写的共享状态。
 // 取 WM_APP + 0x1000 起始，避开 WeaselIPC.h 中已使用的 WM_APP+1.. 段。
+// WM_WEASEL_UPDATE/SETSTYLE 的 lParam 携带堆分配的快照，由消息处理方释放。
 #define WM_WEASEL_REFRESH (WM_APP + 0x1000)
 #define WM_WEASEL_REDRAW (WM_APP + 0x1001)
 #define WM_WEASEL_MOVETO (WM_APP + 0x1002)
+#define WM_WEASEL_UPDATE (WM_APP + 0x1003)
+#define WM_WEASEL_SETSTYLE (WM_APP + 0x1004)
 
 class WeaselPanel
     : public CWindowImpl<WeaselPanel, CWindow, CWeaselPanelTraits>,
@@ -46,6 +50,8 @@ class WeaselPanel
   MESSAGE_HANDLER(WM_WEASEL_REFRESH, OnRefreshPanel)
   MESSAGE_HANDLER(WM_WEASEL_REDRAW, OnRedrawWindow)
   MESSAGE_HANDLER(WM_WEASEL_MOVETO, OnMoveTo)
+  MESSAGE_HANDLER(WM_WEASEL_UPDATE, OnApplyUpdate)
+  MESSAGE_HANDLER(WM_WEASEL_SETSTYLE, OnApplyStyle)
   CHAIN_MSG_MAP(CDoubleBufferImpl<WeaselPanel>)
   END_MSG_MAP()
 
@@ -61,6 +67,14 @@ class WeaselPanel
                          LPARAM lParam,
                          BOOL& bHandled);
   LRESULT OnMoveTo(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+  LRESULT OnApplyUpdate(UINT uMsg,
+                        WPARAM wParam,
+                        LPARAM lParam,
+                        BOOL& bHandled);
+  LRESULT OnApplyStyle(UINT uMsg,
+                       WPARAM wParam,
+                       LPARAM lParam,
+                       BOOL& bHandled);
   LRESULT OnMouseActivate(UINT uMsg,
                           WPARAM wParam,
                           LPARAM lParam,
@@ -85,6 +99,9 @@ class WeaselPanel
   void DoPaint(CDCHandle dc);
   bool GetIsReposition() { return m_istorepos; }
   void RedrawWindow();
+  // 跨线程更新入口：非 UI 线程调用时把快照投递回 UI 线程再落地
+  void ApplyUpdate(Context const& ctx, Status const& status);
+  void ApplyStyle(UIStyle const& style);
 
   static VOID CALLBACK OnTimer(_In_ HWND hwnd,
                                _In_ UINT uMsg,
@@ -103,6 +120,7 @@ class WeaselPanel
   // 触发 d2d1.dll 内部崩溃（0xC0000005）。
   bool _IsUiThread() const;
   void _InitFontRes(bool forced = false);
+  void _ApplyUpdate(Context const& ctx, Status const& status);
   void _CaptureRect(CRect& rect);
   bool m_mouse_entry = false;
   CPoint m_lastMousePos = {-1, -1};

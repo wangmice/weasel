@@ -64,7 +64,7 @@ RimeWithWeaselHandler::~RimeWithWeaselHandler() {
 }
 
 bool add_session = false;
-void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize);
+void _UpdateUIStyle(RimeConfig* config, UIStyle& style, bool initialize);
 bool _UpdateUIStyleColor(RimeConfig* config,
                          UIStyle& style,
                          const std::string& color = std::string());
@@ -120,7 +120,10 @@ void RimeWithWeaselHandler::Initialize() {
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
-      _UpdateUIStyle(&config, m_ui, true);
+      // 在本地副本上重建基础样式：Initialize 可能经 EndMaintenance 在 IPC
+      // 工作线程被调用，style_ 的写入必须走 SetStyle 的 marshal 通道
+      UIStyle style = m_base_style;
+      _UpdateUIStyle(&config, style, true);
       _UpdateShowNotifications(&config, true);
       m_current_dark_mode = IsUserDarkMode();
       if (m_current_dark_mode) {
@@ -129,10 +132,11 @@ void RimeWithWeaselHandler::Initialize() {
         if (rime_api->config_get_string(&config, "style/color_scheme_dark",
                                         buffer, BUF_SIZE)) {
           std::string color_name(buffer);
-          _UpdateUIStyleColor(&config, m_ui->style(), color_name);
+          _UpdateUIStyleColor(&config, style, color_name);
         }
       }
-      m_base_style = m_ui->style();
+      m_base_style = style;
+      m_ui->SetStyle(style);
     }
     Bool global_ascii = false;
     if (rime_api->config_get_bool(&config, "global_ascii", &global_ascii))
@@ -202,7 +206,7 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
     session_status.__synced = false;
     rime_api->free_status(&status);
   }
-  m_ui->style() = session_status.style;
+  m_ui->SetStyle(session_status.style);
   // show session's welcome message :-) if any
   if (eat) {
     _Respond(ipc_id, eat);
@@ -231,7 +235,8 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
-      _UpdateUIStyle(&config, m_ui, true);
+      UIStyle style = m_base_style;
+      _UpdateUIStyle(&config, style, true);
       m_current_dark_mode = darkMode;
       if (darkMode) {
         const int BUF_SIZE = 255;
@@ -239,10 +244,11 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
         if (rime_api->config_get_string(&config, "style/color_scheme_dark",
                                         buffer, BUF_SIZE)) {
           std::string color_name(buffer);
-          _UpdateUIStyleColor(&config, m_ui->style(), color_name);
+          _UpdateUIStyleColor(&config, style, color_name);
         }
       }
-      m_base_style = m_ui->style();
+      m_base_style = style;
+      m_ui->SetStyle(style);
     }
     rime_api->config_close(&config);
   }
@@ -258,7 +264,7 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
       rime_api->free_status(&status);
     }
   }
-  m_ui->style() = get_session_status(m_active_session).style;
+  m_ui->SetStyle(get_session_status(m_active_session).style);
 }
 
 BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
@@ -528,7 +534,9 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   if (!m_ui)
     return;
 
-  Status& weasel_status = m_ui->status();
+  // 用本地状态填充后随 Update 的快照投递：status_/ctx_ 的写入只允许发生在
+  // UI 线程，IPC 工作线程不得借 m_ui->status() 引用就地改写
+  Status weasel_status;
   Context weasel_context;
 
   RimeSessionId session_id = to_session_id(ipc_id);
@@ -569,10 +577,12 @@ void RimeWithWeaselHandler::_LoadSchemaSpecificSettings(
   if (!rime_api->schema_open(schema_id.c_str(), &config))
     return;
   _UpdateShowNotifications(&config);
-  m_ui->style() = m_base_style;
-  _UpdateUIStyle(&config, m_ui, false);
+  // 在本地副本上计算方案样式，不再借用 m_ui->style() 作草稿：
+  // style_ 的写入只允许发生在 UI 线程（由 SetStyle 投递）
+  UIStyle schema_style = m_base_style;
+  _UpdateUIStyle(&config, schema_style, false);
   SessionStatus& session_status = get_session_status(ipc_id);
-  session_status.style = m_ui->style();
+  session_status.style = schema_style;
   UIStyle& style = session_status.style;
   // load schema color style config
   const int BUF_SIZE = 255;
@@ -1165,9 +1175,8 @@ void RimeWithWeaselHandler::_UpdateShowNotifications(RimeConfig* config,
   }
 }
 
-// update ui's style parameters, ui has been check before referenced
-static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize) {
-  UIStyle& style(ui->style());
+// update ui's style parameters, style has been check before referenced
+static void _UpdateUIStyle(RimeConfig* config, UIStyle& style, bool initialize) {
   const std::function<void(std::wstring&)> rmspace = [](std::wstring& str) {
     str = std::regex_replace(str, std::wregex(L"\\s*(,|:|^|$)\\s*"), L"$1");
   };
@@ -1468,7 +1477,7 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
           _UpdateInlinePreeditStatus(ipc_id);
         // refresh icon after schema changed
         _RefreshTrayIcon(session_id, _UpdateUICallback);
-        m_ui->style() = session_status.style;
+        m_ui->SetStyle(session_status.style);
         if (m_show_notifications.find("schema") != m_show_notifications.end() &&
             m_show_notifications_time > 0) {
           ctx.aux.str = stat.schema_name;
