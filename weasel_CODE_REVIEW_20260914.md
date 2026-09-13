@@ -25,7 +25,7 @@
 | A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | ✔ | 未修复 |
 | A14 | P3 | bug | WeaselSetup/WeaselSetup.cpp:68-76 | 注册表字符串未强制 NUL 终止即构造 wstring | ✔ | 未修复 |
 | A15 | P3 | perf | WeaselTSF/EditSession.cpp:8-14 | 每击键堆分配 shared_ptr<Context>+Config+parser | — | 未修复 |
-| A16 | P3 | bug | WeaselDeployer/UIStyleSettings.cpp:42-58 等 | 预览路径用 ACP 解码 UTF-8，非 ASCII 用户名下必失败 | ✅ | 未修复 |
+| A16 | P3 | bug | WeaselDeployer/UIStyleSettings.cpp:42-58 等 | 预览路径用 ACP 解码 UTF-8，非 ASCII 用户名下必失败 | ✅ | ✅ 已修复（0f1574a，批次7） |
 
 ### A 路：旧报告已知且确认仍未修复（K 系列）
 
@@ -36,9 +36,9 @@
 | K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | ✔ | 未修复 |
 | K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | ✅ | ✅ 已修复（cd59189，批次2） |
 | K5 | P2 | WeaselTSF/Register.cpp:10,226-231 | "Microsft" 拼写 + HKCR 下清理对真实 TIP 键结构上无效 | ✔ | 未修复 |
-| K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | ✔ | 未修复 |
-| K7 | P2 | SwitcherSettingsDialog.cpp:20-23; UIStyleSettings.cpp:5-8 | schema list / settings 无对应 destroy | ✔ | 未修复 |
-| K8 | P2 | SwitcherSettingsDialog.cpp:114-155 | 未初始化 HKEY、无条件 close、INFINITE 等待、无 NUL | ✔ | 未修复 |
+| K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | ✔ | ✅ 已修复（55221cb，批次7） |
+| K7 | P2 | SwitcherSettingsDialog.cpp:20-23; UIStyleSettings.cpp:5-8 | schema list / settings 无对应 destroy | ✔ | ✅ 已修复（6258af1，批次7） |
+| K8 | P2 | SwitcherSettingsDialog.cpp:114-155 | 未初始化 HKEY、无条件 close、INFINITE 等待、无 NUL | ✔ | ✅ 已修复（03ea36a，批次7） |
 | K9 | P2 | WeaselDeployer/DictManagementDialog.cpp:109-123 | CP_ACP 解码 UTF-8 + LB_GETTEXT 缓冲可溢出 | ✔ | 未修复 |
 | K10 | P2 | DictManagementDialog.cpp:13,25 | STA 线程无条件 CoUninitialize 拆主循环计数 | ✔ | 未修复 |
 | K11 | P2 | WeaselSetup/imesetup.cpp:178-464 | WOW64 重定向 4 处提前 return 不恢复；install() 忽略文件拷贝结果 | ✔ | 未修复 |
@@ -48,8 +48,8 @@
 | K15 | P2 | WeaselSetup/WeaselSetup.cpp:209-212 | /userdir 引号不剥离 | ✔ | 未修复 |
 | K16 | P2 | WeaselTSF/Composition.cpp:163,166-182 | GetTextExtent 会话泄漏 pRange 与 selection.range（每击键） | ✔ | ✅ 已修复（4ede762（含 A1），批次6） |
 | K17 | P2 | WeaselTSF/CandidateList.cpp:160-163 | SetSelection 不校验 nIndex（下游裸数组越界，= B9 同族） | ✔ | ✅ 已修复（41dbd23，批次6） |
-| K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | ✔ | 未修复 |
-| K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | 未修复 |
+| K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | ✔ | ✅ 已修复（29c1a62，批次7） |
+| K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | 未修复 |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | 未修复 |
 | K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 未修复 |
@@ -906,3 +906,13 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `af06ec9` fix(WeaselTSF): end the UI element when destroying the candidate window — A2。恢复 Destroy() 的 EndUI()（历史考证：上游 PR #263 的实验遗留注释，PR #268 确立按组合建窗后即成死代码冲突；DestroyAll 已在 5dffa59 恢复、Destroy 为漏网）；状态机注释写明 _uiStarted⟺注册元素、窗口生命周期不变量；与 A3 守卫配套收口僵尸 UpdateUIElement 路径。
 - `41dbd23` fix(WeaselTSF): reject out-of-range candidate selection in SetSelection — K17。TSF 源头收口（E_INVALIDARG），与批次 3 UI 侧 clamp（B9）互补。
 - 验证：TSF COM 交互无法控制台复现，按构建+推理验证；release/debug 全量 build ok，8 个测试目标全过（注意 debug 需 xmake f -p windows -a x64 -m debug）。
+
+### 批次 7（2026-09-14）：K6、K7、K8、K18、K19、A16（WeaselDeployer）
+
+- `55221cb` fix(WeaselDeployer): drop manual new[]/delete mismatch in schema selection — K6。改 std::vector；顺带 get_schema_id 判空防 NULL 混入 select_schemas。
+- `6258af1` fix(WeaselDeployer): free rime schema lists and custom settings — K7。对照 rime_levers_api.h + librime@33e7814 源码确认 schema_list_destroy 只释放条目数组（幂等安全）、custom_settings_destroy 须严格配对；UIStyleSettings 补析构 + 禁拷贝。
+- `03ea36a` fix(WeaselDeployer): harden OnGetSchemata registry read and script wait — K8。复用 RegGetStringValue 消除未初始化 HKEY/无条件 close/NUL 问题；INFINITE 改 60s 有界等待（超时告警继续）；补 ShellExecuteExW 与句柄判空。
+- `29c1a62` fix(WeaselDeployer): always offer UI style settings after the switcher dialog — K18。短路改两步独立执行；"取消方案但完成 UI 设置"路径现在会保存并部署，退出码结构不变。
+- `04b7775` fix(WeaselDeployer): join maintenance thread before resuming service — K19。UpdateWorkspace/DictManagement 复用 K1 的 MaintenanceReleaser（join 在前、EndMaintenance 在析构，异常路径同样恢复）。
+- `0f1574a` fix(WeaselDeployer): decode color scheme preview paths as UTF-8 — A16。acptow→u8tow 两处，删误导注释。
+- 验证：GUI 路径按构建+推理；release/debug 全量 build ok；8 个测试目标全过（TestPipeChannel 47 用例）。上游 master 三处同题均未修（本仓独立改进）。
