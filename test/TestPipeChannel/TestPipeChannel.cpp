@@ -216,11 +216,60 @@ static void test_start_session_body_offset() {
   }
 }
 
+/* Expose the client-side connect seam */
+class ExposedClient : public weasel::PipeChannel<weasel::PipeMessage> {
+ public:
+  using PipeChannel::PipeChannel;
+  HANDLE ExposedConnect(const wchar_t* name) { return _Connect(name); }
+};
+
+/* N3: when every pipe instance stays busy forever, _Connect must fail
+ * within a bounded time instead of hanging the caller's thread */
+static void test_connect_bounded_wait() {
+  std::wstring name = unique_pipe_name(L"busy");
+  // a single-instance pipe that stays occupied by a holder client
+  HANDLE instance =
+      ::CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX,
+                         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                         1, 1024, 1024, 0, NULL);
+  check(instance != INVALID_HANDLE_VALUE, "N3: create single instance");
+
+  HANDLE holder = INVALID_HANDLE_VALUE;
+  for (int waited = 0; waited < 2000 && holder == INVALID_HANDLE_VALUE;
+       waited += 25) {
+    holder = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                           NULL, OPEN_EXISTING, 0, NULL);
+    if (holder == INVALID_HANDLE_VALUE)
+      Sleep(25);
+  }
+  check(holder != INVALID_HANDLE_VALUE, "N3: holder client connected");
+  ::ConnectNamedPipe(instance, NULL);  // completes the server side (535 ok)
+
+  ExposedClient victim{std::wstring(name)};
+  bool threw = false;
+  boost::thread t([&] {
+    try {
+      victim.ExposedConnect(name.c_str());
+    } catch (...) {
+      threw = true;
+    }
+  });
+  bool returned = t.timed_join(boost::posix_time::seconds(15));
+  check(returned, "N3: _Connect returns (no infinite busy-wait)");
+  check(threw, "N3: _Connect reports failure");
+  if (!returned)
+    t.detach();
+
+  ::CloseHandle(holder);
+  ::CloseHandle(instance);
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
   test_hung_client_does_not_freeze_others();
   test_start_session_body_offset();
+  test_connect_bounded_wait();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;

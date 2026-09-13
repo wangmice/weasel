@@ -39,9 +39,18 @@ bool PipeChannelBase::_Ensure() {
 }
 
 HANDLE PipeChannelBase::_Connect(const wchar_t* name) {
+  // Bound the wait: a wedged server whose instances stay busy forever must
+  // not pin the caller's (input) thread indefinitely.
+  static constexpr int kMaxBusyWaits = 6;  // ~3s
   HANDLE pipe = INVALID_HANDLE_VALUE;
-  while (_Invalid(pipe = _TryConnect()))
-    ::WaitNamedPipe(name, 500);
+  for (int waits = 0; _Invalid(pipe = _TryConnect()); ++waits) {
+    // FALSE also covers "pipe does not exist at all": fail fast, the
+    // server is gone rather than busy.
+    if (!::WaitNamedPipe(name, 500))
+      _ThrowLastError;
+    if (waits >= kMaxBusyWaits)
+      _ThrowCode(ERROR_SEM_TIMEOUT);
+  }
   DWORD mode = PIPE_READMODE_MESSAGE;
   if (!SetNamedPipeHandleState(pipe, &mode, NULL, NULL)) {
     _ThrowLastError;
