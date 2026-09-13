@@ -193,6 +193,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   void _Reconnect();
   std::wstring _GetRootDir();
+  // consecutive failed reconnect attempts (per instance, was a shared
+  // file-static raced across threads and TIP instances)
+  unsigned int _reconnectRetry = 0;
 
   bool isImmersive() const {
     return (_activateFlags & TF_TMF_IMMERSIVEMODE) != 0;

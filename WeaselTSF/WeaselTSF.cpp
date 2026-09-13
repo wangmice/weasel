@@ -238,7 +238,22 @@ void WeaselTSF::_Reconnect() {
   }
 }
 
-static unsigned int retry = 0;
+static int count_server_process() {
+  int count = 0;
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE)
+    return 0;
+  PROCESSENTRY32 pe;
+  pe.dwSize = sizeof(pe);
+  if (Process32First(snap, &pe)) {
+    do {
+      if (_wcsicmp(pe.szExeFile, L"WeaselServer.exe") == 0)
+        count++;
+    } while (Process32Next(snap, &pe));
+  }
+  CloseHandle(snap);
+  return count;
+}
 
 bool WeaselTSF::_EnsureServerConnected() {
   // Trust an established session and skip the Echo roundtrip per key: a
@@ -249,44 +264,33 @@ bool WeaselTSF::_EnsureServerConnected() {
 
   if (!m_client.Echo()) {
     _Reconnect();
-    retry++;
-    if (retry >= 6) {
-      HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
-      const auto count_server_process = []() -> int {
-        int count = 0;
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snap == INVALID_HANDLE_VALUE)
-          return 0;
-        PROCESSENTRY32 pe;
-        pe.dwSize = sizeof(pe);
-        if (Process32First(snap, &pe)) {
-          do {
-            if (_wcsicmp(pe.szExeFile, L"WeaselServer.exe") == 0)
-              count++;
-          } while (Process32Next(snap, &pe));
+    if (!m_client.IsSessionActive()) {
+      if (++_reconnectRetry >= 6) {
+        HANDLE hMutex =
+            CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
+        // Read GetLastError right after CreateMutex: any later pipe call
+        // would overwrite the ERROR_ALREADY_EXISTS indicator.
+        bool alreadyLaunching = (GetLastError() == ERROR_ALREADY_EXISTS);
+        if (!alreadyLaunching && count_server_process() == 0) {
+          std::wstring dir = _GetRootDir();
+          // The detached thread must not capture this: it can outlive the
+          // TIP object while the host app tears down. It only starts the
+          // service; the next keystroke's reconnect path completes login.
+          std::thread th([dir]() {
+            ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
+                          NULL, dir.c_str(), SW_HIDE);
+          });
+          th.detach();
         }
-        CloseHandle(snap);
-        return count;
-      };
-      if (!m_client.Echo() && GetLastError() != ERROR_ALREADY_EXISTS &&
-          !count_server_process()) {
-        std::wstring dir = _GetRootDir();
-        std::thread th([dir, this]() {
-          ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
-                        NULL, dir.c_str(), SW_HIDE);
-          // wait 500ms, then reconnect
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          _Reconnect();
-        });
-        th.detach();
+        if (hMutex) {
+          CloseHandle(hMutex);
+        }
+        _reconnectRetry = 0;
       }
-      if (hMutex) {
-        CloseHandle(hMutex);
-      }
-      retry = 0;
+      return false;
     }
-    return (m_client.Echo() != 0);
-  } else {
+    _reconnectRetry = 0;
     return true;
   }
+  return true;
 }
