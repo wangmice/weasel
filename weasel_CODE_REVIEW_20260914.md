@@ -10,91 +10,91 @@
 
 | 编号 | 级别 | 类型 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|---|
-| A1 | P2 | bug | WeaselTSF/TextEditSink.cpp:35-44 | OnEndEdit 泄漏 GetSelection 返回的 ITfRange（合成期每击键一次） | 待验证 | 未修复 |
-| A2 | P2 | bug | WeaselTSF/CandidateList.cpp:230-234,289-291 | Destroy 不清 _uiStarted，StartUI 早退 → 本组合期候选窗永久丢失 | 待验证 | 未修复 |
-| A9 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘快照在管道线程读 UI style_/status_（wstring）数据竞争（= B2，合并处理） | 待验证 | 未修复 |
-| A3 | P3 | bug | WeaselTSF/CandidateList.h:85 | uiid 未初始化即传入 UpdateUIElement | 待验证 | 未修复 |
-| A4 | P3 | bug | WeaselTSF/Compartment.cpp:75-89 | _Unadvise 对 null _compartment 解引用；_cookie 未初始化 | 待验证 | 未修复 |
-| A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | 待验证 | 未修复 |
-| A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | 待验证 | 未修复 |
-| A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | 待验证 | 未修复 |
-| A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | 待验证 | 未修复 |
-| A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | 待验证 | 未修复 |
-| A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | 待验证 | 未修复 |
-| A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | 待验证 | 未修复 |
-| A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | 待验证 | 未修复 |
-| A14 | P3 | bug | WeaselSetup/WeaselSetup.cpp:68-76 | 注册表字符串未强制 NUL 终止即构造 wstring | 待验证 | 未修复 |
+| A1 | P2 | bug | WeaselTSF/TextEditSink.cpp:35-44 | OnEndEdit 泄漏 GetSelection 返回的 ITfRange（合成期每击键一次） | ✔ | 未修复 |
+| A2 | P2 | bug | WeaselTSF/CandidateList.cpp:230-234,289-291 | Destroy 不清 _uiStarted，StartUI 早退 → 本组合期候选窗永久丢失 | ✔ | 未修复 |
+| A9 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘快照在管道线程读 UI style_/status_（wstring）数据竞争（= B2，合并处理） | ✔ | 未修复 |
+| A3 | P3 | bug | WeaselTSF/CandidateList.h:85 | uiid 未初始化即传入 UpdateUIElement | ✔ | 未修复 |
+| A4 | P3 | bug | WeaselTSF/Compartment.cpp:75-89 | _Unadvise 对 null _compartment 解引用；_cookie 未初始化 | ✔ | 未修复 |
+| A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | ✔ | 未修复 |
+| A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | ✔ | 未修复 |
+| A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | 未修复 |
+| A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | ✔ | 未修复 |
+| A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 未修复 |
+| A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | ✔ | 未修复 |
+| A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | ✔ | 未修复 |
+| A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | ✔ | 未修复 |
+| A14 | P3 | bug | WeaselSetup/WeaselSetup.cpp:68-76 | 注册表字符串未强制 NUL 终止即构造 wstring | ✔ | 未修复 |
 | A15 | P3 | perf | WeaselTSF/EditSession.cpp:8-14 | 每击键堆分配 shared_ptr<Context>+Config+parser | — | 未修复 |
-| A16 | P3 | bug | WeaselDeployer/UIStyleSettings.cpp:42-58 等 | 预览路径用 ACP 解码 UTF-8，非 ASCII 用户名下必失败 | 待验证 | 未修复 |
+| A16 | P3 | bug | WeaselDeployer/UIStyleSettings.cpp:42-58 等 | 预览路径用 ACP 解码 UTF-8，非 ASCII 用户名下必失败 | ✅ | 未修复 |
 
 ### A 路：旧报告已知且确认仍未修复（K 系列）
 
 | 编号 | 级别 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|
-| K1 | **P1** | WeaselDeployer/Configurator.cpp:220-228 | SyncUserData 失败不调 EndMaintenance → 服务端永久维护态、全系统禁输 | 待验证 | 未修复 |
-| K2 | P2 | WeaselTSF/KeyEventSink.cpp:7-60 | static 三件套跨实例/线程共享；pfEaten 未写即存 static | 待验证 | 未修复 |
-| K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | 待验证 | 未修复 |
-| K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | 待验证 | 未修复 |
-| K5 | P2 | WeaselTSF/Register.cpp:10,226-231 | "Microsft" 拼写 + HKCR 下清理对真实 TIP 键结构上无效 | 待验证 | 未修复 |
-| K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | 待验证 | 未修复 |
-| K7 | P2 | SwitcherSettingsDialog.cpp:20-23; UIStyleSettings.cpp:5-8 | schema list / settings 无对应 destroy | 待验证 | 未修复 |
-| K8 | P2 | SwitcherSettingsDialog.cpp:114-155 | 未初始化 HKEY、无条件 close、INFINITE 等待、无 NUL | 待验证 | 未修复 |
-| K9 | P2 | WeaselDeployer/DictManagementDialog.cpp:109-123 | CP_ACP 解码 UTF-8 + LB_GETTEXT 缓冲可溢出 | 待验证 | 未修复 |
-| K10 | P2 | DictManagementDialog.cpp:13,25 | STA 线程无条件 CoUninitialize 拆主循环计数 | 待验证 | 未修复 |
-| K11 | P2 | WeaselSetup/imesetup.cpp:178-464 | WOW64 重定向 4 处提前 return 不恢复；install() 忽略文件拷贝结果 | 待验证 | 未修复 |
-| K12 | P2 | imesetup.cpp:364-375 | regsvr32 退出码不检查，失败仍报成功 | 待验证 | 未修复 |
-| K13 | P2 | imesetup.cpp:514-517 | 卸载不清 HKCU 配置；RegDeleteKey 有子键即失败 | 待验证 | 未修复 |
-| K14 | P2 | WeaselSetup/WeaselSetup.cpp:109-111 | 改 profile 只写注册表不重注册 TSF profile | 待验证 | 未修复 |
-| K15 | P2 | WeaselSetup/WeaselSetup.cpp:209-212 | /userdir 引号不剥离 | 待验证 | 未修复 |
-| K16 | P2 | WeaselTSF/Composition.cpp:163,166-182 | GetTextExtent 会话泄漏 pRange 与 selection.range（每击键） | 待验证 | 未修复 |
-| K17 | P2 | WeaselTSF/CandidateList.cpp:160-163 | SetSelection 不校验 nIndex（下游裸数组越界，= B9 同族） | 待验证 | 未修复 |
-| K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | 待验证 | 未修复 |
-| K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | 待验证 | 未修复 |
-| K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | 待验证 | 未修复 |
+| K1 | **P1** | WeaselDeployer/Configurator.cpp:220-228 | SyncUserData 失败不调 EndMaintenance → 服务端永久维护态、全系统禁输 | ✔ | 未修复 |
+| K2 | P2 | WeaselTSF/KeyEventSink.cpp:7-60 | static 三件套跨实例/线程共享；pfEaten 未写即存 static | ✔ | 未修复 |
+| K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | ✔ | 未修复 |
+| K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | ✅ | 未修复 |
+| K5 | P2 | WeaselTSF/Register.cpp:10,226-231 | "Microsft" 拼写 + HKCR 下清理对真实 TIP 键结构上无效 | ✔ | 未修复 |
+| K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | ✔ | 未修复 |
+| K7 | P2 | SwitcherSettingsDialog.cpp:20-23; UIStyleSettings.cpp:5-8 | schema list / settings 无对应 destroy | ✔ | 未修复 |
+| K8 | P2 | SwitcherSettingsDialog.cpp:114-155 | 未初始化 HKEY、无条件 close、INFINITE 等待、无 NUL | ✔ | 未修复 |
+| K9 | P2 | WeaselDeployer/DictManagementDialog.cpp:109-123 | CP_ACP 解码 UTF-8 + LB_GETTEXT 缓冲可溢出 | ✔ | 未修复 |
+| K10 | P2 | DictManagementDialog.cpp:13,25 | STA 线程无条件 CoUninitialize 拆主循环计数 | ✔ | 未修复 |
+| K11 | P2 | WeaselSetup/imesetup.cpp:178-464 | WOW64 重定向 4 处提前 return 不恢复；install() 忽略文件拷贝结果 | ✔ | 未修复 |
+| K12 | P2 | imesetup.cpp:364-375 | regsvr32 退出码不检查，失败仍报成功 | ✔ | 未修复 |
+| K13 | P2 | imesetup.cpp:514-517 | 卸载不清 HKCU 配置；RegDeleteKey 有子键即失败 | ✔ | 未修复 |
+| K14 | P2 | WeaselSetup/WeaselSetup.cpp:109-111 | 改 profile 只写注册表不重注册 TSF profile | ✔ | 未修复 |
+| K15 | P2 | WeaselSetup/WeaselSetup.cpp:209-212 | /userdir 引号不剥离 | ✔ | 未修复 |
+| K16 | P2 | WeaselTSF/Composition.cpp:163,166-182 | GetTextExtent 会话泄漏 pRange 与 selection.range（每击键） | ✔ | 未修复 |
+| K17 | P2 | WeaselTSF/CandidateList.cpp:160-163 | SetSelection 不校验 nIndex（下游裸数组越界，= B9 同族） | ✔ | 未修复 |
+| K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | ✔ | 未修复 |
+| K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | 未修复 |
+| K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | 未修复 |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | 未修复 |
-| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | 待验证 | 未修复 |
+| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 未修复 |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | 未修复 |
-| K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | 待验证 | 未修复 |
+| K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 未修复 |
 
 ### B 路发现
 
 | 编号 | 级别 | 类型 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|---|
-| B1 | **P1** | bug | WeaselUI/WeaselUI.cpp:50-94 等 | Show/Hide/ShowWithTimeout 未 marshal，管道线程持 g_api_mutex 跨线程 ShowWindow → 与消息线程互等死锁 | 待验证 | 未修复 |
-| B2 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘刷新在管道线程读 ui.style_/status_（= A9） | 待验证 | 未修复 |
-| B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | 待验证 | 未修复 |
-| B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | 待验证 | 未修复 |
-| B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | 待验证 | 未修复 |
-| B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | 待验证 | 未修复 |
-| B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | 待验证 | 未修复 |
-| B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | 待验证 | 未修复 |
-| B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | 待验证 | 未修复 |
-| B10 | P2 | bug | WeaselUI/WeaselPanel.h:158-162 | m_istorepos/m_offsetys 等未初始化即读 | 待验证 | 未修复 |
+| B1 | **P1** | bug | WeaselUI/WeaselUI.cpp:50-94 等 | Show/Hide/ShowWithTimeout 未 marshal，管道线程持 g_api_mutex 跨线程 ShowWindow → 与消息线程互等死锁 | ✔ | 未修复 |
+| B2 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘刷新在管道线程读 ui.style_/status_（= A9） | ✔ | 未修复 |
+| B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | ✅ | 未修复 |
+| B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | 未修复 |
+| B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | 未修复 |
+| B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | ✔ | 未修复 |
+| B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | ❌ | 未修复 |
+| B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | 未修复 |
+| B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | ✔ | 未修复 |
+| B10 | P2 | bug | WeaselUI/WeaselPanel.h:158-162 | m_istorepos/m_offsetys 等未初始化即读 | ✔ | 未修复 |
 | B11 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp | 每键 ~7 次 rime 交叉：直通键无早退、get_status×2、get_property 每键 | — | 未修复 |
 | B12 | P2 | perf | WeaselUI/WeaselPanel.cpp 等 | 每键整窗重算重绘：布局重建、双 layout、全幅模糊 | — | 未修复 |
 | B13 | P2 | perf | include/WeaselIPCData.h:103,166 | notequal/operator== 按值深拷贝候选向量（每键 6 份） | — | 未修复 |
 | B14 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp:73-87 | explorer.exe 每键 detached 线程 + Sleep(100) | — | 未修复 |
-| B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | 待验证 | 未修复 |
-| B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | 待验证 | 未修复 |
-| B17 | P3 | bug | WeaselIPCServer/WeaselServerImpl.cpp:445-461 | Listen catch(...) 后无退避，管道创建持续失败时 100% CPU | 待验证 | 未修复 |
-| B18 | P3 | bug | WeaselServerImpl.cpp:450-519 | worker 先于 _RegisterWorker 结束 → m_workers 残留已关闭句柄 | 待验证 | 未修复 |
-| B19 | P3 | bug | WeaselUI/WeaselPanel.cpp:1261-1264 | MoveTo marshal 不检查 PostMessage 返回值泄漏 RECT | 待验证 | 未修复 |
-| B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | 待验证 | 未修复 |
-| B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | 待验证 | 未修复 |
-| B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | 待验证 | 未修复 |
-| B23 | P3 | bug | StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | 待验证 | 未修复 |
-| B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | 待验证 | 未修复 |
-| B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | 待验证 | 未修复 |
-| B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | 待验证 | 未修复 |
-| B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | 待验证 | 未修复 |
-| B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | 待验证 | 未修复 |
+| B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | ✔ | 未修复 |
+| B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | ✅ | 未修复 |
+| B17 | P3 | bug | WeaselIPCServer/WeaselServerImpl.cpp:445-461 | Listen catch(...) 后无退避，管道创建持续失败时 100% CPU | ✔ | 未修复 |
+| B18 | P3 | bug | WeaselServerImpl.cpp:450-519 | worker 先于 _RegisterWorker 结束 → m_workers 残留已关闭句柄 | ✔ | 未修复 |
+| B19 | P3 | bug | WeaselUI/WeaselPanel.cpp:1261-1264 | MoveTo marshal 不检查 PostMessage 返回值泄漏 RECT | ✔ | 未修复 |
+| B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | ✔ | 未修复 |
+| B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | 未修复 |
+| B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | ✔ | 未修复 |
+| B23 | P3 | bug | WeaselUI/StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | ✅ | 未修复 |
+| B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | 未修复 |
+| B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | ✔ | 未修复 |
+| B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | ✔ | 未修复 |
+| B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | 未修复 |
+| B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | ✔ | 未修复 |
 | B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | 未修复 |
-| B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | 待验证 | 未修复 |
-| B31 | P3 | bug | include/WeaselUtility.h:14-32 | getUsername 二次调用失败未校验 | 待验证 | 未修复 |
-| B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | 待验证 | 未修复 |
-| B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | 待验证 | 未修复 |
-| B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | 待验证 | 未修复 |
-| B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | 待验证 | 未修复 |
+| B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | ✔ | 未修复 |
+| B31 | P3 | bug | include/WeaselUtility.h:14-32 | getUsername 二次调用失败未校验 | ✔ | 未修复 |
+| B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | ✔ | 未修复 |
+| B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | ⚠ | 未修复 |
+| B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | 未修复 |
+| B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | 未修复 |
 | B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | 未修复 |
 
 ---
@@ -715,9 +715,136 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 
 ---
 
-## 3. 本地验证结果（verifier 填写）
+## 3. 本地验证结果（verifier 已填写）
 
-> 待验证。
+- **基线核对**：HEAD = `e3f69c3` = `acf9c6b` + 本报告的 docs commit，源码与审查基线一致；工作区干净（仅未跟踪 `.vscode/`）。
+- **验证环境**：MSVC 19.43.34808（VS2022，/MDd 调试 CRT），boost 1.84（仓库 `deps/`）。
+- **复现程序**：`Z:/Temp/weasel_mgmt/verify/`（`repro_*.cpp` + `build.cmd`，未入仓库；B3/B4/K4/A16/A10/B16/B23/K6）。
+- **统计**：bug 条目共 67 项（A 路 15 + K 路 22 + B 路 30；A9 与 B2 为同一缺陷的两行）。✅ 运行时复现 6 项；✔ 代码核实 57 项；⚠ 未能完全验证 2 项；❌ 推翻 2 项。perf 条目（A15、K21、K23、B11-B14、B29、B36）按约定不验证，保持 —。
+
+### 3.1 验证总览表
+
+| 编号 | 结论 | 验证方式 | 一句话依据 |
+|---|---|---|---|
+| A1 | ✔ | 代码 | TextEditSink.cpp:35-44：`GetSelection` 返回的 `tfSelection.range`（TSF 契约 AddRef）在所有路径均未 Release，同函数内 `pRangeComposition` 的 Release 反证并非遗漏约定 |
+| A2 | ✔ | 代码 | Destroy()（:230-234）仍注释着 EndUI、不清 `_uiStarted`；StartUI()（:289-291）因之早退，`_MakeUIWindow` 全仓库唯一重建入口；触发链三条（OnCompositionTerminated 保留 UIElement 后 OnKillThreadFocus/OnSetFocus(FALSE)/Abort() → `_AbortComposition` 在 `_IsComposing()==false` 时仅走 `Destroy()`）逐行核实成立，机制确凿；仅宿主出现频率（路径 1）无法统计 |
+| A3 | ✔ | 代码 | CandidateList.h:85 `DWORD uiid;` 无初始化、构造函数亦不初始化；`_UpdateUIElement`（:272-287）无 `_uiStarted` 守卫，`UpdateUI`（EditSession.cpp:58）每键无条件调用，首次 StartUI 成功前即传入未初始化值 |
+| A4 | ✔ | 代码 | Compartment.cpp:79 `_Unadvise` 首行对可能为 null 的 `_compartment` 调 QueryInterface；`_Advise` 半途失败（:58/:62）不清场；`_InitCompartment`（:196-204）第一个 Advise 结果存 `DWORD hr` 被第二个覆盖后仍判成功，留下空 sink 供 Deactivate 解引用；Compartment.h:26 `_cookie` 无初始化 |
+| A5 | ✔ | 代码 | DisplayAttribute.cpp:38-39 `pRangeComposition==nullptr` 分支直接 `_pComposition->GetRange`，`_pComposition` 可能为 null；唯一调用点（Composition.cpp:289）恒传非空，与报告"潜在"定性一致 |
+| A6 | ✔ | 代码 | WeaselTSF.h:239 原子未初始化、构造函数不初始化；WeaselTSF.cpp:152 `_InitDisplayAttributeGuidAtom()` 返回值被忽略（注释自认部分应用失败）；DisplayAttribute.cpp:50 把该值写入 GUID_PROP_ATTRIBUTE |
+| A7 | ✔ | 代码 | LanguageBar.cpp:406-416：读取失败 flags 保持 0，仅按 ascii/full_shape 重建回写 → ROMAN/KATAKANA 等位被清零；:418 无条件 `UpdateWeaselStatus`（:262-264 OnUpdate 恒调）；调用点 EditSession.cpp:16 每键 |
+| A8 | ✔ | 代码 | 全仓库 grep `error_message` 仅 WeaselTSF.cpp:13 定义一处，零调用者；函数体仍是模态框 + static 回绕判定 |
+| A9 | ✔ | 代码 | WeaselTrayIcon.h:80-81/ctor:13-14 `m_style/m_status` 为绑定 `ui.style_/ui.status_` 的引用（WeaselUI.h:68-69 确为成员引用）；读侧 RequestRefresh:45 在管道工作线程（RimeWithWeasel.cpp:560 → _UpdateUICallback；explorer 分支更在 detached 线程延迟 100ms）；写侧 UI 线程 OnApplyStyle:1251 `m_style=*pStyle`、_ApplyUpdate:1334 `m_status=status`（WeaselPanel 的 m_style/m_status 即 ui 成员引用）——非原子并发读写 std::wstring，数据竞争成立；m_state_mutex 只保护 pending 状态，不覆盖此读 |
+| A10 | ❌ | 运行时 | 见 §3.2：WTL 一参 LoadIconW 走共享 ::LoadIcon，DestroyIcon 后句柄仍有效（GetIconInfo 成功），m_tnd.hIcon 不悬垂 |
+| A11 | ✔ | 代码 | SystemTraySDK.cpp:431 `for (UINT i = 0; i <= nNumIcons; i++)` 读 `pHIconList[nNumIcons]` 差一；全仓库无调用者（仅定义与声明），启用即炸的潜在缺陷属实 |
+| A12 | ✔ | 代码 | :827-829 双击分支 `if (!hSubMenu) return 0;` 未 DestroyMenu(hMenu)（对照单击分支 :782-784 有销毁）；:696-697 `DestroyMenu(hSubMenu)` 后 `DestroyMenu(hMenu)`（父菜单递归销毁子菜单 → 二次销毁） |
+| A13 | ✔ | 代码 | WeaselSetup.cpp:100-102 `IDOK != DoModal()` 且 `installing` 时不 return，继续以默认 profile 安装；:106 `_has_installed = dlg.installed` 仅 IDOK 分支执行，取消路径沿用旧值 |
+| A14 | ✔ | 代码 | :68-69 `WCHAR value[MAX_PATH];` 未清零，`RegQueryValueEx` 恰好填满缓冲时无 NUL 即 `user_dir = value` / `profile = value` 越读 |
+| A16 | ✅ | 运行时 | repro_a16.exe：中文目录 UTF-8 字节经 acptow 解码为乱码路径，GetFileAttributes=INVALID_FILE_ATTRIBUTES；u8tow 解码则命中。见 §3.4 |
+| K1 | ✔ | 代码 | Configurator.cpp:220-228：sync 失败仅 `CloseHandle(hMutex); return 1;`，跳过 :232-235 的 `EndMaintenance()`。影响面备注见 §3.5 |
+| K2 | ✔ | 代码 | KeyEventSink.cpp:7-9 文件级三 static；:37-38 `if (!keyCountToSimulate)` 才写 `*pfEaten`（Caps 模拟期间不写），:60 却无条件 `prevfEaten = *pfEaten` 存入 static |
+| K3 | ✔ | 代码 | KeyEvent.cpp:45-46 `static WCHAR buf[8]; static BYTE table[256];` 函数级 static；:51 `ToUnicodeEx(vkey, UINT(kinfo), ...)`——KeyEvent.h:14 `operator UINT32` 返回完整打包值（repeatCount\|scanCode\|标志位），非扫描码 |
+| K4 | ✅ | 运行时 | repro_core.exe：3 字符串配 `size()+1` 后 `SysStringLen==4`（旧 V3 复现 + 当前代码 :129 未变 + 本次重跑）。见 §3.4 |
+| K5 | ✔ | 代码 | Register.cpp:10 仍为 "Microsft"；:226-231 在 `HKEY_CLASSES_ROOT` 下删 `Software\Microsft\CTF\TIP\{clsid}`——HKCR 仅合并 `HKLM\Software\Classes`，真实 TIP 键在 `HKLM\SOFTWARE\Microsoft\CTF\TIP`（RegisterProfile 落点），该清理即使拼写改对也对真键无效 |
+| K6 | ✔ | 代码+运行时 | :161 `new const char*[...]` 配 :176/:180 标量 `delete`，标准层面 UB 成立；运行时备注：MSVC 对平凡可析构元素不加数组 cookie，调试 CRT 不报 _BLOCK_TYPE_IS_VALID，实际无可观察故障（见 §3.5 优先级建议） |
+| K7 | ✔ | 代码 | SwitcherSettingsDialog.cpp:20-23 两次 `get_available/selected_schema_list` 填充的 RimeSchemaList 全程无 `free_schema_list`（Populate 还会二跑）；UIStyleSettings.cpp:7 `custom_settings_init` 无对应 destroy（析构为空） |
+| K8 | ✔ | 代码 | :114 `HKEY hKey;` 未初始化；:120 RegOpenKey 失败时 :155 仍无条件 `RegCloseKey(hKey)`；:149 UI 线程 `WaitForSingleObject(INFINITE)`；:122 `value[MAX_PATH]` 未强制 NUL |
+| K9 | ✔ | 代码 | :110-112 `get_user_data_sync_dir`（UTF-8）经 `MultiByteToWideChar(CP_ACP)` 解码——与 A16 同根（已运行时证明 ACP 解码 UTF-8 必乱）；:121-122 `dict_name[100]` 收 LB_GETTEXT，>99 字符词典名即栈溢出（LB_GETTEXT 不截断整串拷贝） |
+| K10 | ✔ | 代码 | OpenFolderAndSelectItem :13 `CoInitializeEx(0, COINIT_MULTITHREADED)` 在 STA 主线程（WeaselDeployer _tWinMain 已 CoInitialize）返回 RPC_E_CHANGED_MODE 不加计数，:25 无条件 `CoUninitialize` 却拆主循环计数，多次调用后主线程 COM 被拆 |
+| K11 | ✔ | 代码 | install_ime_file :196/:214/:224/:237 四处 copy_file 失败 return 1 均不 `Wow64RevertWow64FsRedirection`（Revert 仅 :240）；install() :387 把失败累进 retval 后照写全部注册表/WER 键，:463 才检查 retval |
+| K12 | ✔ | 代码 | register_text_service :364-380 仅 ShellExecuteExW 失败返回 1；成功启动后不 `GetExitCodeProcess`，regsvr32 注册失败也 return 0 |
+| K13 | ✔ | 代码 | uninstall :516-517 `RegDeleteKey(HKLM, WEASEL_REG_KEY/RIME_REG_KEY)`——RIME_REG_KEY 有子键即失败；全程不清理 HKCU `Software\Rime\weasel` 配置 |
+| K14 | ✔ | 代码 | CustomInstall 已安装分支（WeaselSetup.cpp:109-111）只写注册表值；profile 重注册（regsvr32→RegisterProfiles 的 enable 位、InstallLayoutOrTip）仅在 install() 内执行 |
+| K15 | ✔ | 代码 | :209-212 `res` 直接指向 `lpCmdLine` 前缀后原文，`/userdir:"..."` 引号原样入库；`return SetRegKeyValue(...)` 把 LSTATUS 当退出码 |
+| K16 | ✔ | 代码 | CGetTextExtentEditSession::DoEditSession：:172 GetSelection 的 `selection.range` 与 :163/:176 裸 `ITfRange* pRange`（GetRange AddRef）在所有路径（含 :171/:174 早退）均未 Release；调用点 _UpdateCompositionWindow 每键触发（EditSession.cpp:53） |
+| K17 | ✔ | 代码 | CandidateList.cpp:160-163 `SetSelection` 直写 `cinfo.highlighted`；下游 `GetCandidateRect(id)`→`_candidateRects[id]`（StandardLayout.h:37/75）裸数组无校验 |
+| K18 | ✔ | 代码 | Configurator.cpp:103-106 `(skip_switcher \|\| configure_switcher(...)) && (skip_ui \|\| configure_ui(...))`——取消方案对话框返回 false 时短路，configure_ui 不执行 |
+| K19 | ✔ | 代码 | UpdateWorkspace :141-155 deploy/deploy_config_file 后无 `join_maintenance_thread` 即 EndMaintenance（对照 SyncUserData :227 有 join） |
+| K20 | ✔ | 代码 | 基类 `AddSession(LPWSTR buffer, EatLine eat = 0)`（WeaselIPC.h:63）vs 测试类 `AddSession(LPWSTR buffer)`（TestWeaselIPC.cpp:143）签名不同且无 override → 隐藏而非重写；ServerImpl::OnStartSession 带 eat 调用命中基类空实现，m_counter 永不增长 |
+| K22 | ✔ | 代码(抽样) | 抽样 10 项：Composition.cpp:25,59 成功路径仍返回 E_FAIL ✔；EditSession.cpp:60 返回 TRUE ✔；Compartment.cpp:196-204 首个 Advise 结果被覆盖 + 存 DWORD ✔；TextEditSink.cpp:100-115 text-edit advise 失败时 cookie=INVALID → 下轮清理整块跳过，已成功的 layout sink 泄漏 ✔；WeaselServer.cpp:41-46 user_name[20] 不查返回值 ✔；imesetup.cpp:342-344 throw 无人接 ✔；WeaselDeployer.cpp:47-49 单实例静默 ret=1 ✔；dllmain/WeaselService 各项读码相符 ✔。**一项被推翻**：imesetup.cpp:36-58 ".old.0~9 重启后无人清理"不实——:39/:54 `MoveFileEx(old, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)` 已排定重启删除。整体族成立 |
+| K24 | ✔ | 代码 | KeyEventSink.cpp:65-74 `OnSetFocus(FALSE)` → `FocusOut()+_AbortComposition()`（默认 clear=true）→ `m_client.ClearComposition()` 清空 Rime 编码并销毁候选窗，切回无恢复 |
+| B1 | ✔ | 代码(死锁链) | 链条五环全部核实：① 面板窗口属主=服务主线程（WeaselServerApp.cpp:30 `m_ui.Create` 在 :39 `m_server.Run()` 消息循环之前、同线程）；② 管道 worker 在 g_api_mutex 内执行 handler（WeaselServerImpl.cpp:184）；③ worker 路径调未 marshal 的 `m_ui->Hide/Show/ShowWithTimeout`（RimeWithWeasel.cpp:223/369/556/742/1485）→ UIImpl 直接 `panel.ShowWindow/SetTimer`（WeaselUI.cpp:50-81），跨线程 ShowWindow 经 WM_SHOWWINDOW/WM_WINDOWPOSCHANGING 同步 send，需窗口线程泵消息才返回；④ 服务消息线程在 OnColorChange:47/OnEndSystemSession:91/OnCommand:106,112 阻塞于 g_api_mutex，不泵消息；⑤ Refresh/RedrawWindow/MoveTo/ApplyUpdate/ApplyStyle 均 marshal（WeaselPanel.cpp:145/1137/1261/1316/1351）唯 Show 家族缺席——互等死锁成立，概率低但为全局输入冻结，与报告一致。运行时构造（需真实双线程+窗口时序）不可行，按任务约定代码裁决 |
+| B2 | ✔ | 代码 | = A9（同一缺陷），托盘读侧证据见 A9 行 |
+| B3 | ✅ | 运行时 | repro_core.exe：`substr(3,5)` 得 "defgh"（长 5，应 "de"）；StandardLayout.cpp:98 与旧 V1 复现时代码一致未变；WeaselPanel.cpp:683 已是修正式（`end - start`），"WeaselPanel 已修此处漏修"属实。见 §3.4 |
+| B4 | ✅ | 运行时 | repro_b4.exe（MSVC 调试 CRT）：`vector subscript out of range` 断言即崩；ContextUpdater.cpp:55-62 与旧 V2 复现时一致未变。见 §3.4 |
+| B5 | ✔ | 代码 | Deserializer.h:11-15 catch archive_exception 后 `MessageBoxA(..., MB_OK \| MB_ICONERROR)` 模态框；运行于宿主输入线程（GetResponseData ← DoEditSession）；ContextUpdater.cpp:73-76 归档构造确在 TryDeserialize 的 try 之外 |
+| B6 | ✔ | 代码 | PipeChannel.h:64-67 `thread_specific_ptr<HANDLE>` 无 cleanup 函子，boost 缺省清理=delete 指针本身；`CloseHandle` 仅在 `_FinalizePipe` 执行，线程退出路径不经过；服务端 worker 阻塞 ReadFile 直至宿主进程退出 |
+| B7 | ❌ | 运行时 | 见 §3.2：MSVC(19.43) `ws_split(L"")` 产出 1 个空 token 的 vector（size==1），`[0]` 不越界，报告前提（MSVC→空 vector）在本工具链上不成立 |
+| B8 | ✔ | 代码 | WeaselUtility.h:316 `if (S_OK != result) throw`——S_FALSE(1) 也抛；HR() 遍布绘制路径（WeaselPanel._TextOut:1444-1465、StandardLayout GetTextSizeDW 5 处、DirectWriteResources ctor），DoPaint 无局部 catch，唯一进程级 catch 在 WeaselServer.cpp:117-122 → 服务退出；WeaselUI.h:129-131 GetLayoutOverhangMetrics 空指针先解引用同样属实 |
+| B9 | ✔ | 代码 | Layout.h:15 `id(_context.cinfo.highlighted)` 无 clamp；`_highlightRect = _candidateRects[id]`（Vertical:215、Horizontal:221、VHorizontal:229/451/497/513）；客户端 cinfo 来自 IPC 反序列化（ContextUpdater::_StoreCand → text_wiarchive）无校验 |
+| B10 | ✔ | 代码 | WeaselPanel.h:158-162 四成员无初始化，构造函数初始化列表（:60-77）亦无；首读 DoPaint:1015 `if (m_istorepos)` 及鼠标处理器 :329-330/:438-439 等（以垃圾真值守卫再用同样未初始化的 m_offsetys）；写点仅在 _RepositionWindow :1403(adj==true)/:1417(翻转) 与 DoPaint:1015 之后 |
+| B15 | ✔ | 代码 | PipeChannel.h:124-137：`_Ensure()` 失败在 try 块**之前** throw → 无 _Reconnect/_Send/ClearBufferStream；WeaselClientImpl.cpp:149 写入的 body 残留在 TSS ChannelContext.write_stream，下次 StartSession 的 `_WriteClientInfo` 在旧流上追加（双份）；`has_body` 残留使下一个无 body 命令经 :172 搭车发残留 body |
+| B16 | ✅ | 运行时 | repro_b16.exe（boost 1.84 wbufferstream）：写入超限后 fail()=bad()=1，`tellp()==-1`，代码路径据此得 `body_bytes=0` → 只发头。见 §3.4 |
+| B17 | ✔ | 代码 | WeaselServerImpl.cpp:445-461 `for(;;)` 内 catch(...) 仅 `_FinalizePipe` 后立即回到 `_ConnectServerPipe`（CreateNamedPipe），无任何退避 sleep |
+| B18 | ✔ | 代码 | worker 尾部 `_RemoveWorker(pipe); _FinalizePipe(pipe)`（:517-518）可与监听线程 `_RegisterWorker(pipe, worker)`（:455）竞争交错：已关闭句柄入表；停机 DrainWorkers :479-480 对其 CancelIoEx/DisconnectNamedPipe，句柄值若被复用则误伤新连接（仅停机窗口） |
+| B19 | ✔ | 代码 | WeaselPanel.cpp:1261-1264 MoveTo 的 `PostMessage(WM_WEASEL_MOVETO, pRc)` 不查返回值；对照 ApplyUpdate:1318-1323 / ApplyStyle:1353-1355 均查并 delete |
+| B20 | ✔ | 代码 | WeaselIPC/Configurator.cpp:17 守卫 `!m_pTarget->p_context`，:21 却解引用 `p_config->inline_preedit`；生产路径（EditSession 传 config 无 context）恰好不触发，test/TestResponseParser 形态即中 |
+| B21 | ✔ | 代码 | Deserializer.cpp:13-24 `if (s_factories.empty()) { Define... }` 无锁；ResponseParser 构造（ResponseParser.cpp:18）每键执行 → 多 UI 线程宿主首次并发解析即并发 insert |
+| B22 | ✔ | 代码 | RimeWithWeasel.h:89-94 `to_session_id/get_session_status` 均为 `m_session_status_map[ipc_id]`（operator[] 插入）；StartMaintenance/EndMaintenance → `_UpdateUI(0)`（RimeWithWeasel.cpp:489/:495）→ 插入 key 0 死条目；StartMaintenance 的 `m_session_status_map.clear()`（:487）可周期清掉，EndMaintenance 后再 clear（:497），常驻风险主要来自未知 ipc_id |
+| B23 | ✅ | 运行时 | repro_b23.exe：140 字符参数 + `swprintf_s<128>` 触发 CRT 断言 "Buffer too small" 并走 invalid-parameter 路径（无自装 handler 时进程直接终止，实测退出码 3；装 handler 后捕获到 handler 被调、退出码 77），后续语句不可达。见 §3.4 |
+| B24 | ✔ | 代码 | WeaselPanel.cpp:1003 DoPaint 首行 `ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED)` 每帧执行（带 SWP_FRAMECHANGED 的 SetWindowPos） |
+| B25 | ✔ | 代码 | :1088-1091 `FAILED(EndDraw())` → `_InitFontRes(true); Refresh();` 后落到 :1126 `_LayerUpdate` 照送帧；且此时 `m_ctx==m_octx` 使 Refresh 内 :189 去重跳过重绘 |
+| B26 | ✔ | 代码 | DirectWriteResources.cpp:100 lambda 形参 `wrap` 全程未用，:126 恒用捕获 `wrapping`；:136 传 `wrapping_preedit` 被丢弃 → preedit 拿 WHOLE_WORD 而非逐字换行 |
+| B27 | ✔ | 代码 | FullScreenLayout.cpp:103-117 AdjustFontPoint 直接 `pDWR->InitResources(...)` 改共享 DirectWriteResources 字号；退出全屏后 WeaselPanel._InitFontRes:204 重建条件 `(m_ostyle != m_style) \|\| (dpiX != dpi)` 不满足 → 缩水字号沿用 |
+| B28 | ✔ | 代码 | WeaselServerImpl.cpp:307-315 每次 OnUpdateInputPosition 都 `GetProcAddress(m_hUser32Module, "PhysicalToLogicalPointForPerMonitorDPI")` 且不判空即调两回；Win8.1 gate 仅进程级（WeaselServer.cpp:29） |
+| B30 | ✔ | 代码 | RimeWithWeasel.cpp:1462-1463 `u8tow(status.schema_name/schema_id)` 未判空（对照 _Respond:791 对 schema_id 有 `?: std::wstring()`）；NULL 构造 std::string 为 UB，是否可达取决于 rime 契约 |
+| B31 | ✔ | 代码 | WeaselUtility.h:24 第二次 `GetUserName(username, &len)` 返回值不查：失败时 len 仍>0 走成功路径，:29 用未初始化 `new wchar_t[]` 构造 wstring |
+| B32 | ✔ | 代码 | RimeWithWeasel.cpp:177 `(RimeSessionId)rime_api->create_session()` 无 0 检查；0 会话入会话表，后续 get_status/set_property 全部静默失败，客户端拿到假会话 |
+| B33 | ⚠ | 代码+推理 | 见 §3.3：锁结构事实成立，自锁触发链依赖 librime 内部实现，本地无 librime 源码可证 |
+| B34 | ⚠ | 代码+推理 | 见 §3.3：非原子 UINT 属实，但单 ClientImpl 的跨线程共享路径未证实 |
+| B35 | ✔ | 代码(全项) | ① HorizontalLayout.cpp:81 数组[100] + :256 循环 `i<candidates_count` 读 `[i+1]`，count==100 时越界（VHorizontalLayout.cpp:332/:564/:594 同型）✔；② VerticalLayout.cpp:11-21 `CSize sg;` 在 candidates_count==0 时未初始化即读 `sg.cx` ✔；③ RimeWithWeasel.cpp:267 `m_ui->SetStyle` 无判空（同函数 :237 有）✔；④ WeaselUtility.h:265-269 `operator<<(std::string)` 用 acptow 而注释写 utf-8（与 const char* 分支 :260 不一致，且按值收参）✔；⑤ WeaselPanel.cpp:1335-1342 逐 wchar 截断可切开代理对 ✔；⑥ WeaselPanel.cpp:28-38 LoadIconNecessary 失败结果被缓存直至路径变化 ✔；⑦ WeaselClientImpl.cpp:44-46 Connect 忽略 ServerLauncher 形参 ✔ |
+
+### 3.2 被推翻项（❌）
+
+**A10 —— 托盘图标句柄悬垂：不成立。**
+报告推理：栈上 `CIcon icon; icon.LoadIconW(IDI_ZH);` 传入 `CSystemTray::Create` 存入 `m_tnd.hIcon`（SystemTraySDK.cpp:201），Create 返回时 CIcon 析构 `DestroyIcon` → 句柄悬垂，explorer 重启后 `InstallIconPending → NIM_ADD` 复用死句柄。
+运行时验证（`Z:/Temp/weasel_mgmt/verify/repro_a10.exe`）：
+- WTL 一参 `LoadIconW`（UNICODE 下即 atluser.h:665 `LoadIcon`）走 `::LoadIconW` —— **共享图标**（LR_SHARED 语义，宿主模块常驻则图标常驻）；
+- 对共享句柄执行 `DestroyIcon` 返回 1（表面"成功"），但随后 `GetIconInfo` **依然成功**——句柄未被销毁，仍可正常使用；
+- 对照组（`LoadImageW` 无 LR_SHARED 的自有图标）DestroyIcon 后 GetIconInfo 失败，证明测试方法有效。
+结论：`m_tnd.hIcon` 存的是共享图标句柄，CIcon 析构的 DestroyIcon 对其无实际销毁效果，TaskbarCreated 重注册用的是活句柄。报告描述的悬垂机制在本代码路径上不发生（WTL 在共享句柄上多调一次 DestroyIcon 属无害冗余）。"首次 NIM_ADD 系统已拷贝图标"亦非必要条件。**无需修复。**
+
+**B7 —— font_face 空串 `ws_split[0]` 越界：前提不成立。**
+报告推理：MSVC 的 `wsregex_token_iterator` 对空串产出空 vector，`font_face` 为空时 `fontFaceStrVector[0]` 越界崩溃。
+运行时验证（`Z:/Temp/weasel_mgmt/verify/repro_b7.exe`，MSVC 19.43.34808 /MDd，逐字复刻 DirectWriteResources.cpp:10-15 的 `ws_split` 并以 `L""` 调用）：
+- `ws_split(L"", L",").size() == 1`（得到一个空 token），`fontFaceStrVector[0]` 完全在界内；
+- 按原样执行 `:106` 的 `regex_replace(fontFaceStrVector[0], ...)` 正常通过，无断言无崩溃。
+结论：本工具链（VS2022，项目仅支持 VS2019/VS2022）上"空串 → 空 vector"的前提为假，`[0]` 不越界；空 font_face 走到 `CreateTextFormat`/`_SetFontFallback` 亦无崩溃路径。旧报告 N13 的该前提在当前 MSVC STL 上应予更正。**无需修复**（给 font_face 一个非空默认值仍可作为健壮性改进，但不是崩溃缺陷）。
+
+### 3.3 未能完全验证项（⚠）
+
+**B33 —— OnNotify 与 _ShowMessage 共用非递归互斥的自锁。**
+已核实的部分：`m_notifier_mutex` 为非递归 `std::mutex` 且为 **static 成员**（RimeWithWeasel.h:118）；OnNotify :403 持锁调用 `rime_api->get_state_label`（:412）；_ShowMessage :689 持锁；_UpdateUI :563 亦取该锁。
+未能核实的部分：死锁要求 `get_state_label` 在同一线程**同步回调**通知处理器（重入 OnNotify）。仓库内 `librime/` 为空目录（源码未拉取，仅有预编译 7z），无法读 librime 实现裁决。按 librime 公开实现，`get_state_label` 是对方案配置的纯查询（翻译 option 标签），不派发通知；真正会同步触发通知回调的是 `set_option`/部署事件，而那些路径不在持锁段内调用。倾向认为自锁不可达，但无源码佐证，维持 ⚠。static 成员跨实例共享在单实例 server 进程内无实际影响（与报告注一致）。
+
+**B34 —— ClientImpl::session_id 跨线程非原子。**
+已核实的部分：WeaselClientImpl.h:45 `UINT session_id;` 确非原子；管道句柄为 TSS 而会话号共享的结构性不对称属实。
+未能核实的部分：**单个 ClientImpl 的跨线程共享路径未找到**——每个 WeaselTSF 实例（每 thread manager 一个）持有自己的 `m_client`/ClientImpl，TSF 各 sink 回调均在所属线程；未发现同一实例被多线程并发调用的通路。x86/x64 对齐 UINT 读写实际原子（报告亦自注"实际良性"）。按"形式 UB、无实证并发路径"定性为加固项，维持 ⚠。
+
+### 3.4 运行时复现（✅）汇总
+
+程序目录 `Z:/Temp/weasel_mgmt/verify/`（cl /EHsc /utf-8 /MDd，boost 1.84 取自仓库 deps），关键输出：
+
+| 程序 | 条目 | 关键输出 |
+|---|---|---|
+| repro_core.exe | B3 | `substr(3,5) on "abcdefgh" -> "defgh" len=5 (expect len=2 "de")` |
+| repro_core.exe | K4 | `SysAllocStringLen(3-char str, 3+1): SysStringLen=4`（内含多余 NUL） |
+| repro_b4.exe | B4 | `Assertion failed: vector subscript out of range`（进程即崩） |
+| repro_b16.exe | B16 | `fail()=1 bad()=1, tellp() = -1, body_bytes = 0 → 只发头` |
+| repro_b23.exe | B23 | `Assertion failed: ("Buffer too small", 0)` → invalid-parameter 路径 → 进程终止（退出码 3；装 handler 后确认 handler 被调） |
+| repro_a16.exe | A16 | `acptow(utf8) = 鐢ㄦ埛鐩...  exists=0`、`GetFileAttributes=0xffffffff`；`u8tow` 则 `exists=1` |
+| repro_a10.exe | A10(❌) | 共享句柄 DestroyIcon 后 `GetIconInfo SUCCEEDED (handle valid)`；自有句柄对照组 FAILED |
+| repro_b7.exe | B7(❌) | `ws_split(empty).size() = 1`，后续 `regex_replace(v[0],...)` 正常执行 |
+| repro_k6.exe | K6 | `new[]` + 标量 `delete` 在 MSVC 调试 CRT 下**无任何报告**（平凡元素无数组 cookie），UB 仅存在于标准层面 |
+
+### 3.5 验证备注
+
+1. **K1 影响面细化**：服务端在维护态下，已建立的客户端会话确实全部失效且不自愈（客户端 `_Active()` 仍真、不再重发 StartSession，击键一律直通英文），直到宿主应用重建会话；但**新** AddSession（新应用/新会话）会经 `RimeWithWeaselHandler::AddSession` 的 `EndMaintenance()` 自愈。即"全系统禁输"准确说是"所有现存会话禁输，直至应用侧重开会话或重启服务"，仍是 P1 级可用性缺陷，修复建议不变（RAII 配对 EndMaintenance）。
+2. **K6 修复优先级**：标准层面 UB 属实，但在 MSVC 上对 `const char*[N]`（平凡可析构）无数组 cookie，实际无任何可观察故障；修复价值是正确性/卫生（改 `delete[]` 或 `std::vector`），非紧急。
+3. **K22 抽样反例**：`imesetup.cpp:36-58 .old.0~9 重启后无人清理` 一项与代码不符（`MoveFileEx(old, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)` 已排定重启删除），族内其余抽样项均成立，K22 整体维持 ✔。
+4. **A7 的 perf 部分**（每键 compartment 往返/无条件 OnUpdate）与 K23 重叠，本次仅验证其 bug 部分（读失败清位）。
+5. **A9/B2、B1** 属线程/窗口时序缺陷，代码级证据链完整（见总览表），运行时构造需真实双线程+explorer/托盘交互，未尝试。
+
 
 ---
 
