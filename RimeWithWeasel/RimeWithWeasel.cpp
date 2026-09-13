@@ -70,19 +70,13 @@ bool _UpdateUIStyleColor(RimeConfig* config,
                          const std::string& color = std::string());
 void _LoadAppOptions(RimeConfig* config, AppOptionsByAppName& app_options);
 
-void _RefreshTrayIcon(const RimeSessionId session_id,
-                      const std::function<void()> _UpdateUICallback) {
-  // Dangerous, don't touch
-  static char app_name[256] = {0};
-  auto ret = rime_api->get_property(session_id, "client_app", app_name,
-                                    sizeof(app_name) - 1);
-  if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
-    boost::thread th([=]() {
-      ::Sleep(100);
-      if (_UpdateUICallback)
-        _UpdateUICallback();
-    });
-  else if (_UpdateUICallback)
+void _RefreshTrayIcon(const std::function<void()>& _UpdateUICallback) {
+  // explorer.exe 曾需延迟 100ms 的 detached 线程垫片（上游 45cf1120）：当时
+  // 本回调在管道工作线程上直接执行 Shell_NotifyIcon，而资源管理器的 UI 线程
+  // 正阻塞等待本次管道响应，两者互等挂起。d73f629 落地 PostMessage 合并刷新
+  // 后，回调只做投递，Shell_NotifyIcon 一律在服务端消息线程执行，垫片已无
+  // 必要，直接调用即可，client_app（含 explorer 判断）也随之无需每键查询。
+  if (_UpdateUICallback)
     _UpdateUICallback();
 }
 
@@ -201,7 +195,7 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
     _LoadSchemaSpecificSettings(ipc_id, schema_id);
     _LoadAppInlinePreeditSet(ipc_id, true);
     _UpdateInlinePreeditStatus(ipc_id);
-    _RefreshTrayIcon(session_id, _UpdateUICallback);
+    _RefreshTrayIcon(_UpdateUICallback);
     session_status.status = status;
     session_status.__synced = false;
     rime_api->free_status(&status);
@@ -438,6 +432,8 @@ void RimeWithWeaselHandler::_ReadClientInfo(WeaselSessionId ipc_id,
   }
   SessionStatus& session_status = get_session_status(ipc_id);
   RimeSessionId session_id = session_status.session_id;
+  // 会话期内 client_app 不变，缓存供后续查询（_LoadAppInlinePreeditSet 等）
+  session_status.client_app = app_name;
   // set app specific options
   if (!app_name.empty()) {
     rime_api->set_property(session_id, "client_app", app_name.c_str());
@@ -557,7 +553,7 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
     m_ui->Update(weasel_context, weasel_status);
   }
 
-  _RefreshTrayIcon(session_id, _UpdateUICallback);
+  _RefreshTrayIcon(_UpdateUICallback);
 
   {
     std::lock_guard<std::mutex> lock(m_notifier_mutex);
@@ -639,10 +635,9 @@ void RimeWithWeaselHandler::_LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
                                                      bool ignore_app_name) {
   SessionStatus& session_status = get_session_status(ipc_id);
   RimeSessionId session_id = session_status.session_id;
-  static char _app_name[50];
-  rime_api->get_property(session_id, "client_app", _app_name,
-                         sizeof(_app_name) - 1);
-  std::string app_name(_app_name);
+  // client_app 已随会话缓存（_ReadClientInfo），不再经 get_property 交叉查询；
+  // 客户端未提供时缓存为空串，也不再残留上一次调用的静态缓冲
+  const std::string& app_name = session_status.client_app;
   if (!ignore_app_name && m_last_app_name == app_name)
     return;
   m_last_app_name = app_name;
@@ -1479,7 +1474,7 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
           // in case of inline_preedit set in schema
           _UpdateInlinePreeditStatus(ipc_id);
         // refresh icon after schema changed
-        _RefreshTrayIcon(session_id, _UpdateUICallback);
+        _RefreshTrayIcon(_UpdateUICallback);
         m_ui->SetStyle(session_status.style);
         if (m_show_notifications.find("schema") != m_show_notifications.end() &&
             m_show_notifications_time > 0) {

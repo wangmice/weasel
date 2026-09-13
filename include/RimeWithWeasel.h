@@ -30,6 +30,9 @@ struct SessionStatus {
   RimeStatus status;
   bool __synced;
   RimeSessionId session_id;
+  // 客户端应用名（小写，_ReadClientInfo 于建会话时解析）：会话期内不变，
+  // 供应用选项匹配与托盘刷新使用，避免每键 get_property 交叉查询
+  std::string client_app;
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;
