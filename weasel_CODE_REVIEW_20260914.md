@@ -10,11 +10,11 @@
 
 | 编号 | 级别 | 类型 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|---|
-| A1 | P2 | bug | WeaselTSF/TextEditSink.cpp:35-44 | OnEndEdit 泄漏 GetSelection 返回的 ITfRange（合成期每击键一次） | ✔ | 未修复 |
-| A2 | P2 | bug | WeaselTSF/CandidateList.cpp:230-234,289-291 | Destroy 不清 _uiStarted，StartUI 早退 → 本组合期候选窗永久丢失 | ✔ | 未修复 |
+| A1 | P2 | bug | WeaselTSF/TextEditSink.cpp:35-44 | OnEndEdit 泄漏 GetSelection 返回的 ITfRange（合成期每击键一次） | ✔ | ✅ 已修复（4ede762（含 K16），批次6） |
+| A2 | P2 | bug | WeaselTSF/CandidateList.cpp:230-234,289-291 | Destroy 不清 _uiStarted，StartUI 早退 → 本组合期候选窗永久丢失 | ✔ | ✅ 已修复（af06ec9，批次6） |
 | A9 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘快照在管道线程读 UI style_/status_（wstring）数据竞争（= B2，合并处理） | ✔ | ✅ 已修复（cef6c26（=B2），批次4） |
-| A3 | P3 | bug | WeaselTSF/CandidateList.h:85 | uiid 未初始化即传入 UpdateUIElement | ✔ | 未修复 |
-| A4 | P3 | bug | WeaselTSF/Compartment.cpp:75-89 | _Unadvise 对 null _compartment 解引用；_cookie 未初始化 | ✔ | 未修复 |
+| A3 | P3 | bug | WeaselTSF/CandidateList.h:85 | uiid 未初始化即传入 UpdateUIElement | ✔ | ✅ 已修复（42eb9ff（含 A4），批次6） |
+| A4 | P3 | bug | WeaselTSF/Compartment.cpp:75-89 | _Unadvise 对 null _compartment 解引用；_cookie 未初始化 | ✔ | ✅ 已修复（42eb9ff（含 A3），批次6） |
 | A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | ✔ | 未修复 |
 | A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | ✔ | 未修复 |
 | A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | 未修复 |
@@ -46,8 +46,8 @@
 | K13 | P2 | imesetup.cpp:514-517 | 卸载不清 HKCU 配置；RegDeleteKey 有子键即失败 | ✔ | 未修复 |
 | K14 | P2 | WeaselSetup/WeaselSetup.cpp:109-111 | 改 profile 只写注册表不重注册 TSF profile | ✔ | 未修复 |
 | K15 | P2 | WeaselSetup/WeaselSetup.cpp:209-212 | /userdir 引号不剥离 | ✔ | 未修复 |
-| K16 | P2 | WeaselTSF/Composition.cpp:163,166-182 | GetTextExtent 会话泄漏 pRange 与 selection.range（每击键） | ✔ | 未修复 |
-| K17 | P2 | WeaselTSF/CandidateList.cpp:160-163 | SetSelection 不校验 nIndex（下游裸数组越界，= B9 同族） | ✔ | 未修复 |
+| K16 | P2 | WeaselTSF/Composition.cpp:163,166-182 | GetTextExtent 会话泄漏 pRange 与 selection.range（每击键） | ✔ | ✅ 已修复（4ede762（含 A1），批次6） |
+| K17 | P2 | WeaselTSF/CandidateList.cpp:160-163 | SetSelection 不校验 nIndex（下游裸数组越界，= B9 同族） | ✔ | ✅ 已修复（41dbd23，批次6） |
 | K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | ✔ | 未修复 |
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | 未修复 |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | 未修复 |
@@ -898,3 +898,11 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `eb5900a` perf(RimeWithWeasel): early-exit passthrough keys and reuse fetched rime status — B11(a)(b)。直通键（!handled && !state_changed）跳过 get_context 与整套 UI 刷新；_Respond 快照复用消掉每键第二次 get_status。协议兼容性考证（librime IsComposing/HasMenu 语义 + TSF 客户端按行解析）确认直通键响应字节流不变；顺带收口 _Respond 路径 schema 字段判空（B30 同型）。
 - `f354257` perf(RimeWithWeasel): generate session id from a const session map — B29。
 - 构建：release/debug 全量 build ok；全部测试目标通过。
+
+### 批次 6（2026-09-14）：A1、K16、A2、K17、A3、A4（WeaselTSF）
+
+- `4ede762` fix(WeaselTSF): release ranges returned by GetSelection in edit callbacks — A1+K16。OnEndEdit 补 tfSelection.range->Release()；CGetTextExtentEditSession 改"恰持一个引用"所有权模型，两处每击键泄漏收口。
+- `42eb9ff` fix(WeaselTSF): default-initialize uiid/_cookie and guard unadvised sinks — A3+A4。uiid=0 + _UpdateUIElement 加 !_uiStarted 守卫；_cookie=0 + _Unadvise 判空返回 S_FALSE。
+- `af06ec9` fix(WeaselTSF): end the UI element when destroying the candidate window — A2。恢复 Destroy() 的 EndUI()（历史考证：上游 PR #263 的实验遗留注释，PR #268 确立按组合建窗后即成死代码冲突；DestroyAll 已在 5dffa59 恢复、Destroy 为漏网）；状态机注释写明 _uiStarted⟺注册元素、窗口生命周期不变量；与 A3 守卫配套收口僵尸 UpdateUIElement 路径。
+- `41dbd23` fix(WeaselTSF): reject out-of-range candidate selection in SetSelection — K17。TSF 源头收口（E_INVALIDARG），与批次 3 UI 侧 clamp（B9）互补。
+- 验证：TSF COM 交互无法控制台复现，按构建+推理验证；release/debug 全量 build ok，8 个测试目标全过（注意 debug 需 xmake f -p windows -a x64 -m debug）。
