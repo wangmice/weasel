@@ -26,6 +26,24 @@ static void CreateFileIfNotExist(std::string filename) {
     o.close();
   }
 }
+
+// StartMaintenance 的作用域守卫：无论同步成败（含异常路径），退出时都
+// 重新连接并调用 EndMaintenance，保证服务端不会永久停留在维护模式（K1）。
+class MaintenanceReleaser {
+ public:
+  explicit MaintenanceReleaser(weasel::Client& client) : client_(client) {}
+  MaintenanceReleaser(const MaintenanceReleaser&) = delete;
+  MaintenanceReleaser& operator=(const MaintenanceReleaser&) = delete;
+  ~MaintenanceReleaser() {
+    if (client_.Connect()) {
+      LOG(INFO) << "Resuming service.";
+      client_.EndMaintenance();
+    }
+  }
+
+ private:
+  weasel::Client& client_;
+};
 Configurator::Configurator() {
   CreateFileIfNotExist("default.custom.yaml");
   CreateFileIfNotExist("weasel.custom.yaml");
@@ -217,21 +235,19 @@ int Configurator::SyncUserData() {
     client.StartMaintenance();
   }
 
+  int retval = 0;
   {
+    // 失败或异常退出本作用域时同样恢复服务端；
+    // EndMaintenance 由析构执行，保持在 CloseHandle 之后（先释放部署互斥再唤醒服务）
+    MaintenanceReleaser releaser(client);
     RimeApi* rime = rime_get_api();
     if (!rime->sync_user_data()) {
       LOG(ERROR) << "Error synching user data.";
-      CloseHandle(hMutex);
-      return 1;
+      retval = 1;
+    } else {
+      rime->join_maintenance_thread();
     }
-    rime->join_maintenance_thread();
+    CloseHandle(hMutex);  // should be closed before resuming service.
   }
-
-  CloseHandle(hMutex);  // should be closed before resuming service.
-
-  if (client.Connect()) {
-    LOG(INFO) << "Resuming service.";
-    client.EndMaintenance();
-  }
-  return 0;
+  return retval;
 }
