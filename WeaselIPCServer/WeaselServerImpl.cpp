@@ -10,6 +10,11 @@ using namespace weasel;
 
 extern CAppModule _Module;
 
+// Serializes every RequestHandler call: pipe worker threads run under it
+// in Run(); window-message paths (color change, tray menu, logoff) must
+// take it too, or they race handler state (session map, rime) mid-call.
+static std::mutex g_api_mutex;
+
 ServerImpl::ServerImpl()
     : m_pRequestHandler(NULL),
       m_darkMode(IsUserDarkMode()),
@@ -41,7 +46,10 @@ LRESULT ServerImpl::OnColorChange(UINT uMsg,
                                   BOOL& bHandled) {
   if (IsUserDarkMode() != m_darkMode) {
     m_darkMode = IsUserDarkMode();
-    m_pRequestHandler->UpdateColorTheme(m_darkMode);
+    if (m_pRequestHandler) {
+      std::lock_guard guard(g_api_mutex);
+      m_pRequestHandler->UpdateColorTheme(m_darkMode);
+    }
   }
   return 0;
 }
@@ -83,6 +91,7 @@ LRESULT ServerImpl::OnEndSystemSession(UINT uMsg,
                                        LPARAM lParam,
                                        BOOL& bHandled) {
   if (m_pRequestHandler) {
+    std::lock_guard guard(g_api_mutex);
     m_pRequestHandler->Finalize();
     m_pRequestHandler = nullptr;
   }
@@ -96,10 +105,16 @@ LRESULT ServerImpl::OnCommand(UINT uMsg,
   UINT uID = LOWORD(wParam);
   switch (uID) {
     case ID_WEASELTRAY_ENABLE_ASCII:
-      m_pRequestHandler->SetOption(lParam, "ascii_mode", true);
+      if (m_pRequestHandler) {
+        std::lock_guard guard(g_api_mutex);
+        m_pRequestHandler->SetOption(lParam, "ascii_mode", true);
+      }
       return 0;
     case ID_WEASELTRAY_DISABLE_ASCII:
-      m_pRequestHandler->SetOption(lParam, "ascii_mode", false);
+      if (m_pRequestHandler) {
+        std::lock_guard guard(g_api_mutex);
+        m_pRequestHandler->SetOption(lParam, "ascii_mode", false);
+      }
       return 0;
     default:;
   }
@@ -156,8 +171,6 @@ int ServerImpl::Stop() {
   PostMessage(WM_QUIT);
   return 0;
 }
-
-static std::mutex g_api_mutex;
 
 int ServerImpl::Run() {
   // This workaround causes a VC internal error:

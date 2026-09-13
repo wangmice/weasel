@@ -467,3 +467,4 @@ W6 推翻依据（V6）：本机 SDK `um\d2d1.h` 中 `D2D1_TEXT_ANTIALIAS_MODE`�
 | 1.2 `FlushFileBuffers` 持全局锁阻塞 + `_Send` 失败重发重复击键 | ✅ | `fix(WeaselIPC)` | TestPipeChannel 集成测试：客户端 A 发请求后不读响应（挂起），B 的请求 3s 内正常返回；反向验证：还原 flush 后该测试 FAIL（B 被拖死）。重发路径已删除（可能已投递的请求不再二次发送）。服务端 resp 移出 `g_api_mutex` 的部分随 1.5 的 Run 重构落地 |
 | 1.3 服务端读请求 body 偏移 +12（START_SESSION 首行被截掉 `"action"`） | ✅ | `fix(WeaselIPC)` | TestPipeChannel 集成测试：客户端发 `[头][action=session\nsession.client_app=…\n.\n]`，服务端 handler 从 `ReceiveBuffer()` 拿到的 body 首行为 `action=session`；反向验证：还原偏移后该断言 FAIL（body 以 `=session` 开头） |
 | N3 `_Connect` 无限循环（忙实例永久占用时钉死输入线程） | ✅ | `fix(WeaselIPC)` | TestPipeChannel 集成测试：单实例管道被占住不放，`_Connect` 在有界时间内（≤6×500ms）抛错返回而非永久阻塞；管道不存在时 `WaitNamedPipe` 立即失败快速返回 |
+| 1.4 暗色模式切换（主线程）无锁调 `UpdateColorTheme`；托盘 `SetOption` 同理 | ✅ | `fix(WeaselIPCServer)` | 构建通过；主线程对 handler 的三处触碰（OnColorChange / OnCommand 托盘 / OnEndSystemSession）全部纳入 `g_api_mutex` 串行化，与管道工作线程互斥（无单测框架可挂 WTL 窗口消息路径，静态核对 + 编译验证） |
