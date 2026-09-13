@@ -1,0 +1,5 @@
+target("TestPipeChannel")
+  set_kind("binary")
+  add_files("./*.cpp")
+  add_deps("WeaselIPC", "WeaselIPCServer")
+  add_rules("subcmd")
