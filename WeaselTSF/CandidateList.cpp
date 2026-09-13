@@ -159,7 +159,13 @@ STDMETHODIMP CCandidateList::GetCurrentPage(UINT* puPage) {
 }
 
 STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
-  _ui->ctx().cinfo.highlighted = nIndex;
+  auto& cinfo = _ui->ctx().cinfo;
+  // Reject indices without a candidate: highlighted feeds fixed-size arrays
+  // downstream (GetCandidateRect). Leaving the previous selection intact on
+  // a transient count mismatch is safer than writing a bogus index.
+  if (nIndex >= cinfo.candies.size())
+    return E_INVALIDARG;
+  cinfo.highlighted = static_cast<int>(nIndex);
   return S_OK;
 }
 
