@@ -392,15 +392,10 @@ void WeaselTSF::_DeleteCandidateList() {
 
 void WeaselTSF::_SelectCandidateOnCurrentPage(size_t index) {
   m_client.SelectCandidateOnCurrentPage(index);
-  // simulate a VK_SELECT presskey to get data back and DoEditSession
-  // the simulated keycode must be the one make TranslateKeycode Non-Zero return
-  // fix me: are there any better ways?
-  INPUT inputs[2];
-  inputs[0].type = INPUT_KEYBOARD;
-  inputs[0].ki = {VK_SELECT, 0, 0, 0, 0};
-  inputs[1].type = INPUT_KEYBOARD;
-  inputs[1].ki = {VK_SELECT, 0, KEYEVENTF_KEYUP, 0, 0};
-  ::SendInput(sizeof(inputs) / sizeof(INPUT), inputs, sizeof(INPUT));
+  // The click response itself carries the commit text and the updated
+  // context; feed it through the edit-session pipeline like the hover and
+  // page handlers do.
+  _UpdateComposition(_pEditSessionContext);
 }
 
 void WeaselTSF::_HandleMousePageEvent(bool* const nextPage,

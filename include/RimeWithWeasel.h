@@ -45,10 +45,11 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   virtual BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent,
                                WeaselSessionId ipc_id,
                                EatLine eat);
-  virtual void CommitComposition(WeaselSessionId ipc_id);
+  virtual void CommitComposition(WeaselSessionId ipc_id, EatLine eat);
   virtual void ClearComposition(WeaselSessionId ipc_id);
   virtual void SelectCandidateOnCurrentPage(size_t index,
-                                            WeaselSessionId ipc_id);
+                                            WeaselSessionId ipc_id,
+                                            EatLine eat);
   virtual bool HighlightCandidateOnCurrentPage(size_t index,
                                                WeaselSessionId ipc_id,
                                                EatLine eat);

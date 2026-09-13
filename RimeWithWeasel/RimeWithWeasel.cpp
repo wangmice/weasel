@@ -291,11 +291,13 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   return (BOOL)handled;
 }
 
-void RimeWithWeaselHandler::CommitComposition(WeaselSessionId ipc_id) {
+void RimeWithWeaselHandler::CommitComposition(WeaselSessionId ipc_id,
+                                              EatLine eat) {
   DLOG(INFO) << "Commit composition: ipc_id = " << ipc_id;
   if (m_disabled)
     return;
   rime_api->commit_composition(to_session_id(ipc_id));
+  _Respond(ipc_id, eat);
   _UpdateUI(ipc_id);
   m_active_session = ipc_id;
 }
@@ -311,12 +313,15 @@ void RimeWithWeaselHandler::ClearComposition(WeaselSessionId ipc_id) {
 
 void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
     size_t index,
-    WeaselSessionId ipc_id) {
+    WeaselSessionId ipc_id,
+    EatLine eat) {
   DLOG(INFO) << "select candidate on current page, ipc_id = " << ipc_id
              << ", index = " << index;
   if (m_disabled)
     return;
   rime_api->select_candidate_on_current_page(to_session_id(ipc_id), index);
+  _Respond(ipc_id, eat);
+  _UpdateUI(ipc_id);
 }
 
 bool RimeWithWeaselHandler::HighlightCandidateOnCurrentPage(

@@ -342,6 +342,45 @@ static void test_transact_recovery_without_resend() {
   check(echo_count.load() == 2, "1.6: recovery delivered exactly once");
 }
 
+/* N5: a mouse-click command must get its response body back in the same
+ * transaction (SelectCandidateOnCurrentPage historically sent no body, so
+ * the commit text only arrived with the next keystroke) */
+static void test_command_response_body() {
+  std::wstring name = unique_pipe_name(L"sel");
+  auto* server = new weasel::PipeServer(std::wstring(name));
+  // mirrors ServerImpl's eat lambda feeding the handler's response lines
+  auto handler = [server](weasel::PipeMessage msg,
+                          weasel::PipeServer::Respond resp) {
+    if (msg.Msg == WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE) {
+      *server << L"commit=你好\n";
+      *server << L"status.composing=0\n";
+    }
+    resp(0);
+  };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "N5: connect");
+  weasel::PipeMessage req{WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, 0, 1};
+  client.Transact(req);
+
+  // the client parses the click's own response, as DoEditSession does
+  std::wstring commit, status_line;
+  weasel::ResponseHandler parse = [&](LPWSTR data, UINT) -> bool {
+    std::wstring body(data);
+    size_t pos = body.find(L"commit=");
+    if (pos != std::wstring::npos)
+      commit = body.substr(pos + 7, body.find(L'\n', pos) - pos - 7);
+    pos = body.find(L"status.composing=");
+    if (pos != std::wstring::npos)
+      status_line = body.substr(pos + 17, 1);
+    return true;
+  };
+  client.HandleResponseData(parse);
+  check(commit == L"你好", "N5: commit text arrives with the click response");
+  check(status_line == L"0", "N5: status says not composing");
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -350,6 +389,7 @@ int main() {
   test_connect_bounded_wait();
   test_ordered_shutdown();
   test_transact_recovery_without_resend();
+  test_command_response_body();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;

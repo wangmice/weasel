@@ -338,8 +338,13 @@ DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnCommitComposition(WEASEL_IPC_COMMAND uMsg,
                                       DWORD wParam,
                                       DWORD lParam) {
-  if (m_pRequestHandler)
-    m_pRequestHandler->CommitComposition(lParam);
+  if (m_pRequestHandler) {
+    auto eat = [this](std::wstring& msg) -> bool {
+      *channel << msg;
+      return true;
+    };
+    m_pRequestHandler->CommitComposition(lParam, eat);
+  }
   return 0;
 }
 
@@ -354,8 +359,13 @@ DWORD ServerImpl::OnClearComposition(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnSelectCandidateOnCurrentPage(WEASEL_IPC_COMMAND uMsg,
                                                  DWORD wParam,
                                                  DWORD lParam) {
-  if (m_pRequestHandler)
-    m_pRequestHandler->SelectCandidateOnCurrentPage(wParam, lParam);
+  if (m_pRequestHandler) {
+    auto eat = [this](std::wstring& msg) -> bool {
+      *channel << msg;
+      return true;
+    };
+    m_pRequestHandler->SelectCandidateOnCurrentPage(wParam, lParam, eat);
+  }
   return 0;
 }
 
