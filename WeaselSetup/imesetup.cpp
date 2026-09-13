@@ -314,28 +314,89 @@ int uninstall_ime_file(const std::wstring& ext,
 // 注册IME输入法
 // `register_ime` (IMM/.ime) support removed — TSF-only build
 
-void enable_profile(BOOL fEnable, const std::wstring& profile) {
-  HRESULT hr;
+// 启用/停用一个 profile 的 TSF 启用状态（注册条目保留，用于已安装系统
+// 切换 profile；停用≠移除，区别于卸载路径的 RemoveLanguageProfile）
+static BOOL set_profile_enabled(const std::wstring& profile, BOOL fEnable) {
   ITfInputProcessorProfiles* pProfiles = NULL;
+  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
+                                CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles,
+                                (LPVOID*)&pProfiles);
+  if (FAILED(hr))
+    return FALSE;
 
-  hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                        CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles,
-                        (LPVOID*)&pProfiles);
+  LANGID lang_id = profile_to_lang_id(profile);
+  hr = pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
+                                        c_guidProfile, fEnable);
+  if (fEnable) {
+    pProfiles->EnableLanguageProfileByDefault(c_clsidTextService, lang_id,
+                                              c_guidProfile, fEnable);
+  }
+  pProfiles->Release();
+  return SUCCEEDED(hr) ? TRUE : FALSE;
+}
 
+// 注册/注销路径的 profile 处理：TRUE=启用（同 set_profile_enabled）；
+// FALSE=彻底移除注册条目
+void enable_profile(BOOL fEnable, const std::wstring& profile) {
+  if (fEnable) {
+    set_profile_enabled(profile, TRUE);
+    return;
+  }
+
+  ITfInputProcessorProfiles* pProfiles = NULL;
+  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
+                                CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles,
+                                (LPVOID*)&pProfiles);
   if (SUCCEEDED(hr)) {
-    LANGID lang_id = profile_to_lang_id(profile);
-    if (fEnable) {
-      pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
-                                       c_guidProfile, fEnable);
-      pProfiles->EnableLanguageProfileByDefault(c_clsidTextService, lang_id,
-                                                c_guidProfile, fEnable);
-    } else {
-      pProfiles->RemoveLanguageProfile(c_clsidTextService, lang_id,
-                                       c_guidProfile);
-    }
-
+    pProfiles->RemoveLanguageProfile(c_clsidTextService,
+                                     profile_to_lang_id(profile),
+                                     c_guidProfile);
     pProfiles->Release();
   }
+}
+
+// InstallLayoutOrTip
+// https://learn.microsoft.com/zh-cn/windows/win32/tsf/installlayoutortip
+// example in ref page not right with "*PTF_ INSTALLLAYOUTORTIP"
+// space inside should be removed
+enum class LayoutOrTipAction { Install, Uninstall };
+
+// 把 profile 对应的输入布局加入/移出当前用户的输入法列表
+static void install_layout_or_tip(const std::wstring& profile,
+                                  LayoutOrTipAction action) {
+  HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
+  if (!hInputDLL)
+    return;
+  PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip =
+      (PTF_INSTALLLAYOUTORTIP)GetProcAddress(hInputDLL, "InstallLayoutOrTip");
+  if (pfnInstallLayoutOrTip) {
+    std::wstring title = profile_to_title(profile);
+    if (!title.empty())
+      (*pfnInstallLayoutOrTip)(
+          title.c_str(),
+          action == LayoutOrTipAction::Uninstall ? ILOT_UNINSTALL : 0);
+  }
+  FreeLibrary(hInputDLL);
+}
+
+// 已安装状态下切换 profile（K14）。regsvr32 的 RegisterProfiles 在安装时
+// 已注册全部五个 langid 的 profile 条目（仅选定的一个启用），因此切换只需
+// 翻转启用状态并同步用户的输入法列表，无需重跑 regsvr32。
+// 先启用新 profile，失败时旧 profile 原样保留，系统保持一致可用。
+int switch_registered_profile(const std::wstring& old_profile,
+                              const std::wstring& new_profile,
+                              bool silent) {
+  const BOOL switched =
+      set_profile_enabled(new_profile, TRUE) &&
+      set_profile_enabled(old_profile, FALSE);
+  if (!switched) {
+    MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
+                          IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
+    return 1;
+  }
+  install_layout_or_tip(old_profile, LayoutOrTipAction::Uninstall);
+  install_layout_or_tip(new_profile, LayoutOrTipAction::Install);
+  return 0;
 }
 
 // 报告 regsvr32 失败（启动失败或退出码非 0）并返回错误码
@@ -457,22 +518,8 @@ int install(const std::wstring& profile, bool silent) {
     return 1;
   }
 
-  // InstallLayoutOrTip
-  // https://learn.microsoft.com/zh-cn/windows/win32/tsf/installlayoutortip
-  // example in ref page not right with "*PTF_ INSTALLLAYOUTORTIP"
-  // space inside should be removed
-  HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
-  if (hInputDLL) {
-    PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip;
-    pfnInstallLayoutOrTip =
-        (PTF_INSTALLLAYOUTORTIP)GetProcAddress(hInputDLL, "InstallLayoutOrTip");
-    if (pfnInstallLayoutOrTip) {
-      std::wstring title = profile_to_title(profile);
-      if (!title.empty())
-        (*pfnInstallLayoutOrTip)(title.c_str(), 0);
-    }
-    FreeLibrary(hInputDLL);
-  }
+  // 把当前 profile 的输入布局加入用户的输入法列表
+  install_layout_or_tip(profile, LayoutOrTipAction::Install);
 
   // https://learn.microsoft.com/zh-cn/windows/win32/wer/collecting-user-mode-dumps
   const std::wstring dmpPathW = WeaselLogPath().wstring();
@@ -519,18 +566,7 @@ int uninstall(bool silent) {
       }
     }
 
-    HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
-    if (hInputDLL) {
-      PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip;
-      pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
-          hInputDLL, "InstallLayoutOrTip");
-      if (pfnInstallLayoutOrTip) {
-        std::wstring title = profile_to_title(profile);
-        if (!title.empty())
-          (*pfnInstallLayoutOrTip)(title.c_str(), ILOT_UNINSTALL);
-      }
-      FreeLibrary(hInputDLL);
-    }
+    install_layout_or_tip(profile, LayoutOrTipAction::Uninstall);
     RegCloseKey(hKey);
   }
 

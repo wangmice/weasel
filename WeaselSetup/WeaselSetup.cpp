@@ -45,6 +45,10 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
 int install(const std::wstring& profile, bool silent);
 int uninstall(bool silent);
 bool has_installed();
+// 已安装状态下切换 profile 时同步 TSF 注册（K14）
+int switch_registered_profile(const std::wstring& old_profile,
+                              const std::wstring& new_profile,
+                              bool silent);
 
 static std::wstring install_dir() {
   WCHAR exe_path[MAX_PATH] = {0};
@@ -91,6 +95,9 @@ static int CustomInstall(bool installing) {
     }
     RegCloseKey(hKey);
   }
+  // TSF 注册所用的 profile 与此持久化值一致（install() 同时写两者），
+  // 作为修改安装时判断 profile 是否变化的基准
+  const std::wstring registered_profile = profile;
   bool _has_installed = has_installed();
   if (!silent) {
     InstallOptionsDialog dlg;
@@ -106,9 +113,14 @@ static int CustomInstall(bool installing) {
       _has_installed = dlg.installed;
     }
   }
-  if (!_has_installed)
+  if (!_has_installed) {
     if (0 != install(profile, silent))
       return 1;
+  } else if (profile != registered_profile) {
+    // 修改安装换了 profile：同步 TSF 注册，不能只写注册表（K14）
+    if (0 != switch_registered_profile(registered_profile, profile, silent))
+      return 1;
+  }
 
   if (user_dir.empty())
     user_dir = per_user_default_dir();
