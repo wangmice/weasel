@@ -12,7 +12,7 @@
 |---|---|---|---|---|---|---|
 | A1 | P2 | bug | WeaselTSF/TextEditSink.cpp:35-44 | OnEndEdit 泄漏 GetSelection 返回的 ITfRange（合成期每击键一次） | ✔ | 未修复 |
 | A2 | P2 | bug | WeaselTSF/CandidateList.cpp:230-234,289-291 | Destroy 不清 _uiStarted，StartUI 早退 → 本组合期候选窗永久丢失 | ✔ | 未修复 |
-| A9 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘快照在管道线程读 UI style_/status_（wstring）数据竞争（= B2，合并处理） | ✔ | 未修复 |
+| A9 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘快照在管道线程读 UI style_/status_（wstring）数据竞争（= B2，合并处理） | ✔ | ✅ 已修复（cef6c26（=B2），批次4） |
 | A3 | P3 | bug | WeaselTSF/CandidateList.h:85 | uiid 未初始化即传入 UpdateUIElement | ✔ | 未修复 |
 | A4 | P3 | bug | WeaselTSF/Compartment.cpp:75-89 | _Unadvise 对 null _compartment 解引用；_cookie 未初始化 | ✔ | 未修复 |
 | A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | ✔ | 未修复 |
@@ -61,7 +61,7 @@
 | 编号 | 级别 | 类型 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|---|
 | B1 | **P1** | bug | WeaselUI/WeaselUI.cpp:50-94 等 | Show/Hide/ShowWithTimeout 未 marshal，管道线程持 g_api_mutex 跨线程 ShowWindow → 与消息线程互等死锁 | ✔ | ✅ 已修复（1878ff6，批次1） |
-| B2 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘刷新在管道线程读 ui.style_/status_（= A9） | ✔ | 未修复 |
+| B2 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘刷新在管道线程读 ui.style_/status_（= A9） | ✔ | ✅ 已修复（cef6c26（=A9），批次4） |
 | B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | ✅ | ✅ 已修复（22cf009，批次2） |
 | B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | ✅ 已修复（6d43edc，批次2） |
 | B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | 未修复 |
@@ -70,10 +70,10 @@
 | B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | ✅ 已修复（22cf921+7a67c20，批次3） |
 | B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | ✔ | ✅ 已修复（35c1b48，批次3） |
 | B10 | P2 | bug | WeaselUI/WeaselPanel.h:158-162 | m_istorepos/m_offsetys 等未初始化即读 | ✔ | ✅ 已修复（2570084，批次3） |
-| B11 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp | 每键 ~7 次 rime 交叉：直通键无早退、get_status×2、get_property 每键 | — | 未修复 |
+| B11 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp | 每键 ~7 次 rime 交叉：直通键无早退、get_status×2、get_property 每键 | — | 部分：c（client_app 缓存）已随 ad4e3fa（批次4）落地；a/b 未修复 |
 | B12 | P2 | perf | WeaselUI/WeaselPanel.cpp 等 | 每键整窗重算重绘：布局重建、双 layout、全幅模糊 | — | 未修复 |
 | B13 | P2 | perf | include/WeaselIPCData.h:103,166 | notequal/operator== 按值深拷贝候选向量（每键 6 份） | — | 未修复 |
-| B14 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp:73-87 | explorer.exe 每键 detached 线程 + Sleep(100) | — | 未修复 |
+| B14 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp:73-87 | explorer.exe 每键 detached 线程 + Sleep(100) | — | ✅ 已修复（ad4e3fa（含 B11c），批次4） |
 | B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | ✔ | 未修复 |
 | B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | ✅ | 未修复 |
 | B17 | P3 | bug | WeaselIPCServer/WeaselServerImpl.cpp:445-461 | Listen catch(...) 后无退避，管道创建持续失败时 100% CPU | ✔ | ✅ 已修复（7c086f0，批次1） |
@@ -86,7 +86,7 @@
 | B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | ✅ 已修复（2ee9b36，批次3） |
 | B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | ✔ | ✅ 已修复（9df83ae，批次3） |
 | B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | ✔ | ✅ 已修复（23d69ba，批次3） |
-| B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | 未修复 |
+| B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | ✅ 已修复（d43914f，批次4） |
 | B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | ✔ | 未修复 |
 | B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | 未修复 |
 | B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | ✔ | ✅ 已修复（d416100，批次2） |
@@ -96,7 +96,7 @@
 | B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | 未修复 |
 | B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | 未修复 |
 | B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | 未修复 |
-| B37 | P3 | bug | WeaselUI/WeaselPanel.cpp | _DrawCandidates 的 comments.at(i)/GetLabelText 的 labels.at(id) 在向量短于 candies 时抛 out_of_range（批次3 测试中实际触发；现被 B8 防护兜住不再致命） | ✔（批次3 实测触发） | 未修复 |
+| B37 | P3 | bug | WeaselUI/WeaselPanel.cpp | _DrawCandidates 的 comments.at(i)/GetLabelText 的 labels.at(id) 在向量短于 candies 时抛 out_of_range（批次3 测试中实际触发；现被 B8 防护兜住不再致命） | ✔（批次3 实测触发） | ✅ 已修复（9b71523，批次4） |
 
 ---
 
@@ -882,3 +882,11 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `23d69ba` fix(WeaselUI): honor the wrap parameter in init_font — B26：恢复上游 0.16.2 的 wrapping_preedit 逐字换行语义（上游 master 的 lambda 重构引入同 bug）。
 - 构建：release/debug 全量 build ok；8 个测试目标全过。
 - 批次外新发现登记为 B37（labels/comments 向量与 candies 不等长时 at() 抛异常），排入批次 4。
+
+### 批次 4（2026-09-14）：A9/B2、B14、B11c、B27、B37
+
+- `cef6c26` fix(WeaselServer): snapshot tray state on the server message thread — A9/B2。From(m_style,m_status) 从管道线程的 RequestRefresh 挪到消息线程的 ApplyRefresh 开头，读与 UI 线程写同线程串行化；pending/DisableRefresh 语义保留。
+- `ad4e3fa` perf(RimeWithWeasel): drop the explorer tray-delay shim and cache client_app — B14+B11c。考证结论：垫片防御的是 2018 年"工作线程直接同步 Shell_NotifyIcon 与 explorer 互等"的结构，d73f629 拆分 RequestRefresh/ApplyRefresh 后已不存在（上游 master 仍带垫片未修）；SessionStatus 缓存 client_app，get_property 从每键路径消失（顺带消掉 _LoadAppInlinePreeditSet 的 static 残留，旧 N21）。
+- `d43914f` fix(WeaselUI): scope fullscreen font adjustment to the fullscreen layout — B27。panel 侧借用边界：全屏布局存活期内允许 pDWR 缩放、换回普通布局时恢复快照，_InitFontRes 重建使快照失效。
+- `9b71523` fix(WeaselUI): treat short label/comment vectors as empty, not exceptions — B37。新增 Layout::TextAt 统一收口（越界返回空 Text），三布局 4 处同族 comments.at(i) 一并修复；TestWeaselUI 4 断言 + 负向验证。
+- 构建：release/debug 全量 build ok；8 个测试目标全过（TestPipeChannel 44 用例）。
