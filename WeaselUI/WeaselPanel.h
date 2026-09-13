@@ -191,11 +191,13 @@ class WeaselPanel
   const bool& m_in_server;
 
   CRect m_inputPos;
-  int m_offsetys[MAX_CANDIDATES_COUNT];  // offset y for candidates when
-                                         // vertical layout over bottom
-  int m_offsety_preedit;
-  int m_offsety_aux;
-  bool m_istorepos;
+  // offset y for candidates when vertical layout over bottom
+  // 就地初始化：首次绘制 / 命中测试可能先于 _RepositionWindow 写入发生，
+  // 不能读未初始化内存
+  int m_offsetys[MAX_CANDIDATES_COUNT] = {};
+  int m_offsety_preedit = 0;
+  int m_offsety_aux = 0;
+  bool m_istorepos = false;
 
   CIcon m_iconDisabled;
   CIcon m_iconEnabled;
