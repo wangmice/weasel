@@ -175,9 +175,12 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
 
   if (_pComposition != nullptr && _pComposition->GetRange(&pRange) == S_OK) {
     pRange->Collapse(ec, TF_ANCHOR_START);
+    // GetSelection AddRef'd this range and we did not adopt it above.
+    selection.range->Release();
   } else {
     // composition end
     // note: selection.range is always an empty range
+    // Adopt the single reference GetSelection gave us.
     pRange = selection.range;
   }
 
@@ -207,6 +210,9 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
     }
     _pTextService->_SetCompositionPosition(rc);
   }
+  // pRange holds exactly one reference on every path: GetRange's, or the
+  // selection reference adopted above.
+  pRange->Release();
   return S_OK;
 }
 

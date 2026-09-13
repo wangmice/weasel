@@ -41,6 +41,8 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
             _EndComposition(pContext, true);
           pRangeComposition->Release();
         }
+        // GetSelection AddRefs every returned range; release our reference.
+        tfSelection.range->Release();
       }
     }
   }
