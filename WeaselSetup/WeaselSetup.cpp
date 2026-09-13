@@ -105,14 +105,11 @@ static int CustomInstall(bool installing) {
     dlg.installed = _has_installed;
     dlg.profile = profile;
     dlg.user_dir = user_dir;
-    if (IDOK != dlg.DoModal()) {
-      if (!installing)
-        return 1;  // aborted by user
-    } else {
-      profile = dlg.profile;
-      user_dir = dlg.user_dir;
-      _has_installed = dlg.installed;
-    }
+    if (IDOK != dlg.DoModal())
+      return 1;  // 用户取消：一律中止，不以默认 profile 继续安装（A13）
+    profile = dlg.profile;
+    user_dir = dlg.user_dir;
+    _has_installed = dlg.installed;
   }
   if (!_has_installed) {
     if (0 != install(profile, silent))
