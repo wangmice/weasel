@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "WeaselTSF.h"
 #include "Compartment.h"
+#include "CompartmentUtil.h"
 #include <resource.h>
 #include <functional>
 #include "ResponseParser.h"
@@ -178,43 +179,11 @@ HRESULT WeaselTSF::_SetKeyboardOpen(BOOL fOpen) {
 }
 
 HRESULT WeaselTSF::_GetCompartmentDWORD(DWORD& value, const GUID guid) {
-  HRESULT hr = E_FAIL;
-  com_ptr<ITfCompartmentMgr> pComMgr;
-  hr = _pThreadMgr->QueryInterface(&pComMgr);
-  if (SUCCEEDED(hr)) {
-    com_ptr<ITfCompartment> pCompartment;
-    hr = pComMgr->GetCompartment(guid, &pCompartment);
-    if (SUCCEEDED(hr)) {
-      VARIANT var;
-      hr = pCompartment->GetValue(&var);
-      if (SUCCEEDED(hr)) {
-        if (var.vt == VT_I4) {
-          value = var.lVal;
-          hr = S_OK;
-        } else {
-          hr = S_FALSE;
-        }
-      }
-    }
-  }
-  return hr;
+  return GetCompartmentDWORD(_pThreadMgr, _tfClientId, value, guid);
 }
 
 HRESULT WeaselTSF::_SetCompartmentDWORD(const DWORD& value, const GUID guid) {
-  HRESULT hr = E_FAIL;
-  com_ptr<ITfCompartmentMgr> pComMgr;
-  hr = _pThreadMgr->QueryInterface(&pComMgr);
-  if (SUCCEEDED(hr)) {
-    com_ptr<ITfCompartment> pCompartment;
-    hr = pComMgr->GetCompartment(guid, &pCompartment);
-    if (SUCCEEDED(hr)) {
-      VARIANT var;
-      var.vt = VT_I4;
-      var.lVal = value;
-      hr = pCompartment->SetValue(_tfClientId, &var);
-    }
-  }
-  return hr;
+  return SetCompartmentDWORD(_pThreadMgr, _tfClientId, value, guid);
 }
 
 BOOL WeaselTSF::_InitCompartment() {

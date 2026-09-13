@@ -1,0 +1,6 @@
+target("TestCompartmentUtil")
+  set_kind("binary")
+  add_files("./*.cpp")
+  add_files("../../WeaselTSF/CompartmentUtil.cpp")
+  add_rules("subcmd")
+  add_links("ole32", "uuid")
