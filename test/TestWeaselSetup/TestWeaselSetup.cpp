@@ -38,14 +38,78 @@ static void test_unquote_argument() {
         "unquote of a single quote character is unchanged");
   check(unquote_argument(L"a\"b\"c") == L"a\"b\"c",
         "unquote keeps inner quotes when ends are unquoted");
-  check(unquote_argument(L"\"dir\"\"") == L"dir\"\"",
+  check(unquote_argument(L"\"dir\"\"") == L"dir\"",
         "unquote strips only the outermost pair");
   check(unquote_argument(L"") == L"",
         "unquote of an empty argument is empty");
 }
 
+// 私有测试根键（结束即删，不触碰真实配置）
+static const wchar_t* kTestKey = L"Software\\Rime\\WeaselSetupTest";
+
+static HKEY open_test_key() {
+  HKEY hKey = NULL;
+  RegCreateKeyExW(HKEY_CURRENT_USER, kTestKey, 0, NULL, 0, KEY_SET_VALUE |
+                    KEY_QUERY_VALUE, NULL, &hKey, NULL);
+  return hKey;
+}
+
+static void set_test_value(HKEY hKey, const wchar_t* name, const void* data,
+                           DWORD bytes, DWORD type) {
+  RegSetValueExW(hKey, name, 0, type, (const BYTE*)data, bytes);
+}
+
+static void test_read_reg_sz() {
+  HKEY hKey = open_test_key();
+  check(hKey != NULL, "scratch key created");
+
+  std::wstring out;
+
+  // 常规带 NUL 的 REG_SZ
+  const wchar_t* normal = L"D:\\rime user";
+  set_test_value(hKey, L"Normal", normal,
+                 (DWORD)((wcslen(normal) + 1) * sizeof(WCHAR)), REG_SZ);
+  check(read_reg_sz(hKey, L"Normal", out) && out == normal,
+        "regular NUL-terminated REG_SZ reads exactly");
+
+  // 数据恰好填满缓冲且未 NUL 终止（A14 的越读场景）
+  WCHAR full[MAX_PATH];
+  wmemset(full, L'A', _countof(full));
+  set_test_value(hKey, L"NoNul", full, sizeof(full), REG_SZ);
+  check(read_reg_sz(hKey, L"NoNul", out) &&
+            out.size() == _countof(full) &&
+            out.find_first_not_of(L'A') == std::wstring::npos,
+        "non-NUL-terminated full-buffer REG_SZ is truncated in bounds");
+
+  // 内嵌 NUL 后跟残留字节：取首个 NUL 前
+  const wchar_t embedded[] = L"ab\0cd\0";
+  set_test_value(hKey, L"Embedded", embedded, sizeof(embedded), REG_SZ);
+  check(read_reg_sz(hKey, L"Embedded", out) && out == L"ab",
+        "string stops at the first embedded NUL");
+
+  // 仅一个 NUL 的空串
+  const wchar_t empty[] = L"";
+  set_test_value(hKey, L"Empty", empty, sizeof(empty), REG_SZ);
+  check(read_reg_sz(hKey, L"Empty", out) && out.empty(),
+        "empty REG_SZ succeeds with an empty string");
+
+  // 类型不匹配
+  DWORD dword = 1;
+  set_test_value(hKey, L"NotSz", &dword, sizeof(dword), REG_DWORD);
+  check(!read_reg_sz(hKey, L"NotSz", out),
+        "non-REG_SZ value is rejected");
+
+  // 不存在的值
+  check(!read_reg_sz(hKey, L"Missing", out),
+        "missing value is rejected");
+
+  RegCloseKey(hKey);
+  RegDeleteTreeW(HKEY_CURRENT_USER, kTestKey);
+}
+
 int main() {
   test_unquote_argument();
+  test_read_reg_sz();
 
   if (g_failures) {
     printf("%d failure(s)\n", g_failures);

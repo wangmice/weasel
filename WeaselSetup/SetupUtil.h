@@ -8,3 +8,7 @@
 
 // 剥离命令行参数首尾成对的引号（如 /userdir:"..."，引号不属于路径本身）
 std::wstring unquote_argument(const std::wstring& arg);
+
+// 读取 hKey 下的 REG_SZ 值。以返回的数据长度为上界查找字符串结尾，
+// 存量数据未 NUL 终止时截断到缓冲区内，构造 std::wstring 不越读
+bool read_reg_sz(HKEY hKey, const wchar_t* value_name, std::wstring& out);

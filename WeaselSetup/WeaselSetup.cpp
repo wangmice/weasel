@@ -70,23 +70,18 @@ static int CustomInstall(bool installing) {
   LSTATUS ret =
       RegOpenKeyW(per_user_root(), per_user_subkey(KEY).c_str(), &hKey);
   if (ret == ERROR_SUCCESS) {
-    WCHAR value[MAX_PATH];
-    DWORD len = sizeof(value);
-    DWORD type = 0;
-    DWORD data = 0;
-    ret =
-        RegQueryValueEx(hKey, L"RimeUserDir", NULL, &type, (LPBYTE)value, &len);
-    if (ret == ERROR_SUCCESS && type == REG_SZ) {
-      user_dir = value;
+    std::wstring stored;
+    if (read_reg_sz(hKey, L"RimeUserDir", stored)) {
+      user_dir = stored;
     }
-    len = sizeof(value);
-    ret = RegQueryValueEx(hKey, L"Profile", NULL, &type, (LPBYTE)value, &len);
-    if (ret == ERROR_SUCCESS && type == REG_SZ && value[0] != L'\0') {
-      profile = value;
+    if (read_reg_sz(hKey, L"Profile", stored) && !stored.empty()) {
+      profile = stored;
       if (installing)
         silent = true;
     } else {
-      len = sizeof(data);
+      DWORD data = 0;
+      DWORD len = sizeof(data);
+      DWORD type = 0;
       ret = RegQueryValueEx(hKey, L"Hant", NULL, &type, (LPBYTE)&data, &len);
       if (ret == ERROR_SUCCESS && type == REG_DWORD) {
         profile = (data != 0) ? L"hant" : L"hans";
