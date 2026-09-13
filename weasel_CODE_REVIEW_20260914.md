@@ -67,9 +67,9 @@
 | B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | 未修复 |
 | B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | ✔ | 未修复 |
 | B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | ❌ | 未修复 |
-| B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | 未修复 |
-| B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | ✔ | 未修复 |
-| B10 | P2 | bug | WeaselUI/WeaselPanel.h:158-162 | m_istorepos/m_offsetys 等未初始化即读 | ✔ | 未修复 |
+| B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | ✅ 已修复（22cf921+7a67c20，批次3） |
+| B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | ✔ | ✅ 已修复（35c1b48，批次3） |
+| B10 | P2 | bug | WeaselUI/WeaselPanel.h:158-162 | m_istorepos/m_offsetys 等未初始化即读 | ✔ | ✅ 已修复（2570084，批次3） |
 | B11 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp | 每键 ~7 次 rime 交叉：直通键无早退、get_status×2、get_property 每键 | — | 未修复 |
 | B12 | P2 | perf | WeaselUI/WeaselPanel.cpp 等 | 每键整窗重算重绘：布局重建、双 layout、全幅模糊 | — | 未修复 |
 | B13 | P2 | perf | include/WeaselIPCData.h:103,166 | notequal/operator== 按值深拷贝候选向量（每键 6 份） | — | 未修复 |
@@ -83,9 +83,9 @@
 | B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | 未修复 |
 | B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | ✔ | 未修复 |
 | B23 | P3 | bug | WeaselUI/StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | ✅ | 未修复 |
-| B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | 未修复 |
-| B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | ✔ | 未修复 |
-| B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | ✔ | 未修复 |
+| B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | ✅ 已修复（2ee9b36，批次3） |
+| B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | ✔ | ✅ 已修复（9df83ae，批次3） |
+| B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | ✔ | ✅ 已修复（23d69ba，批次3） |
 | B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | 未修复 |
 | B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | ✔ | 未修复 |
 | B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | 未修复 |
@@ -96,6 +96,7 @@
 | B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | 未修复 |
 | B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | 未修复 |
 | B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | 未修复 |
+| B37 | P3 | bug | WeaselUI/WeaselPanel.cpp | _DrawCandidates 的 comments.at(i)/GetLabelText 的 labels.at(id) 在向量短于 candies 时抛 out_of_range（批次3 测试中实际触发；现被 B8 防护兜住不再致命） | ✔（批次3 实测触发） | 未修复 |
 
 ---
 
@@ -869,3 +870,15 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `cc3507b` fix(WeaselUI): free the marshalled RECT when MoveTo's PostMessage fails — B19。
 - `d416100` fix(RimeWithWeasel): null-check schema_name/schema_id before u8tow — B30。
 - 构建：release/debug 全量 build ok；8 个测试目标全过（TestWeaselIPC/TestWeaselUI 因历史 targetdir 写法需直跑 exe，均 exit 0）。
+
+### 批次 3（2026-09-14）：B8、B9、B10、B24、B25、B26
+
+- `22cf921` fix: only throw on failed HRESULTs and guard null text layouts — B8(a)：HR() 收敛为 FAILED 才抛；WeaselUI.h 布局助手对空 pTextLayout 返回 E_POINTER（S_FALSE 放行后此守卫成为必需）。
+- `7a67c20` fix(WeaselUI): shield panel paint and layout from throwing past WNDPROC — B8(b)：Refresh/DoPaint 整体防护 + _RequestPaintRecovery（清 m_octx、重建资源、限次投递重刷，防自旋）。TestWeaselUI 注入 E_INVALIDARG 验证进程存活与恢复；负向验证（catch 重抛即崩）有效。
+- `35c1b48` fix(WeaselUI): clamp out-of-range highlighted on refresh — B9：Refresh 派生 m_candidateCount 处一处收口 clamp。
+- `2570084` fix(WeaselUI): default-initialize panel repositioning state — B10。
+- `2ee9b36` fix(WeaselUI): apply the layered-style switch only on the first paint — B24：考证出首帧 ModifyStyleEx 是承重样式切换（去点击穿透+补 LAYERED），改首帧一次性标志，OnDestroy 复位。
+- `9df83ae` fix(WeaselUI): drop the frame and force a repaint when EndDraw fails — B25。
+- `23d69ba` fix(WeaselUI): honor the wrap parameter in init_font — B26：恢复上游 0.16.2 的 wrapping_preedit 逐字换行语义（上游 master 的 lambda 重构引入同 bug）。
+- 构建：release/debug 全量 build ok；8 个测试目标全过。
+- 批次外新发现登记为 B37（labels/comments 向量与 candies 不等长时 at() 抛异常），排入批次 4。
