@@ -1123,8 +1123,14 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
         if (m_candidateCount)
           drawn |= _DrawCandidates(memDC);
         if (FAILED(pDWR->pRenderTarget->EndDraw())) {
-          _InitFontRes(true);
-          Refresh();
+          // EndDraw 失败（设备丢失等）：文本未落到本帧，直接作废——不把
+          // 无文字帧送上分层窗口（保留上一画面），走统一恢复路径（清
+          // m_octx + 重建资源 + 有限次投递重刷），确保之后发生真正的重绘
+          _RequestPaintRecovery();
+          frame_ok = false;
+        } else {
+          // 完整绘成一帧：复位自动恢复预算
+          m_paint_recovery_left = MAX_PAINT_RECOVERY;
         }
         // end texts drawing
 
@@ -1156,8 +1162,6 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
           memDC.DrawIconEx(iconRect.left, iconRect.top, icon, 0, 0);
           drawn = true;
         }
-        // 完整绘成一帧：复位自动恢复预算
-        m_paint_recovery_left = MAX_PAINT_RECOVERY;
         /* Nothing drawn, hide candidate window */
         if (!drawn)
           ShowWindow(SW_HIDE);
