@@ -13,10 +13,10 @@ struct TextRange {
   TextRange() : start(0), end(0), cursor(-1) {}
   TextRange(int _start, int _end, int _cursor)
       : start(_start), end(_end), cursor(_cursor) {}
-  bool operator==(const TextRange& tr) {
+  bool operator==(const TextRange& tr) const {
     return (start == tr.start && end == tr.end && cursor == tr.cursor);
   }
-  bool operator!=(const TextRange& tr) {
+  bool operator!=(const TextRange& tr) const {
     return (start != tr.start || end != tr.end || cursor != tr.cursor);
   }
   int start;
@@ -28,10 +28,10 @@ struct TextAttribute {
   TextAttribute() : type(NONE) {}
   TextAttribute(int _start, int _end, TextAttributeType _type)
       : range(_start, _end, -1), type(_type) {}
-  bool operator==(const TextAttribute& ta) {
+  bool operator==(const TextAttribute& ta) const {
     return (range == ta.range && type == ta.type);
   }
-  bool operator!=(const TextAttribute& ta) {
+  bool operator!=(const TextAttribute& ta) const {
     return (range != ta.range || type != ta.type);
   }
   TextRange range;
@@ -46,7 +46,7 @@ struct Text {
     attributes.clear();
   }
   bool empty() const { return str.empty(); }
-  bool operator==(const Text& txt) {
+  bool operator==(const Text& txt) const {
     if (str != txt.str || (attributes.size() != txt.attributes.size()))
       return false;
     for (size_t i = 0; i < attributes.size(); i++) {
@@ -55,15 +55,7 @@ struct Text {
     }
     return true;
   }
-  bool operator!=(const Text& txt) {
-    if (str != txt.str || (attributes.size() != txt.attributes.size()))
-      return true;
-    for (size_t i = 0; i < attributes.size(); i++) {
-      if ((attributes[i] != txt.attributes[i]))
-        return true;
-    }
-    return false;
-  }
+  bool operator!=(const Text& txt) const { return !(*this == txt); }
   std::wstring str;
   std::vector<TextAttribute> attributes;
 };
@@ -100,7 +92,10 @@ struct CandidateInfo {
       return true;
     return false;
   }
-  bool notequal(std::vector<Text> txtSrc, std::vector<Text> txtDst) {
+  // 常量引用传参：每次击键的去重比较会触发多次 notequal，
+  // 按值传参将带来整份 vector<Text> 深拷贝
+  bool notequal(const std::vector<Text>& txtSrc,
+                const std::vector<Text>& txtDst) const {
     if (txtSrc.size() != txtDst.size())
       return true;
     for (size_t i = 0; i < txtSrc.size(); i++) {
@@ -163,7 +158,7 @@ struct Status {
     full_shape = false;
     type = SCHEMA;
   }
-  bool operator==(const Status status) {
+  bool operator==(const Status& status) const {
     return (status.schema_name == schema_name &&
             status.schema_id == schema_id && status.ascii_mode == ascii_mode &&
             status.composing == composing && status.disabled == disabled &&
