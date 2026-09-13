@@ -2,7 +2,7 @@ target("WeaselSetup")
   set_kind("binary")
   add_files("./*.cpp")
   add_rules("add_rcfiles", "use_weaselconstants", "subwin")
-  add_links("imm32", "kernel32")
+  add_links("imm32", "kernel32", "advapi32")
 
   set_policy("windows.manifest.uac", "invoker")
   add_files("$(projectdir)/PerMonitorHighDPIAware.manifest")

@@ -58,6 +58,50 @@ BOOL delete_file(const std::wstring& file) {
   return ret;
 }
 
+static std::wstring g_per_user_origin_sid;
+
+void set_per_user_origin_sid(const std::wstring& sid) {
+  if (sid.rfind(L"S-1-", 0) == 0)  // accept only well-formed SIDs
+    g_per_user_origin_sid = sid;
+}
+
+bool per_user_redirected() {
+  return !g_per_user_origin_sid.empty();
+}
+
+HKEY per_user_root() {
+  return per_user_redirected() ? HKEY_USERS : HKEY_CURRENT_USER;
+}
+
+std::wstring per_user_subkey(const wchar_t* sub) {
+  return per_user_redirected() ? g_per_user_origin_sid + L"\\" + sub
+                               : std::wstring(sub);
+}
+
+std::wstring per_user_default_dir() {
+  if (per_user_redirected()) {
+    // %APPDATA% of the elevated process belongs to the admin; read the
+    // invoking user's from their loaded profile environment
+    HKEY hKey;
+    if (RegOpenKeyW(HKEY_USERS,
+                    per_user_subkey(L"Volatile Environment").c_str(),
+                    &hKey) == ERROR_SUCCESS) {
+      WCHAR path[MAX_PATH] = {0};
+      DWORD len = sizeof(path) - sizeof(WCHAR);  // keep room for the NUL
+      DWORD type = 0;
+      bool ok = RegQueryValueExW(hKey, L"APPDATA", NULL, &type, (LPBYTE)path,
+                                 &len) == ERROR_SUCCESS &&
+                type == REG_SZ && path[0] != L'\0';
+      RegCloseKey(hKey);
+      if (ok)
+        return std::wstring(path) + L"\\Rime";
+    }
+  }
+  WCHAR _path[MAX_PATH] = {0};
+  ExpandEnvironmentStringsW(L"%APPDATA%\\Rime", _path, _countof(_path));
+  return std::wstring(_path);
+}
+
 typedef BOOL(WINAPI* PISWOW64P2)(HANDLE, USHORT*, USHORT*);
 BOOL is_arm64_machine() {
   PISWOW64P2 fnIsWow64Process2 = (PISWOW64P2)GetProcAddress(
@@ -412,15 +456,15 @@ int install(const std::wstring& profile, bool silent) {
 
   // persist the installing profile so that uninstall removes the right one
   const WCHAR PROFILE_KEY[] = L"Software\\Rime\\Weasel";
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, PROFILE_KEY, L"Profile",
-                       profile.c_str(), REG_SZ);
+  ret = SetRegKeyValue(per_user_root(), per_user_subkey(PROFILE_KEY).c_str(),
+                       L"Profile", profile.c_str(), REG_SZ);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_WRITE_PROFILE,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
     return 1;
   }
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, PROFILE_KEY, L"Hant",
-                       (profile == L"hant" ? 1 : 0), REG_DWORD);
+  ret = SetRegKeyValue(per_user_root(), per_user_subkey(PROFILE_KEY).c_str(),
+                       L"Hant", (profile == L"hant" ? 1 : 0), REG_DWORD);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_WRITE_HANT,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
@@ -475,7 +519,7 @@ int uninstall(bool silent) {
   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
   HKEY hKey;
   std::wstring profile = L"hans";
-  LSTATUS ret = RegOpenKey(HKEY_CURRENT_USER, KEY, &hKey);
+  LSTATUS ret = RegOpenKeyW(per_user_root(), per_user_subkey(KEY).c_str(), &hKey);
   if (ret == ERROR_SUCCESS) {
     DWORD type = 0;
     DWORD data = 0;

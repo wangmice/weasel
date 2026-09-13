@@ -67,6 +67,16 @@ LSTATUS SetRegKeyValue(HKEY rootKey,
   return ret;
 }
 
+// Per-user hive redirection. When the setup elevates for another user,
+// HKCU inside the elevated process maps to the admin's hive. The invoking
+// user's SID, captured before elevation, redirects per-user accesses to
+// HKEY_USERS\<sid> so values land in (and come from) the real user's hive.
+void set_per_user_origin_sid(const std::wstring& sid);
+bool per_user_redirected();
+HKEY per_user_root();  // HKEY_USERS when redirected, else HKEY_CURRENT_USER
+std::wstring per_user_subkey(const wchar_t* sub);
+std::wstring per_user_default_dir();  // invoking user's %APPDATA%\Rime
+
 class InstallOptionsDialog : public CDialogImpl<InstallOptionsDialog> {
  public:
   enum { IDD = IDD_INSTALL_OPTIONS };

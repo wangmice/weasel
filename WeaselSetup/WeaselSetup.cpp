@@ -5,6 +5,7 @@
 
 #include "resource.h"
 #include "WeaselUtility.h"
+#include <sddl.h>
 #include <thread>
 
 #include "InstallOptionsDlg.h"
@@ -16,6 +17,27 @@ CAppModule _Module;
 static int Run(LPTSTR lpCmdLine);
 static bool IsProcAdmin();
 static int RestartAsAdmin(LPTSTR lpCmdLine);
+
+static std::wstring current_user_sid() {
+  std::wstring sid;
+  HANDLE token = NULL;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    return sid;
+  DWORD len = 0;
+  GetTokenInformation(token, TokenUser, NULL, 0, &len);
+  if (len) {
+    std::vector<BYTE> buf(len);
+    if (GetTokenInformation(token, TokenUser, buf.data(), len, &len)) {
+      LPWSTR str = NULL;
+      if (ConvertSidToStringSidW(((TOKEN_USER*)buf.data())->User.Sid, &str)) {
+        sid = str;
+        LocalFree(str);
+      }
+    }
+  }
+  CloseHandle(token);
+  return sid;
+}
 
 int WINAPI _tWinMain(HINSTANCE hInstance,
                      HINSTANCE /*hPrevInstance*/,
@@ -61,7 +83,8 @@ static int CustomInstall(bool installing) {
 
   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
   HKEY hKey;
-  LSTATUS ret = RegOpenKey(HKEY_CURRENT_USER, KEY, &hKey);
+  LSTATUS ret =
+      RegOpenKeyW(per_user_root(), per_user_subkey(KEY).c_str(), &hKey);
   if (ret == ERROR_SUCCESS) {
     WCHAR value[MAX_PATH];
     DWORD len = sizeof(value);
@@ -108,28 +131,24 @@ static int CustomInstall(bool installing) {
     if (0 != install(profile, silent))
       return 1;
 
-  if (user_dir.empty()) {
-    // default user dir %APPDATA%\Rime
-    WCHAR _path[MAX_PATH] = {0};
-    ExpandEnvironmentStringsW(L"%APPDATA%\\Rime", _path, _countof(_path));
-    user_dir = std::wstring(_path);
-  }
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, KEY, L"RimeUserDir", user_dir.c_str(),
-                       REG_SZ, false);
+  if (user_dir.empty())
+    user_dir = per_user_default_dir();
+  ret = SetRegKeyValue(per_user_root(), per_user_subkey(KEY).c_str(),
+                       L"RimeUserDir", user_dir.c_str(), REG_SZ, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_BY_IDS(IDS_STR_ERR_WRITE_USER_DIR, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
   }
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, KEY, L"Profile", profile.c_str(),
-                       REG_SZ, false);
+  ret = SetRegKeyValue(per_user_root(), per_user_subkey(KEY).c_str(),
+                       L"Profile", profile.c_str(), REG_SZ, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_BY_IDS(IDS_STR_ERR_WRITE_PROFILE, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
   }
 
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, KEY, L"Hant",
+  ret = SetRegKeyValue(per_user_root(), per_user_subkey(KEY).c_str(), L"Hant",
                        (profile == L"hant" ? 1 : 0), REG_DWORD, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_BY_IDS(IDS_STR_ERR_WRITE_HANT, IDS_STR_INSTALL_FAILED,
@@ -163,6 +182,13 @@ LPCTSTR GetParamByPrefix(LPCTSTR lpCmdLine, LPCTSTR prefix) {
 }
 
 static int Run(LPTSTR lpCmdLine) {
+  // "/origsid:<S-...>" is appended by RestartAsAdmin so the elevated process
+  // can address the invoking user's hive. Strip the trailing parameter
+  // before any command-line matching.
+  if (wchar_t* pos = wcsstr(lpCmdLine, L" /origsid:")) {
+    *pos = L'\0';
+    set_per_user_origin_sid(pos + wcslen(L" /origsid:"));
+  }
   constexpr bool silent = true;
   // parameter /? or /help to show commandline args
   if (!wcscmp(L"/?", lpCmdLine) || !wcscmp(L"/help", lpCmdLine)) {
@@ -292,8 +318,12 @@ int RestartAsAdmin(LPTSTR lpCmdLine) {
   SHELLEXECUTEINFO execInfo{0};
   TCHAR path[MAX_PATH];
   GetModuleFileName(GetModuleHandle(NULL), path, _countof(path));
+  std::wstring params = lpCmdLine;
+  std::wstring sid = current_user_sid();
+  if (!sid.empty())
+    params += L" /origsid:" + sid;
   execInfo.lpFile = path;
-  execInfo.lpParameters = lpCmdLine;
+  execInfo.lpParameters = params.c_str();
   execInfo.lpVerb = _T("runas");
   execInfo.cbSize = sizeof(execInfo);
   execInfo.nShow = SW_SHOWNORMAL;
