@@ -338,6 +338,17 @@ void enable_profile(BOOL fEnable, const std::wstring& profile) {
   }
 }
 
+// 报告 regsvr32 失败（启动失败或退出码非 0）并返回错误码
+static int report_regsvr32_failure(const std::wstring& params, bool silent) {
+  WCHAR msg[100];
+  CString str;
+  str.LoadStringW(IDS_STR_ERRREGTSF);
+  StringCchPrintfW(msg, _countof(msg), str, params.c_str());
+  MSG_NOT_SILENT_ID_CAP(silent, msg, IDS_STR_INORUN_FAILED,
+                        MB_ICONERROR | MB_OK);
+  return 1;
+}
+
 // 注册TSF输入法
 int register_text_service(const std::wstring& tsf_path,
                           bool register_ime,
@@ -379,17 +390,16 @@ int register_text_service(const std::wstring& tsf_path,
   shExInfo.lpDirectory = 0;
   shExInfo.nShow = SW_SHOW;
   shExInfo.hInstApp = 0;
-  if (ShellExecuteExW(&shExInfo)) {
-    WaitForSingleObject(shExInfo.hProcess, INFINITE);
-    CloseHandle(shExInfo.hProcess);
-  } else {
-    WCHAR msg[100];
-    CString str;
-    str.LoadStringW(IDS_STR_ERRREGTSF);
-    StringCchPrintfW(msg, _countof(msg), str, params.c_str());
-    MSG_NOT_SILENT_ID_CAP(silent, msg, IDS_STR_INORUN_FAILED,
-                          MB_ICONERROR | MB_OK);
-    return 1;
+  if (!ShellExecuteExW(&shExInfo)) {
+    return report_regsvr32_failure(params, silent);
+  }
+  WaitForSingleObject(shExInfo.hProcess, INFINITE);
+  DWORD exit_code = 0;
+  BOOL got_exit_code = GetExitCodeProcess(shExInfo.hProcess, &exit_code);
+  CloseHandle(shExInfo.hProcess);
+  if (!got_exit_code || exit_code != 0) {
+    // regsvr32 已运行但注册失败（退出码非 0）
+    return report_regsvr32_failure(params, silent);
   }
 
   if (register_ime)
