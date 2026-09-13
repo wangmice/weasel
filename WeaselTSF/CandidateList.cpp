@@ -271,6 +271,12 @@ HWND CCandidateList::_GetActiveWnd() {
 }
 
 HRESULT CCandidateList::_UpdateUIElement() {
+  // No element registered: uiid is not valid (never begun, or already ended).
+  // UpdateUI runs on every keystroke, including the ones before StartUI and
+  // after EndUI/Destroy.
+  if (!_uiStarted)
+    return S_OK;
+
   HRESULT hr = S_OK;
 
   com_ptr<ITfUIElementMgr> pUIElementMgr;

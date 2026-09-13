@@ -82,7 +82,7 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   // Non-owning back pointer: its lifetime is strictly nested in WeaselTSF;
   // holding a COM reference here would create a reference cycle.
   WeaselTSF* _tsf;
-  DWORD uiid;
+  DWORD uiid = 0;
   TfIntegratableCandidateListSelectionStyle _selectionStyle =
       STYLE_ACTIVE_SELECTION;
 

@@ -73,6 +73,11 @@ HRESULT CCompartmentEventSink::_Advise(_In_ com_ptr<IUnknown> punk,
   return hr;
 }
 HRESULT CCompartmentEventSink::_Unadvise() {
+  // Advise may have failed before _compartment was set: nothing is advised,
+  // so there is nothing to unadvise.
+  if (_compartment == nullptr)
+    return S_FALSE;
+
   HRESULT hr = S_OK;
   ITfSource* pSource = nullptr;
 
