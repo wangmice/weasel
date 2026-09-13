@@ -133,6 +133,7 @@ if is_mode("debug") then
   includes("test/TestWeaselIPC")
   includes("test/TestResponseParser")
   includes("test/TestPipeChannel")
+  includes("test/TestFindIME")
 else
   add_cxflags("/GL")
   add_ldflags("/LTCG /INCREMENTAL:NO", {force = true})

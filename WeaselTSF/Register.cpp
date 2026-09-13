@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Register.h"
+#include "FindIME.h"
 #include <strsafe.h>
 #include <WeaselUtility.h>
 
@@ -9,38 +10,6 @@ static const char c_szInfoKeyPrefix[] = "CLSID\\";
 static const char c_szTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
 static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
-
-HKL FindIME(LANGID langid) {
-  HKL hKL = NULL;
-  WCHAR key[9];
-  HKEY hKey = NULL;
-  LSTATUS ret =
-      RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                    L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", 0,
-                    KEY_READ, &hKey);
-  if (ret == ERROR_SUCCESS) {
-    for (DWORD id = (0xE0200000 | langid);
-         hKL == NULL && id <= (0xE0FF0000 | langid); id += 0x10000) {
-      StringCchPrintfW(key, _countof(key), L"%08X", id);
-      HKEY hSubKey = NULL;
-      ret = RegOpenKeyExW(hKey, key, 0, KEY_READ, &hSubKey);
-      if (ret == ERROR_SUCCESS) {
-        WCHAR data[32] = {0};
-        DWORD type;
-        DWORD size = sizeof data - sizeof(WCHAR);  // keep room for the NUL
-        ret = RegQueryValueExW(hSubKey, L"Ime File", NULL, &type,
-                               (LPBYTE)data, &size);
-        if (ret == ERROR_SUCCESS && type == REG_SZ &&
-            _wcsicmp(data, L"weasel.ime") == 0)
-          hKL = (HKL)id;
-      }
-      if (hSubKey != NULL)
-        RegCloseKey(hSubKey);
-    }
-    RegCloseKey(hKey);
-  }
-  return hKL;
-}
 
 BOOL RegisterProfiles() {
 #define CHECK_HR(hr) \
