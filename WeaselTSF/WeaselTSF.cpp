@@ -112,7 +112,7 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 
   _UninitCompartment();
 
-  _UninitThreadMgrEventSink();
+  _UninitThreadFocusSink();
 
   // While the thread manager is still valid: DestroyAll ends the UIElement,
   // which makes the UIElementMgr drop its reference to the candidate list.
