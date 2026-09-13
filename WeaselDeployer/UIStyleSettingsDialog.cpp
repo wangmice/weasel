@@ -71,8 +71,8 @@ void UIStyleSettingsDialog::Preview(int index) {
   if (file_path.empty())
     return;
   image_.Destroy();
-  // it is from ansi coding, not utf8
-  image_.Load(acptow(file_path).c_str());
+  // file_path 来自 rime 的数据目录，为 UTF-8 编码
+  image_.Load(u8tow(file_path).c_str());
   if (!image_.IsNull()) {
     preview_.SetBitmap(image_);
   }
