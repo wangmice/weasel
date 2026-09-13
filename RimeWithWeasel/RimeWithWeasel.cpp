@@ -1459,8 +1459,11 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
     std::string schema_id = "";
     if (status.schema_id)
       schema_id = status.schema_id;
-    stat.schema_name = u8tow(status.schema_name);
-    stat.schema_id = u8tow(status.schema_id);
+    // schema_name/schema_id 可能为 NULL，NULL 构造 std::string 是 UB
+    // （_Respond 已有同样的判空）
+    stat.schema_name =
+        status.schema_name ? u8tow(status.schema_name) : std::wstring();
+    stat.schema_id = u8tow(schema_id);
     stat.ascii_mode = !!status.is_ascii_mode;
     stat.composing = !!status.is_composing;
     stat.disabled = !!status.is_disabled;
