@@ -340,29 +340,42 @@ class CInsertTextEditSession : public CEditSession {
 };
 
 STDMETHODIMP CInsertTextEditSession::DoEditSession(TfEditCookie ec) {
+  if (_pComposition != nullptr) {
+    com_ptr<ITfRange> pRange;
+    if (FAILED(_pComposition->GetRange(&pRange)))
+      return E_FAIL;
+
+    if (FAILED(pRange->SetText(ec, 0, _text.c_str(),
+                               static_cast<LONG>(_text.length()))))
+      return E_FAIL;
+
+    /* update the selection to an insertion point just past the inserted
+     * text. */
+    pRange->Collapse(ec, TF_ANCHOR_END);
+
+    TF_SELECTION tfSelection;
+    tfSelection.range = pRange;
+    tfSelection.style.ase = TF_AE_NONE;
+    tfSelection.style.fInterimChar = FALSE;
+
+    _pContext->SetSelection(ec, 1, &tfSelection);
+    return S_OK;
+  }
+
+  // No composition yet: the TF_ES_ASYNCDONTCARE start session may not have
+  // run (e.g. Word holds the document lock), and failing here would drop
+  // committed text that Rime has already cleared from its buffer. Insert
+  // directly at the selection instead.
+  com_ptr<ITfInsertAtSelection> pInsertAtSelection;
+  if (FAILED(_pContext->QueryInterface(IID_ITfInsertAtSelection,
+                                       (LPVOID*)&pInsertAtSelection)))
+    return E_FAIL;
   com_ptr<ITfRange> pRange;
-  TF_SELECTION tfSelection;
-  HRESULT hRet = S_OK;
-
-  if (_pComposition == nullptr)
+  if (FAILED(pInsertAtSelection->InsertTextAtSelection(
+          ec, TF_IAS_NO_DEFAULT_COMPOSITION, _text.c_str(),
+          static_cast<LONG>(_text.length()), &pRange)))
     return E_FAIL;
-  if (FAILED(_pComposition->GetRange(&pRange)))
-    return E_FAIL;
-
-  if (FAILED(pRange->SetText(ec, 0, _text.c_str(),
-                             static_cast<LONG>(_text.length()))))
-    return E_FAIL;
-
-  /* update the selection to an insertion point just past the inserted text. */
-  pRange->Collapse(ec, TF_ANCHOR_END);
-
-  tfSelection.range = pRange;
-  tfSelection.style.ase = TF_AE_NONE;
-  tfSelection.style.fInterimChar = FALSE;
-
-  _pContext->SetSelection(ec, 1, &tfSelection);
-
-  return hRet;
+  return S_OK;
 }
 
 BOOL WeaselTSF::_InsertText(com_ptr<ITfContext> pContext,
