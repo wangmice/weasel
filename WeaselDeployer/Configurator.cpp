@@ -29,6 +29,8 @@ static void CreateFileIfNotExist(std::string filename) {
 
 // StartMaintenance 的作用域守卫：无论同步成败（含异常路径），退出时都
 // 重新连接并调用 EndMaintenance，保证服务端不会永久停留在维护模式（K1）。
+// 各维护路径统一在析构前完成 join_maintenance_thread 与 CloseHandle：
+// 部署任务全部落地、部署互斥释放之后，才唤醒服务（K19）。
 class MaintenanceReleaser {
  public:
   explicit MaintenanceReleaser(weasel::Client& client) : client_(client) {}
@@ -162,18 +164,14 @@ int Configurator::UpdateWorkspace(bool report_errors) {
   }
 
   {
+    MaintenanceReleaser releaser(client);
     RimeApi* rime = rime_get_api();
     // initialize default config, preset schemas
     rime->deploy();
     // initialize weasel config
     rime->deploy_config_file("weasel.yaml", "config_version");
-  }
-
-  CloseHandle(hMutex);  // should be closed before resuming service.
-
-  if (client.Connect()) {
-    LOG(INFO) << "Resuming service.";
-    client.EndMaintenance();
+    rime->join_maintenance_thread();
+    CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return 0;
 }
@@ -201,19 +199,15 @@ int Configurator::DictManagement() {
   }
 
   {
+    MaintenanceReleaser releaser(client);
     RimeApi* rime = rime_get_api();
     if (RIME_API_AVAILABLE(rime, run_task)) {
       rime->run_task("installation_update");  // setup user data sync dir
     }
     DictManagementDialog dlg;
     dlg.DoModal();
-  }
-
-  CloseHandle(hMutex);  // should be closed before resuming service.
-
-  if (client.Connect()) {
-    LOG(INFO) << "Resuming service.";
-    client.EndMaintenance();
+    rime->join_maintenance_thread();
+    CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return 0;
 }
@@ -249,9 +243,9 @@ int Configurator::SyncUserData() {
     if (!rime->sync_user_data()) {
       LOG(ERROR) << "Error synching user data.";
       retval = 1;
-    } else {
-      rime->join_maintenance_thread();
     }
+    // 无论同步成败，等待可能仍在运行的维护任务结束后再唤醒服务
+    rime->join_maintenance_thread();
     CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return retval;
