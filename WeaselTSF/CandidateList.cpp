@@ -57,11 +57,13 @@ STDMETHODIMP_(ULONG) CCandidateList::Release(void) {
 }
 
 STDMETHODIMP CCandidateList::GetDescription(BSTR* pbstr) {
-  static auto str = SysAllocString(L"Candidate List");
-  if (pbstr) {
-    *pbstr = str;
-  }
-  return S_OK;
+  // BSTR out params are owned (and freed) by the caller: hand out a fresh
+  // allocation every time instead of a shared static BSTR that would be
+  // double-freed by the second caller.
+  if (pbstr == nullptr)
+    return E_POINTER;
+  *pbstr = SysAllocString(L"Candidate List");
+  return (*pbstr != nullptr) ? S_OK : E_OUTOFMEMORY;
 }
 
 STDMETHODIMP CCandidateList::GetGUID(GUID* pguid) {
