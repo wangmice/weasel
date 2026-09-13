@@ -403,7 +403,7 @@ void WeaselTSF::_UninitLanguageBar() {
 void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   if (!_pLangBarButton)
     return;
-  DWORD flags;
+  DWORD flags = 0;
   _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   if (stat.ascii_mode)
     flags &= (~TF_CONVERSIONMODE_NATIVE);
