@@ -137,6 +137,7 @@ if is_mode("debug") then
   includes("test/TestCompartmentUtil")
   includes("test/TestPerUserReg")
   includes("test/TestWeaselUI")
+  includes("test/TestBstrUtil")
 else
   add_cxflags("/GL")
   add_ldflags("/LTCG /INCREMENTAL:NO", {force = true})

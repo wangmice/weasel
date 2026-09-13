@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "WeaselTSF.h"
+#include "BstrUtil.h"
 #include "CandidateList.h"
 #include <KeyEvent.h>
 #include <math.h>
@@ -126,7 +127,7 @@ STDMETHODIMP CCandidateList::GetString(UINT uIndex, BSTR* pbstr) {
     return E_INVALIDARG;
 
   auto& str = cinfo.candies[uIndex].str;
-  *pbstr = SysAllocStringLen(str.c_str(), static_cast<UINT>(str.size()) + 1);
+  *pbstr = AllocBstr(str);
 
   return S_OK;
 }
