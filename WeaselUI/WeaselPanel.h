@@ -239,4 +239,6 @@ class WeaselPanel
   // （等待下一次外部刷新），防止持续失败时消息自旋
   static constexpr BYTE MAX_PAINT_RECOVERY = 2;
   BYTE m_paint_recovery_left = MAX_PAINT_RECOVERY;
+  // 首帧扩展样式切换是否已完成（见 DoPaint）
+  bool m_layered_style_done = false;
 };

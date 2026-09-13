@@ -1012,8 +1012,14 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
 
 // draw client area
 void WeaselPanel::DoPaint(CDCHandle dc) {
-  // turn off WS_EX_TRANSPARENT, for better resp performance
-  ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED);
+  // 扩展样式切换仅在首帧执行一次：创建时显式传入的 ex 样式（含
+  // WS_EX_TRANSPARENT，未绘制的窗口不拦截鼠标）覆盖了 traits 的
+  // WS_EX_LAYERED，首次绘制时移除 TRANSPARENT、补上 LAYERED（同帧随后的
+  // UpdateLayeredWindow 需要）。之后样式不再变化，无需每帧重设。
+  if (!m_layered_style_done) {
+    ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED);
+    m_layered_style_done = true;
+  }
   GetClientRect(&rcw);
   // prepare memDC
   CDCHandle hdc = ::GetDC(m_hWnd);
@@ -1233,6 +1239,9 @@ LRESULT WeaselPanel::OnDestroy(UINT uMsg,
   m_hoverIndex = -1;
   m_lastMousePos = {-1, -1};
   m_sticky = false;
+  // 同一 panel 对象可能经 UI::Create 重建窗口（如 TSF Destroy(false) 后
+  // StartUI）：新窗口需要重新做首帧扩展样式切换
+  m_layered_style_done = false;
   delete m_layout;
   m_layout = NULL;
   return 0;
