@@ -128,6 +128,50 @@ static void test_update_cancels_countdown(UiThread& t) {
         "B1: Update cancels countdown and hides tip window");
 }
 
+/* Build a composing context with count candidates and numbered labels.
+ * candies/labels/comments must be the same length: the panel reads them
+ * pairwise while drawing, exactly like the vectors rime serializes. */
+static weasel::Context make_candidate_ctx(int count, int highlighted) {
+  weasel::Context ctx;
+  for (int i = 0; i < count; ++i) {
+    weasel::Text cand;
+    cand.str = L"candidate";
+    ctx.cinfo.candies.push_back(cand);
+    weasel::Text label;
+    label.str = std::to_wstring(i + 1);
+    ctx.cinfo.labels.push_back(label);
+    weasel::Text comment;
+    ctx.cinfo.comments.push_back(comment);
+  }
+  ctx.cinfo.highlighted = highlighted;
+  return ctx;
+}
+
+/* B9: highlighted may arrive out of range (unvalidated IPC data or a host
+ * writing the context directly); refresh must clamp it into [0, count) so
+ * downstream fixed-size array indexing (_candidateRects, m_offsetys) stays
+ * in bounds, while in-range selections pass through unchanged */
+static void test_highlighted_clamped(UiThread& t) {
+  weasel::Status status;
+  status.composing = true;
+
+  t.ui.Update(make_candidate_ctx(3, 1), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.highlighted == 1; }, 3000),
+        "B9: in-range highlighted preserved");
+
+  t.ui.Update(make_candidate_ctx(3, 999), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.highlighted == 0; }, 3000),
+        "B9: out-of-range highlighted clamped to 0");
+
+  t.ui.Update(make_candidate_ctx(3, 1), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.highlighted == 1; }, 3000),
+        "B9: highlighted recovered after clamp");
+
+  t.ui.Update(make_candidate_ctx(3, -7), status);
+  check(wait_until([&] { return t.ui.ctx().cinfo.highlighted == 0; }, 3000),
+        "B9: negative highlighted clamped to 0");
+}
+
 int main() {
   UiThread t;
   boost::thread ui_thread([&t] { t.Run(); });
@@ -140,6 +184,7 @@ int main() {
   test_cross_thread_show_hide(t);
   test_show_with_timeout(t);
   test_update_cancels_countdown(t);
+  test_highlighted_clamped(t);
 
   t.RequestStop();
   check(ui_thread.timed_join(boost::posix_time::seconds(5)),

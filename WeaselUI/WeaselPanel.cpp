@@ -149,6 +149,12 @@ void WeaselPanel::Refresh() {
   bool should_show_icon =
       (m_status.ascii_mode || !m_status.composing || !m_ctx.aux.empty());
   m_candidateCount = min(m_ctx.cinfo.candies.size(), MAX_CANDIDATES_COUNT);
+  // highlighted 来自 IPC 反序列化 / 宿主写入，全链路无上游校验；统一在此
+  // 越界归零（无候选时 0 仍指向容量内的固定槽位），布局 / 绘制 / 命中测试
+  // 对 _candidateRects、m_offsetys 等定长数组的索引即可保证在界内
+  if (m_ctx.cinfo.highlighted < 0 ||
+      m_ctx.cinfo.highlighted >= (int)m_candidateCount)
+    m_ctx.cinfo.highlighted = 0;
   // When the candidate window changes from having content to having no content,
   // reset the sticky state
   if (m_lastCandidateCount > 0 && m_candidateCount == 0) {
