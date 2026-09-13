@@ -122,12 +122,36 @@ void test_5() {
   }
 }
 
+// 有 context 无 config 的调用方：config 键必须被忽略而不是空指针崩溃；
+// 提供 config 时正常落地
+void test_6() {
+  WCHAR resp[] =
+      L"action=ctx,config\n"
+      L"ctx.aux=sie'zuoh'chuan\n"
+      L"config.inline_preedit=1\n";
+  DWORD len = wcslen(resp);
+
+  std::wstring commit;
+  weasel::Context ctx;
+  weasel::Status status;
+  weasel::ResponseParser parser(&commit, &ctx, &status);
+  parser(resp, len);
+  BOOST_TEST(ctx.aux.str == L"sie'zuoh'chuan");
+
+  weasel::Config config;  // inline_preedit 默认 false
+  weasel::Context ctx2;
+  weasel::ResponseParser parser2(&commit, &ctx2, &status, &config);
+  parser2(resp, len);
+  BOOST_TEST(config.inline_preedit);
+}
+
 int _tmain(int argc, _TCHAR* argv[]) {
   test_1();
   test_2();
   test_3();
   test_4();
   test_5();
+  test_6();
 
   return boost::report_errors();
 }
