@@ -38,11 +38,13 @@ BOOL WeaselTrayIcon::Create(HWND hTargetWnd) {
 }
 
 void WeaselTrayIcon::RequestRefresh() {
+  // 只投递请求，不读取 m_style/m_status：调用方是管道工作线程，而这两个引用
+  // 绑定的 UI 状态可能正被 UI 线程赋值（含 std::wstring），跨线程读取是数据
+  // 竞争。快照由 ApplyRefresh 在服务端消息线程上执行。
   std::lock_guard<std::mutex> lock(m_state_mutex);
   if (!m_refresh_enabled) {
     return;
   }
-  m_pending_state = WeaselTrayIconState::From(m_style, m_status);
   if (m_refresh_pending) {
     return;
   }
@@ -53,17 +55,17 @@ void WeaselTrayIcon::RequestRefresh() {
 }
 
 void WeaselTrayIcon::ApplyRefresh() {
-  WeaselTrayIconState state;
   {
     std::lock_guard<std::mutex> lock(m_state_mutex);
     if (!m_refresh_pending || !m_refresh_enabled) {
       return;
     }
-    state = m_pending_state;
     m_refresh_pending = false;
     m_refresh_in_progress = true;
   }
-  Refresh(state);
+  // 服务端消息线程：与 OnApplyStyle/_ApplyUpdate 对 style_/status_ 的写入
+  // 同线程，此处读取无竞争；投递期间到达的多次请求在此合并为一次最新快照
+  Refresh(WeaselTrayIconState::From(m_style, m_status));
   {
     std::lock_guard<std::mutex> lock(m_state_mutex);
     m_refresh_in_progress = false;
