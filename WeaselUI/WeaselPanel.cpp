@@ -135,7 +135,30 @@ void WeaselPanel::_CreateLayout() {
                                     layout, pDWR);
     }
   }
+  _ScopeFullscreenFont(IS_FULLSCREENLAYOUT(m_style));
   m_layout = layout;
+}
+
+// 全屏布局的自适应字号以"借用"共享 pDWR 的方式工作：布局期间改写其文本
+// 格式，绘制（含该布局存活期内的任何重绘）使用同一批格式，保持与已算好的
+// 矩形一致。布局对象被替换为普通布局时在此恢复快照，防止缩放后的字号逃逸
+// 出全屏生命周期、被普通候选窗沿用。
+void WeaselPanel::_ScopeFullscreenFont(bool fullscreen) {
+  if (fullscreen == m_fullscreen_font_active)
+    return;
+  if (fullscreen) {
+    m_fullscreen_font_snapshot.text = pDWR->pTextFormat;
+    m_fullscreen_font_snapshot.preedit = pDWR->pPreeditTextFormat;
+    m_fullscreen_font_snapshot.label = pDWR->pLabelTextFormat;
+    m_fullscreen_font_snapshot.comment = pDWR->pCommentTextFormat;
+    m_fullscreen_font_active = true;
+  } else {
+    pDWR->pTextFormat = m_fullscreen_font_snapshot.text;
+    pDWR->pPreeditTextFormat = m_fullscreen_font_snapshot.preedit;
+    pDWR->pLabelTextFormat = m_fullscreen_font_snapshot.label;
+    pDWR->pCommentTextFormat = m_fullscreen_font_snapshot.comment;
+    m_fullscreen_font_active = false;
+  }
 }
 
 // 更新界面
@@ -219,6 +242,9 @@ void WeaselPanel::_InitFontRes(bool forced) {
     pDWR = std::make_shared<DirectWriteResources>(m_style, dpiX);
     pDWR->pRenderTarget->SetTextAntialiasMode(
         (D2D1_TEXT_ANTIALIAS_MODE)m_style.antialias_mode);
+    // 全新 pDWR 即原始字号，此前的全屏字号快照作废；仍处于全屏布局时由
+    // 随后的 _CreateLayout 重新快照
+    m_fullscreen_font_active = false;
   }
   m_ostyle = m_style;
   dpi = dpiX;

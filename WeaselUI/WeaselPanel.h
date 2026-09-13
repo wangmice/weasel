@@ -164,6 +164,8 @@ class WeaselPanel
   bool m_mouse_entry = false;
   CPoint m_lastMousePos = {-1, -1};
   void _CreateLayout();
+  // 全屏布局自适应字号对共享 pDWR 的借用边界（见实现处注释）
+  void _ScopeFullscreenFont(bool fullscreen);
   void _ResizeWindow();
   void _RepositionWindow(const bool& adj = false);
   bool _DrawPreedit(const Text& text, CDCHandle dc, const CRect& rc);
@@ -228,6 +230,18 @@ class WeaselPanel
   bool m_autohide_counting = false;
   // for multi font_face & font_point
   PDWR pDWR;
+  // 全屏布局（FullScreenLayout::AdjustFontPoint）在布局期间会改写共享 pDWR
+  // 的文本格式字号以自适应铺满工作区。进入全屏布局前快照原始格式，换回
+  // 普通布局时恢复，把字号漂移限定在全屏布局对象的存活期内，不泄漏给
+  // 后续布局（_InitFontRes 仅在 style/DPI 变化时重建 pDWR，不会自行复位）
+  struct TextFormatsSnapshot {
+    ComPtr<IDWriteTextFormat1> text;
+    ComPtr<IDWriteTextFormat1> preedit;
+    ComPtr<IDWriteTextFormat1> label;
+    ComPtr<IDWriteTextFormat1> comment;
+  };
+  bool m_fullscreen_font_active = false;
+  TextFormatsSnapshot m_fullscreen_font_snapshot;
   std::function<void(size_t* const, size_t* const, bool* const, bool* const)>&
       _UICallback;
   float bar_scale_ = 1.0;
