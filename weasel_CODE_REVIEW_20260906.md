@@ -482,3 +482,16 @@ W6 推翻依据（V6）：本机 SDK `um\d2d1.h` 中 `D2D1_TEXT_ANTIALIAS_MODE`�
 | N4 `OnEndSystemSession` 消息线程无锁 `Finalize()`，与管道线程竞争 rime 资源（注销/关机时崩溃） | ✅ | 已随 1.4 的 `fix(WeaselIPCServer)` `a2a69aa` 一并修复，无需新改动 | 代码核实（WeaselServerImpl.cpp `OnEndSystemSession`）：`Finalize()` 与 `m_pRequestHandler` 置空已包裹在 `g_api_mutex` 内，与管道工作线程串行化；同批覆盖的还有 `OnColorChange` 与托盘 `OnCommand` |
 | N6 提权安装后 HKCU 写入落在管理员账户 hive，真实用户配置丢失 | ✅ | `fix(WeaselSetup)` | 独立验证程序（Z:/Temp/weasel_n6_verify）在真实注册表上验证机制全 PASS：1) `current_user_sid` 返回真实 S-1-5-21-*；2) `HKU\<sid>` 与 `HKCU` 读到同一 weasel 配置；3) 经 `HKU\<sid>` 路径写入的值 HKCU 立即可见（写入落在真实用户 hive）；4) `/i /origsid:S-…` 剥离后恢复 `/i` 且重定向生效；5) `..\Software` 注入式 sid 被拒绝；6) `HKU\<sid>\Volatile Environment\APPDATA` 与 `%APPDATA%` 一致（默认用户目录数据源）。实现：`RestartAsAdmin` 追加 `/origsid:<sid>`，提权实例的 per-user 读写（CustomInstall、install() 的 Profile/Hant、uninstall() 的 profile 读取）全部经 `per_user_root()/per_user_subkey()` 走 `HKU\<sid>`；默认目录 `%APPDATA%\Rime` 改从原始用户 profile 解析。x86 release 构建通过（+advapi32/sddl.h） |
 | N7 `bump-version.ps1` `replace_str` 用 `Out-File` 无 `-Encoding`：appcast.xml 变 UTF-16LE，更新通道静默失效 | ✅ | `fix(update)` | 独立验证程序（Z:/Temp/weasel_n7_verify）在 Windows PowerShell 5.1 与 pwsh 7.5 双宿主验证：5.1 下旧实现对真实 appcast.xml 副本产出 UTF-16LE（FF FE、XML 不可解析）——缺陷复现；新实现（读 `-Encoding UTF8` + `WriteAllText` 无 BOM UTF-8）双宿主均无 BOM、XML 可解析且版本已替换、66 个非 ASCII 字节保真、build.bat 副本保持 ASCII 无 BOM（cmd 可执行）。修改后脚本双宿主语法解析 0 错误。选 `WriteAllText` 而非 `Out-File -Encoding UTF8`：后者在 5.1 写 BOM 会弄坏 bat 首行 |
+
+### 7.1 临时验证代码已落地为仓库回归测试（2026-09-13）
+
+修复期间的独立验证程序经小规模可测性重构后转为常驻测试（debug 构建纳入，测的是**生产代码**而非副本）：
+
+| 靶 | 覆盖 | 重构 | 提交 |
+|---|---|---|---|
+| `test/TestFindIME`（xmake，debug） | N1：HKL 映射/首中大小写不敏感/E02x..E0Fx 槽位/LANGID 独立/NULL root 兜底 + `GetProcessHandleCount` 断言百次扫描零泄漏零关闭未打开句柄 | `FindIME` 抽到独立 TU，核心 `FindIMEUnderKey(root, langid, imeFile)` 参数化根键——测试用 HKCU 自建布局树，免管理员 | `b8dff1d` |
+| `test/TestCompartmentUtil`（xmake，debug） | N2：QI/GetCompartment/GetValue 三级失败注入（不再 Release 未赋值指针、HRESULT 如实）+ VT_I4→S_OK / VT_EMPTY→S_FALSE / 真实 msctf 往返 | 访问器抽为自由函数（仅依赖 msctf），`WeaselTSF` 成员委托 | `d2ad40e` |
+| `test/TestPerUserReg`（xmake，debug） | N6：SID 捕获/重定向布防/HKU↔HKCU 视图一致/重定向写入落真实 hive（scratch 键自动清理）/原始用户 `%APPDATA%` 解析/注入式 SID 拒绝/命令行剥离与追加 | `/origsid` 助手集中到 `WeaselSetup/PerUserReg.h/.cpp` | `766e9eb` |
+| `update/bump-version.tests.ps1`（powershell/pwsh -File） | N7：经 AST 提取 bump-version.ps1 中**真实的** `replace_str`，对 appcast/testing-appcast/build.bat/xbuild.bat 副本断言无 BOM、非 UTF-16LE、XML 可解析且版本已替换、非 ASCII 保真、bat 保持纯 ASCII；5.1 与 pwsh 双宿主可跑 | 无需重构（AST 提取即真实函数） | `92dc8ee` |
+
+N5 的回归测试在 `test/TestPipeChannel`（`test_command_response_body`，随 `2572331` 落地）。运行方式：`xmake run TestFindIME|TestCompartmentUtil|TestPerUserReg|TestPipeChannel`（debug 配置）；`powershell -File update/bump-version.tests.ps1`。
