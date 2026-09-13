@@ -126,16 +126,26 @@ class DirectWriteResources {
                 ID2D1StrokeStyle* const sstyle = (ID2D1StrokeStyle*)0) {
     pRenderTarget->DrawRectangle(rect, pBrush.Get(), strokeWidth, sstyle);
   }
+  // pTextLayout 可能不存在（CreateTextLayout 未成功等）：这些入口直接解引用
+  // 会崩溃，统一返回失败码（FAILED），由调用方经 HR 转为可捕获的异常
   HRESULT GetLayoutOverhangMetrics(DWRITE_OVERHANG_METRICS* overhangMetrics) {
+    if (!pTextLayout)
+      return E_POINTER;
     return pTextLayout->GetOverhangMetrics(overhangMetrics);
   }
   HRESULT GetLayoutMetrics(DWRITE_TEXT_METRICS* metrics) {
+    if (!pTextLayout)
+      return E_POINTER;
     return pTextLayout->GetMetrics(metrics);
   }
   HRESULT SetLayoutReadingDirection(const DWRITE_READING_DIRECTION& direct) {
+    if (!pTextLayout)
+      return E_POINTER;
     return pTextLayout->SetReadingDirection(direct);
   }
   HRESULT SetLayoutFlowDirection(const DWRITE_FLOW_DIRECTION& direct) {
+    if (!pTextLayout)
+      return E_POINTER;
     return pTextLayout->SetFlowDirection(direct);
   }
   void DrawTextLayoutAt(const D2D1_POINT_2F& point) {

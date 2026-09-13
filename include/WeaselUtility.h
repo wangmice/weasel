@@ -313,7 +313,8 @@ struct ComException {
 #define HR(result) HR_Impl(result, __FILE__, __LINE__)
 
 inline void HR_Impl(HRESULT const result, const char* file, int line) {
-  if (S_OK != result) {
+  // 仅对失败码抛出：S_FALSE 等"成功但非 S_OK"的返回值不是错误
+  if (FAILED(result)) {
     DebugStream() << "[" << current_time() << " " << file << ":" << line << "] "
                   << HRESULTToString(result);
     throw ComException(result);
