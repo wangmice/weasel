@@ -72,18 +72,34 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
  private:
   void _Setup();
   bool _IsDeployerRunning();
-  void _UpdateUI(WeaselSessionId ipc_id);
+
+  // 单次请求内 _Respond → _UpdateUI 的流水数据（B11）：
+  // - passthrough：直通键标记（未吃键、无上屏、未组词、无状态联动），
+  //   由 ProcessKeyEvent 置位、_Respond 期间按实际情况清除，
+  //   用于跳过 get_context 与服务端 UI 全刷新；
+  // - status/have_status：_Respond 已取得的会话状态快照，
+  //   供 _UpdateUI/_GetStatus 复用，免去第二次 get_status 全量拷贝
+  struct RespondContext {
+    bool passthrough = true;
+    bool have_status = false;
+    weasel::Status status;
+  };
+
+  void _UpdateUI(WeaselSessionId ipc_id, const RespondContext* rc = nullptr);
   void _LoadSchemaSpecificSettings(WeaselSessionId ipc_id,
                                    const std::string& schema_id);
   void _LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
                                 bool ignore_app_name = false);
   bool _ShowMessage(weasel::Context& ctx, weasel::Status& status);
-  bool _Respond(WeaselSessionId ipc_id, EatLine eat);
+  bool _Respond(WeaselSessionId ipc_id,
+                EatLine eat,
+                RespondContext* rc = nullptr);
   void _ReadClientInfo(WeaselSessionId ipc_id, LPWSTR buffer);
   void _GetCandidateInfo(weasel::CandidateInfo& cinfo, RimeContext& ctx);
   void _GetStatus(weasel::Status& stat,
                   WeaselSessionId ipc_id,
-                  weasel::Context& ctx);
+                  weasel::Context& ctx,
+                  const RespondContext* rc = nullptr);
   void _GetContext(weasel::Context& ctx, RimeSessionId session_id);
   void _UpdateShowNotifications(RimeConfig* config, bool initialize = false);
 

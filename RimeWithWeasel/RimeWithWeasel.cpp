@@ -272,6 +272,7 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
   // vim_mode when keydown only
+  bool state_changed = false;
   if (!handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK)) {
     bool isVimBackInCommandMode =
         (keyEvent.keycode == ibus::Keycode::Escape) ||
@@ -283,10 +284,19 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
         rime_api->get_option(session_id, "vim_mode") &&
         !rime_api->get_option(session_id, "ascii_mode")) {
       rime_api->set_option(session_id, "ascii_mode", True);
+      state_changed = true;
     }
   }
-  _Respond(ipc_id, eat);
-  _UpdateUI(ipc_id);
+  // 直通键判定交由 _Respond 补全（出现上屏/组词/状态联动即清除）
+  RespondContext rc;
+  rc.passthrough = !handled && !state_changed;
+  _Respond(ipc_id, eat, &rc);
+  // 直通键早退（B11a）：未吃键、无上屏、未组词、无状态联动 —— rime 会话
+  // 与服务端 UI 状态均无变化，跳过 UI 全刷新（第二次 get_status、
+  // get_option、_ShowMessage、托盘刷新）。TSF 客户端的候选窗由应用进程
+  // 按 _Respond 的响应行自行渲染，与服务端刷新无关，不受影响
+  if (!rc.passthrough)
+    _UpdateUI(ipc_id, &rc);
   m_active_session = ipc_id;
   return (BOOL)handled;
 }
@@ -525,7 +535,8 @@ bool RimeWithWeaselHandler::_IsDeployerRunning() {
   return deployer_detected;
 }
 
-void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
+void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id,
+                                      const RespondContext* rc) {
   // if m_ui nullptr, _UpdateUI meaningless
   if (!m_ui)
     return;
@@ -540,7 +551,8 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   if (ipc_id == 0)
     weasel_status.disabled = m_disabled;
 
-  _GetStatus(weasel_status, ipc_id, weasel_context);
+  // rc 携带 _Respond 本键已取得的状态快照时，_GetStatus 不再第二次 get_status
+  _GetStatus(weasel_status, ipc_id, weasel_context, rc);
 
   SessionStatus& session_status = get_session_status(ipc_id);
   if (rime_api->get_option(session_id, "inline_preedit"))
@@ -748,7 +760,9 @@ inline std::string _GetLabelText(const std::vector<Text>& labels,
   return wtou8(std::wstring(buffer));
 }
 
-bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id,
+                                     EatLine eat,
+                                     RespondContext* rc) {
   std::wstring body;
   body.reserve(4096);
   std::vector<const char*> actions;
@@ -758,6 +772,8 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   RimeSessionId session_id = session_status.session_id;
   RIME_STRUCT(RimeCommit, commit);
   if (rime_api->get_commit(session_id, &commit)) {
+    if (rc)
+      rc->passthrough = false;  // 有上屏文本：非直通键
     actions.push_back("commit");
     std::wstring commit_text_w = escape_string(u8tow(commit.text));
     body.append(L"commit=").append(commit_text_w).append(L"\n");
@@ -769,6 +785,19 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   static const std::wstring Bool_wstring[] = {L"0", L"1"};
   if (rime_api->get_status(session_id, &status)) {
     is_composing = !!status.is_composing;
+    if (rc) {
+      // 转换一次供 _UpdateUI/_GetStatus 复用（B11b，免第二次 get_status）；
+      // schema 字段判空：NULL 构造 std::string 是 UB
+      rc->have_status = true;
+      rc->status.schema_name =
+          status.schema_name ? u8tow(status.schema_name) : std::wstring();
+      rc->status.schema_id =
+          status.schema_id ? u8tow(status.schema_id) : std::wstring();
+      rc->status.ascii_mode = !!status.is_ascii_mode;
+      rc->status.composing = !!status.is_composing;
+      rc->status.disabled = !!status.is_disabled;
+      rc->status.full_shape = !!status.is_full_shape;
+    }
     actions.push_back("status");
     body.append(L"status.ascii_mode=")
         .append(Bool_wstring[!!status.is_ascii_mode])
@@ -787,6 +816,8 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
         .append(L"\n");
     if (m_global_ascii_mode &&
         (session_status.status.is_ascii_mode != status.is_ascii_mode)) {
+      if (rc)
+        rc->passthrough = false;  // ascii_mode 联动过其他会话：状态已变化
       for (auto& pair : m_session_status_map) {
         if (pair.first != ipc_id)
           rime_api->set_option(to_session_id(pair.first), "ascii_mode",
@@ -796,9 +827,16 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     session_status.status = status;
     rime_api->free_status(&status);
   }
+  if (rc && is_composing)
+    rc->passthrough = false;  // 组词中：非直通键
 
   RIME_STRUCT(RimeContext, ctx);
-  if (rime_api->get_context(session_id, &ctx)) {
+  // 直通键早退（B11a，旧报告 4.3）：无上屏、未组词时 rime 上下文必为空
+  // （librime 的 get_context 仅在 IsComposing() 时填充 composition、
+  // HasMenu() 时填充 menu，二者均以非空组词为前提），跳过本次 C 交叉。
+  // 此时响应本就不含 ctx.* 行，客户端按 action 列表逐行解析、
+  // Context 每键新建，协议形态与字节流不变
+  if (!(rc && rc->passthrough) && rime_api->get_context(session_id, &ctx)) {
     bool has_candidates = ctx.menu.num_candidates > 0;
     CandidateInfo cinfo;
     if (has_candidates) {
@@ -1446,45 +1484,64 @@ static void _LoadAppOptions(RimeConfig* config,
 
 void RimeWithWeaselHandler::_GetStatus(Status& stat,
                                        WeaselSessionId ipc_id,
-                                       Context& ctx) {
+                                       Context& ctx,
+                                       const RespondContext* rc) {
   SessionStatus& session_status = get_session_status(ipc_id);
-  RimeSessionId session_id = session_status.session_id;
-  RIME_STRUCT(RimeStatus, status);
-  if (rime_api->get_status(session_id, &status)) {
-    std::string schema_id = "";
-    if (status.schema_id)
-      schema_id = status.schema_id;
-    // schema_name/schema_id 可能为 NULL，NULL 构造 std::string 是 UB
-    // （_Respond 已有同样的判空）
-    stat.schema_name =
-        status.schema_name ? u8tow(status.schema_name) : std::wstring();
-    stat.schema_id = u8tow(schema_id);
-    stat.ascii_mode = !!status.is_ascii_mode;
-    stat.composing = !!status.is_composing;
-    stat.disabled = !!status.is_disabled;
-    stat.full_shape = !!status.is_full_shape;
-    if (schema_id != m_last_schema_id) {
-      session_status.__synced = false;
-      m_last_schema_id = schema_id;
-      if (schema_id != ".default") {  // don't load for schema select menu
-        bool inline_preedit = session_status.style.inline_preedit;
-        _LoadSchemaSpecificSettings(ipc_id, schema_id);
-        _LoadAppInlinePreeditSet(ipc_id, true);
-        if (session_status.style.inline_preedit != inline_preedit)
-          // in case of inline_preedit set in schema
-          _UpdateInlinePreeditStatus(ipc_id);
-        // refresh icon after schema changed
-        _RefreshTrayIcon(_UpdateUICallback);
-        m_ui->SetStyle(session_status.style);
-        if (m_show_notifications.find("schema") != m_show_notifications.end() &&
-            m_show_notifications_time > 0) {
-          ctx.aux.str = stat.schema_name;
-          m_ui->Update(ctx, stat);
-          m_ui->ShowWithTimeout(m_show_notifications_time);
-        }
+  // schema_id 的字符串形态：方案切换检测与 m_last_schema_id 比较用
+  std::string schema_id;
+  bool status_valid = false;
+  if (rc != nullptr && rc->have_status) {
+    // 复用 _Respond 本键已取得的快照：省一次 get_status C 交叉与全量拷贝
+    stat.schema_name = rc->status.schema_name;
+    stat.schema_id = rc->status.schema_id;
+    stat.ascii_mode = rc->status.ascii_mode;
+    stat.composing = rc->status.composing;
+    stat.disabled = rc->status.disabled;
+    stat.full_shape = rc->status.full_shape;
+    // schema id 为 ASCII，UTF-8 往返无损
+    schema_id = wtou8(rc->status.schema_id);
+    status_valid = true;
+  } else {
+    RimeSessionId session_id = session_status.session_id;
+    RIME_STRUCT(RimeStatus, status);
+    if (rime_api->get_status(session_id, &status)) {
+      // schema_name/schema_id 可能为 NULL，NULL 构造 std::string 是 UB
+      // （_Respond 已有同样的判空）
+      if (status.schema_id)
+        schema_id = status.schema_id;
+      stat.schema_name =
+          status.schema_name ? u8tow(status.schema_name) : std::wstring();
+      stat.schema_id = u8tow(schema_id);
+      stat.ascii_mode = !!status.is_ascii_mode;
+      stat.composing = !!status.is_composing;
+      stat.disabled = !!status.is_disabled;
+      stat.full_shape = !!status.is_full_shape;
+      status_valid = true;
+      rime_api->free_status(&status);
+    }
+  }
+  if (!status_valid)
+    return;
+  if (schema_id != m_last_schema_id) {
+    session_status.__synced = false;
+    m_last_schema_id = schema_id;
+    if (schema_id != ".default") {  // don't load for schema select menu
+      bool inline_preedit = session_status.style.inline_preedit;
+      _LoadSchemaSpecificSettings(ipc_id, schema_id);
+      _LoadAppInlinePreeditSet(ipc_id, true);
+      if (session_status.style.inline_preedit != inline_preedit)
+        // in case of inline_preedit set in schema
+        _UpdateInlinePreeditStatus(ipc_id);
+      // refresh icon after schema changed
+      _RefreshTrayIcon(_UpdateUICallback);
+      m_ui->SetStyle(session_status.style);
+      if (m_show_notifications.find("schema") != m_show_notifications.end() &&
+          m_show_notifications_time > 0) {
+        ctx.aux.str = stat.schema_name;
+        m_ui->Update(ctx, stat);
+        m_ui->ShowWithTimeout(m_show_notifications_time);
       }
     }
-    rime_api->free_status(&status);
   }
 }
 
