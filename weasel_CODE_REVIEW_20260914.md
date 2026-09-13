@@ -31,7 +31,7 @@
 
 | 编号 | 级别 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|
-| K1 | **P1** | WeaselDeployer/Configurator.cpp:220-228 | SyncUserData 失败不调 EndMaintenance → 服务端永久维护态、全系统禁输 | ✔ | 未修复 |
+| K1 | **P1** | WeaselDeployer/Configurator.cpp:220-228 | SyncUserData 失败不调 EndMaintenance → 服务端永久维护态、全系统禁输 | ✔ | ✅ 已修复（f3a888f，批次1） |
 | K2 | P2 | WeaselTSF/KeyEventSink.cpp:7-60 | static 三件套跨实例/线程共享；pfEaten 未写即存 static | ✔ | 未修复 |
 | K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | ✔ | 未修复 |
 | K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | ✅ | 未修复 |
@@ -60,7 +60,7 @@
 
 | 编号 | 级别 | 类型 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|---|
-| B1 | **P1** | bug | WeaselUI/WeaselUI.cpp:50-94 等 | Show/Hide/ShowWithTimeout 未 marshal，管道线程持 g_api_mutex 跨线程 ShowWindow → 与消息线程互等死锁 | ✔ | 未修复 |
+| B1 | **P1** | bug | WeaselUI/WeaselUI.cpp:50-94 等 | Show/Hide/ShowWithTimeout 未 marshal，管道线程持 g_api_mutex 跨线程 ShowWindow → 与消息线程互等死锁 | ✔ | ✅ 已修复（1878ff6，批次1） |
 | B2 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘刷新在管道线程读 ui.style_/status_（= A9） | ✔ | 未修复 |
 | B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | ✅ | 未修复 |
 | B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | 未修复 |
@@ -76,8 +76,8 @@
 | B14 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp:73-87 | explorer.exe 每键 detached 线程 + Sleep(100) | — | 未修复 |
 | B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | ✔ | 未修复 |
 | B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | ✅ | 未修复 |
-| B17 | P3 | bug | WeaselIPCServer/WeaselServerImpl.cpp:445-461 | Listen catch(...) 后无退避，管道创建持续失败时 100% CPU | ✔ | 未修复 |
-| B18 | P3 | bug | WeaselServerImpl.cpp:450-519 | worker 先于 _RegisterWorker 结束 → m_workers 残留已关闭句柄 | ✔ | 未修复 |
+| B17 | P3 | bug | WeaselIPCServer/WeaselServerImpl.cpp:445-461 | Listen catch(...) 后无退避，管道创建持续失败时 100% CPU | ✔ | ✅ 已修复（7c086f0，批次1） |
+| B18 | P3 | bug | WeaselServerImpl.cpp:450-519 | worker 先于 _RegisterWorker 结束 → m_workers 残留已关闭句柄 | ✔ | ✅ 已修复（7aa084b，批次1） |
 | B19 | P3 | bug | WeaselUI/WeaselPanel.cpp:1261-1264 | MoveTo marshal 不检查 PostMessage 返回值泄漏 RECT | ✔ | 未修复 |
 | B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | ✔ | 未修复 |
 | B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | 未修复 |
@@ -851,3 +851,11 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 ## 4. 修复进度记录
 
 > 待开始。每个批次记录：批次号、修复项、commit、测试情况。
+
+### 批次 1（2026-09-14）：B1、K1、B17、B18
+
+- `1878ff6` fix(WeaselUI): marshal Show/Hide/ShowWithTimeout to the UI thread — B1（P1）。新增 WM_WEASEL_SHOW marshal 通道（enum class PanelVisibility），autohide 收敛进 panel；新增 test/TestWeaselUI（9 用例全过：同线程直调/跨线程 marshal/倒计时/取消/退出）。
+- `f3a888f` fix(WeaselDeployer): resume service when user data sync fails — K1（P1）。MaintenanceReleaser RAII 保证 EndMaintenance 在失败/异常路径也被执行。进程级行为，以构建+推理验证。
+- `7c086f0` fix(WeaselIPCServer): back off before retrying a failed pipe listen — B17。50ms 退避（interrupt 可打断，不影响停机）；TestPipeChannel 新增忙循环回归用例（负向验证过：去退避则 FAIL）。
+- `7aa084b` fix(WeaselIPCServer): register pipe workers before they can finish — B18。_LaunchWorker 在同一临界区内建线程并登记；TestPipeChannel 新增 30 轮瞬断冲击用例。
+- 构建：release/debug 全量 build ok；既有测试全过（TestResponseParser 基线即 exit 3，见 B20，非本批引入）。
