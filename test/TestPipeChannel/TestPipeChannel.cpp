@@ -75,6 +75,17 @@ static void test_roundtrip() {
   check(resp == 42, "smoke: roundtrip reply");
 }
 
+/* Poll pred until it holds or the timeout elapses */
+template <typename Pred>
+static bool wait_until(Pred pred, int timeout_ms, int step_ms = 10) {
+  for (int waited = 0; waited < timeout_ms; waited += step_ms) {
+    if (pred())
+      return true;
+    Sleep(step_ms);
+  }
+  return pred();
+}
+
 /* Expose protected seams for deterministic tests */
 class ExposedServer : public weasel::PipeServer {
  public:
@@ -381,6 +392,65 @@ static void test_command_response_body() {
   check(status_line == L"0", "N5: status says not composing");
 }
 
+/* B17: a listener whose pipe instance can never be created must back off
+ * between retries instead of busy-spinning a core, and shutdown (interrupt
+ * + wake) must still complete promptly */
+static void test_failed_listener_backs_off() {
+  // an unprefixed name makes CreateNamedPipe fail with ERROR_INVALID_PARAMETER
+  // on every iteration (deterministically reproduced; precondition checked)
+  std::wstring bad_name = L"weasel_ut_badpipe_";
+  wchar_t pid[16];
+  swprintf_s(pid, L"%u", GetCurrentProcessId());
+  bad_name += pid;
+  ExposedServer server{std::wstring(bad_name)};
+  check(server.ExposedCreate() == INVALID_HANDLE_VALUE,
+        "B17: unprefixed pipe name makes CreateNamedPipe fail");
+
+  std::atomic<DWORD> listener_tid{0};
+  auto handler = [](weasel::PipeMessage msg,
+                    weasel::PipeServer::Respond resp) { resp(1); };
+  boost::thread listener([&] {
+    listener_tid = GetCurrentThreadId();
+    server.Listen(handler);
+  });
+  while (listener_tid.load() == 0)
+    Sleep(5);
+
+  // open the thread handle before it exits: needed for GetThreadTimes later
+  HANDLE hthread =
+      ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, listener_tid.load());
+  check(hthread != NULL, "B17: opened listener thread for CPU query");
+
+  const int kSpinWindowMs = 600;
+  Sleep(kSpinWindowMs);
+  listener.interrupt();
+  server.WakeListener();
+  check(listener.timed_join(boost::posix_time::seconds(2)),
+        "B17: failing listener exits promptly on interrupt");
+
+  if (hthread) {
+    FILETIME ft_create, ft_exit, ft_kernel, ft_user;
+    if (::GetThreadTimes(hthread, &ft_create, &ft_exit, &ft_kernel,
+                         &ft_user)) {
+      auto to_ms = [](const FILETIME& ft) -> long long {
+        ULARGE_INTEGER u;
+        u.LowPart = ft.dwLowDateTime;
+        u.HighPart = ft.dwHighDateTime;
+        return u.QuadPart / 10000;  // 100ns units -> ms
+      };
+      long long cpu_ms = to_ms(ft_kernel) + to_ms(ft_user);
+      // a busy spin burns most of the spin window; a 50ms backoff burns ~0
+      check(cpu_ms < kSpinWindowMs / 2,
+            "B17: failing listener backs off instead of busy-spinning");
+      std::cout << "  listener CPU during " << kSpinWindowMs << "ms window: "
+                << cpu_ms << "ms" << std::endl;
+    } else {
+      check(false, "B17: GetThreadTimes on listener thread");
+    }
+    ::CloseHandle(hthread);
+  }
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -390,6 +460,7 @@ int main() {
   test_ordered_shutdown();
   test_transact_recovery_without_resend();
   test_command_response_body();
+  test_failed_listener_backs_off();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;

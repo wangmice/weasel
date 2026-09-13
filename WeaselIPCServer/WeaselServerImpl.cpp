@@ -16,6 +16,12 @@ extern CAppModule _Module;
 // take it too, or they race handler state (session map, rime) mid-call.
 static std::mutex g_api_mutex;
 
+// Bounded backoff before Listen retries a failed iteration: without it a
+// persistently failing CreateNamedPipe (e.g. handle exhaustion) turns the
+// loop into a 100% CPU spin. The sleep itself is interruptible, so shutdown
+// (interrupt + WakeListener) is never delayed by the backoff.
+static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
+
 ServerImpl::ServerImpl()
     : m_pRequestHandler(NULL),
       m_darkMode(IsUserDarkMode()),
@@ -455,6 +461,7 @@ void PipeServer::Listen(ServerHandler const& handler) {
       _RegisterWorker(pipe, worker);
     } catch (...) {  // pipe errors and thread spawn failures alike
       _FinalizePipe(pipe);
+      boost::this_thread::sleep_for(kListenRetryBackoff);
     }
     boost::this_thread::interruption_point();
   }
