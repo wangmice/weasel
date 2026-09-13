@@ -105,9 +105,13 @@ function update_changelog {
 # replace string with regex pat
 function replace_str {
   param( [string]$filePath, [string]$pat_orig, [string]$pat_replace)
-  $fileContent = Get-Content -Path $filePath -Raw;
+  $fileContent = Get-Content -Path $filePath -Raw -Encoding UTF8;
   $fileContent = [regex]::Replace($fileContent, $pat_orig, $pat_replace)
-  $fileContent | Out-File -FilePath $filePath -NoNewline;
+  # write UTF-8 without BOM: Out-File defaults to UTF-16LE on Windows
+  # PowerShell 5.1 (breaking the utf-8 appcast and the batch files), while
+  # its UTF8 switch emits a BOM that cmd.exe cannot parse.
+  [System.IO.File]::WriteAllText($filePath, $fileContent,
+    [System.Text.UTF8Encoding]::new($false))
 }
 # update xml file
 function update_xml {
