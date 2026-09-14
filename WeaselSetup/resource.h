@@ -27,6 +27,7 @@
 #define IDS_STR_HELP                    148
 #define IDS_STR_ERR_WRITE_PROFILE       149
 #define IDS_STR_ERR_SWITCH_PROFILE      150
+#define IDS_STR_ERR_SETENV_PROFILE      151
 #define IDD_INSTALL_OPTIONS             201
 #define IDD_DIALOG1                     203
 #define IDC_RADIO_CN                    1000

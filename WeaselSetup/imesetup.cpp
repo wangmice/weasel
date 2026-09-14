@@ -430,8 +430,12 @@ int register_text_service(const std::wstring& tsf_path,
   // if (silent)  // always silent
   { params = L" /s " + params; }
 
+  // 失败则 regsvr32 拿不到 profile，中止注册；按本函数惯例报告并返回
+  // 错误码，不抛异常（调用链无人捕获，抛出即 std::terminate）
   if (!SetEnvironmentVariable(L"TEXTSERVICE_PROFILE", profile.c_str())) {
-    throw std::runtime_error("SetEnvironmentVariable failed");
+    MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SETENV_PROFILE,
+                          IDS_STR_INORUN_FAILED, MB_ICONERROR | MB_OK);
+    return 1;
   }
 
   std::wstring app = L"regsvr32.exe";
