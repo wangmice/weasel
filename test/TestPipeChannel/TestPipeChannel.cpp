@@ -513,6 +513,58 @@ static void test_fast_disconnect_leaves_no_stale_worker() {
   delete server;
 }
 
+/* B16: a staged body larger than the send buffer must fail the transaction
+ * explicitly. The wbufferstream failbit used to make tellp() return -1, so
+ * body_bytes became 0 and only the header was sent: the body (client info on
+ * START_SESSION, a whole cinfo line) was silently lost. */
+static void test_oversized_body_fails_loudly() {
+  std::wstring name = unique_pipe_name(L"b16");
+  auto* server = new weasel::PipeServer(std::wstring(name));
+  std::atomic<int> requests{0};
+  auto handler = [&requests](weasel::PipeMessage msg,
+                             weasel::PipeServer::Respond resp) {
+    ++requests;
+    resp(msg.wParam + 1);
+  };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "B16: connect");
+
+  // stage a body past the send capacity ((buff_size - header) / 2 wchars)
+  const size_t capacity_w =
+      (64 * 1024 - sizeof(weasel::PipeMessage)) / sizeof(wchar_t);
+  client << std::wstring(capacity_w + 64, L'x');
+
+  bool threw = false;
+  try {
+    weasel::PipeMessage req{WEASEL_IPC_ECHO, 41, 0};
+    client.Transact(req);
+  } catch (...) {
+    threw = true;
+  }
+  check(threw, "B16: oversized body fails the transaction");
+  check(requests.load() == 0, "B16: no header-only request delivered");
+
+  // the channel must stay usable for normal-sized bodies afterwards
+  client << L"body-ok\n";
+  weasel::PipeMessage req2{WEASEL_IPC_ECHO, 41, 0};
+  bool served = false;
+  try {
+    served = (client.Transact(req2) == 42);
+  } catch (...) {
+  }
+  check(served, "B16: channel usable after oversized body");
+
+  listener.interrupt();
+  server->WakeListener();
+  check(listener.timed_join(boost::posix_time::seconds(5)),
+        "B16: listener exits");
+  boost::thread drainer([server] { server->DrainWorkers(); });
+  check(drainer.timed_join(boost::posix_time::seconds(5)), "B16: drain");
+  delete server;
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -524,6 +576,7 @@ int main() {
   test_command_response_body();
   test_failed_listener_backs_off();
   test_fast_disconnect_leaves_no_stale_worker();
+  test_oversized_body_fails_loudly();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;

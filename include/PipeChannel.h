@@ -1,4 +1,5 @@
 #pragma once
+#include <logging.h>
 #include <string>
 #include <memory>
 #include <windows.h>
@@ -180,13 +181,21 @@ class PipeChannel : public PipeChannelBase {
     size_t body_bytes = 0;
     if (ctx->has_body && ctx->write_stream) {
       std::streampos pos = ctx->write_stream->tellp();
-      if (pos != std::streampos(-1)) {
-        body_bytes = static_cast<size_t>(pos) * sizeof(wchar_t);
+      if (pos == std::streampos(-1)) {
+        // The staged body overran the fixed send buffer (wbufferstream
+        // failbit): sending now would deliver the header without the body,
+        // losing it silently. Fail the transaction explicitly and drop the
+        // poisoned staging state instead.
+        ClearBufferStream();
+        LOG(ERROR) << "IPC request body exceeds the send buffer ("
+                   << (buff_size - _MsgSize) << " bytes), dropping it";
+        throw (DWORD)ERROR_MORE_DATA;
       }
+      body_bytes = static_cast<size_t>(pos) * sizeof(wchar_t);
     }
+    // body_bytes is bounded by the buffer capacity, so data_sz never
+    // exceeds buff_size here
     size_t data_sz = ctx->has_body ? (_MsgSize + body_bytes) : _MsgSize;
-    if (data_sz > buff_size)
-      data_sz = buff_size;
 
     // No resend on failure: a request may already have been delivered, and
     // duplicating it would process one keystroke twice.
