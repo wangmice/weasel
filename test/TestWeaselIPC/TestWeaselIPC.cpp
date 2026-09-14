@@ -16,13 +16,25 @@ CAppModule _Module;
 int console_main();
 int client_main();
 int server_main();
+int selftest_main();
 
-// usage: TestWeaselIPC.exe [/start | /stop | /console]
+static int g_failures = 0;
+
+static void check(bool ok, const char* what) {
+  if (!ok) {
+    ++g_failures;
+    std::cerr << "[FAIL] " << what << std::endl;
+  } else {
+    std::cerr << "[ok] " << what << std::endl;
+  }
+}
+
+// usage: TestWeaselIPC.exe [/start | /stop | /console | /client]
 
 int _tmain(int argc, _TCHAR* argv[]) {
-  if (argc == 1)  // no args
+  if (argc == 1)  // no args: run the self test
   {
-    return client_main();
+    return selftest_main();
   } else if (argc > 1 && !wcscmp(L"/start", argv[1])) {
     return server_main();
   } else if (argc > 1 && !wcscmp(L"/stop", argv[1])) {
@@ -35,7 +47,8 @@ int _tmain(int argc, _TCHAR* argv[]) {
     return 0;
   } else if (argc > 1 && !wcscmp(L"/console", argv[1])) {
     return console_main();
-    return 0;
+  } else if (argc > 1 && !wcscmp(L"/client", argv[1])) {
+    return client_main();
   }
 
   return -1;
@@ -136,21 +149,27 @@ class TestRequestHandler : public weasel::RequestHandler {
   virtual ~TestRequestHandler() {
     std::cerr << "handler dtor: " << m_counter << std::endl;
   }
-  virtual UINT FindSession(UINT session_id) {
+  // 签名须与基类逐字一致（DWORD / EatLine 形参）：K20 之前写作
+  // UINT AddSession(LPWSTR)，隐藏而非重写，ServerImpl::OnStartSession
+  // 带 eat 调用命中基类空实现，会话计数 m_counter 永不增长
+  DWORD FindSession(DWORD session_id) override {
     std::cerr << "FindSession: " << session_id << std::endl;
     return (session_id <= m_counter ? session_id : 0);
   }
-  virtual UINT AddSession(LPWSTR buffer) {
+  DWORD AddSession(LPWSTR buffer, EatLine eat) override {
     std::cerr << "AddSession: " << m_counter + 1 << std::endl;
-    return ++m_counter;
+    ++m_counter;
+    if (eat)
+      eat(std::wstring(L"status.composing=0\n"));
+    return m_counter;
   }
-  virtual UINT RemoveSession(UINT session_id) {
+  DWORD RemoveSession(DWORD session_id) override {
     std::cerr << "RemoveClient: " << session_id << std::endl;
     return 0;
   }
-  virtual BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent,
-                               UINT session_id,
-                               EatLine eat) {
+  BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent,
+                       DWORD session_id,
+                       EatLine eat) override {
     std::cerr << "ProcessKeyEvent: " << session_id
               << " keycode: " << keyEvent.keycode << " mask: " << keyEvent.mask
               << std::endl;
@@ -161,6 +180,40 @@ class TestRequestHandler : public weasel::RequestHandler {
  private:
   unsigned int m_counter;
 };
+
+// K20: dispatch through the RequestHandler base pointer, exactly as
+// ServerImpl::OnStartSession/OnKeyEvent call it. The old handler hid
+// AddSession behind a mismatched signature, so the base no-op ran and the
+// session counter never grew; these assertions keep that regression out.
+int selftest_main() {
+  std::unique_ptr<weasel::RequestHandler> handler(new TestRequestHandler);
+  WCHAR buffer[WEASEL_IPC_BUFFER_LENGTH] =
+      L"action=session\nsession.client_app=selftest.exe\n.\n";
+
+  std::wstring eaten;
+  weasel::RequestHandler::EatLine eat = [&eaten](std::wstring& line) -> bool {
+    eaten += line;
+    return true;
+  };
+
+  DWORD id1 = handler->AddSession(buffer, eat);
+  check(id1 == 1, "K20: first AddSession returns session 1");
+  DWORD id2 = handler->AddSession(buffer, eat);
+  check(id2 == 2, "K20: second AddSession returns session 2");
+  check(eaten.find(L"status.composing=0\n") != std::wstring::npos,
+        "K20: AddSession drives the eat callback");
+
+  check(handler->FindSession(1) == 1, "K20: FindSession(1)");
+  check(handler->FindSession(3) == 0, "K20: FindSession(unknown) is 0");
+
+  BOOL handled =
+      handler->ProcessKeyEvent(weasel::KeyEvent(L'a', 0), 1, eat);
+  check(handled == TRUE, "K20: ProcessKeyEvent handled");
+  check(eaten.find(L"Greeting=Hello") != std::wstring::npos,
+        "K20: ProcessKeyEvent drives the eat callback");
+
+  return g_failures ? 1 : 0;
+}
 
 int server_main() {
   HRESULT hRes = _Module.Init(NULL, GetModuleHandle(NULL));
