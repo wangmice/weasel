@@ -53,9 +53,19 @@ bool ConvertKeyEvent(UINT vkey,
   // wScanCode 只收 8 位硬件扫描码；KeyInfo 的完整打包值低 16 位是
   // repeatCount，直接传会破坏扫描码布局（bit15 的 release 标记维持不设，
   // 与既有行为一致）
+  // ToUnicodeEx 返回值契约：1 = 单个 UTF-16 码元；2 = buf[0..1] 为代理对
+  // （布局产出的增补字符；死键无法组合时也会返回两个码元，但那不是
+  // 代理对，按未知键放弃）；-1/其他负值 = 死键，buf 只是死键字符本身，
+  // 不是本键的翻译，同样按未知键处理；0 = 无翻译。
   int ret = ToUnicodeEx(vkey, kinfo.scanCode, table, buf, buf_len, 0, NULL);
   if (ret == 1) {
     result.keycode = UINT(buf[0]);
+    return true;
+  }
+  if (ret == 2 && IS_HIGH_SURROGATE(buf[0]) && IS_LOW_SURROGATE(buf[1])) {
+    // 代理对合成完整码位，与单字符路径同为“码位即 keycode”语义
+    result.keycode = 0x10000u + ((UINT(buf[0]) - 0xD800u) << 10) +
+                     (UINT(buf[1]) - 0xDC00u);
     return true;
   }
 
