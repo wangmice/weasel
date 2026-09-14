@@ -133,14 +133,22 @@ class PipeChannel : public PipeChannelBase {
 
   _TyRes Transact(Msg& msg) {
     HANDLE* phandle = _GetPipeHandle();
-    if (!_Ensure())
+    if (!_Ensure()) {
+      // Server unreachable: drop any staged body so the next request starts
+      // clean instead of appending to the leftover one.
+      ClearBufferStream();
       throw (DWORD)ERROR_FILE_NOT_FOUND;  // server unreachable
+    }
     try {
       _Send(*phandle, msg);
       return _ReceiveResponse();
     } catch (...) {
       // The connection died mid-request. Drop the request (it may already
       // have been delivered) and re-establish so the next call can proceed.
+      // A staged-but-unsent body is dropped too: keeping it would make the
+      // next START_SESSION carry two client info blocks, or let it ride
+      // along with the next body-less command.
+      ClearBufferStream();
       _Reconnect();
       throw;
     }

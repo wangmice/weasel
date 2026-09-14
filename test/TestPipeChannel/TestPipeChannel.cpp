@@ -565,6 +565,141 @@ static void test_oversized_body_fails_loudly() {
   delete server;
 }
 
+/* B15: a failed Transact must leave the thread's channel state clean.
+ * A staged body that never made it onto the pipe used to survive the
+ * failure, so the next START_SESSION appended to it and delivered two
+ * client info blocks. Both failure modes are exercised: server
+ * unreachable (_Ensure throws before the try block) and a connection
+ * dropped mid-flight (_WritePipe/_Receive fail inside it). */
+static void test_failed_transact_leaves_no_staged_body() {
+  std::wstring name = unique_pipe_name(L"b15");
+  auto client_info = [](const wchar_t* app) {
+    std::wstring body = L"action=session\nsession.client_app=";
+    body += app;
+    body += L".exe\nsession.client_type=tsf\n.\n";
+    return body;
+  };
+
+  auto* server1 = new weasel::PipeServer(std::wstring(name));
+  std::mutex bodies_mutex;
+  std::vector<std::wstring> bodies;  // every START_SESSION body received
+  auto handler = [server1, &bodies_mutex, &bodies](
+                     weasel::PipeMessage msg,
+                     weasel::PipeServer::Respond resp) {
+    if (msg.Msg == WEASEL_IPC_START_SESSION) {
+      std::lock_guard<std::mutex> lock(bodies_mutex);
+      bodies.push_back(std::wstring((LPWSTR)server1->ReceiveBuffer()));
+    }
+    resp(7);
+  };
+  boost::thread listener1([server1, &handler] { server1->Listen(handler); });
+
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "B15: connect");
+  const std::wstring block_a = client_info(L"appA");
+  client << block_a;
+  weasel::PipeMessage start{WEASEL_IPC_START_SESSION, 0, 0};
+  check(client.Transact(start) == 7, "B15: first session request served");
+  {
+    std::lock_guard<std::mutex> lock(bodies_mutex);
+    check(bodies.size() == 1 && bodies[0] == block_a,
+          "B15: first body delivered intact");
+  }
+
+  // --- server unreachable: _Ensure throws before anything is sent ---
+  listener1.interrupt();
+  server1->WakeListener();
+  check(listener1.timed_join(boost::posix_time::seconds(5)),
+        "B15: server1 listener exits");
+  {
+    boost::thread drainer([server1] { server1->DrainWorkers(); });
+    check(drainer.timed_join(boost::posix_time::seconds(5)),
+          "B15: server1 workers drained");
+  }
+  delete server1;
+  client.Disconnect();  // force the next Transact through _Ensure
+
+  client << client_info(L"appB");
+  bool threw_unreachable = false;
+  try {
+    client.Transact(start);
+  } catch (...) {
+    threw_unreachable = true;
+  }
+  check(threw_unreachable, "B15: request with server down fails");
+
+  auto* server2 = new weasel::PipeServer(std::wstring(name));
+  auto handler2 = [server2, &bodies_mutex, &bodies](
+                      weasel::PipeMessage msg,
+                      weasel::PipeServer::Respond resp) {
+    if (msg.Msg == WEASEL_IPC_START_SESSION) {
+      std::lock_guard<std::mutex> lock(bodies_mutex);
+      bodies.push_back(std::wstring((LPWSTR)server2->ReceiveBuffer()));
+    }
+    resp(7);
+  };
+  boost::thread listener2([server2, &handler2] { server2->Listen(handler2); });
+
+  const std::wstring block_c = client_info(L"appC");
+  bool retried = false;
+  for (int waited = 0; waited < 3000 && !retried; waited += 25) {
+    // restage each attempt, as ClientImpl::StartSession rewrites its client
+    // info for every try; a failed Transact drops the staged body
+    client << block_c;
+    try {
+      retried = (client.Transact(start) == 7);
+    } catch (...) {
+      Sleep(25);  // server2's listener may not have created its pipe yet
+    }
+  }
+  check(retried, "B15: session retry succeeds after server restart");
+  {
+    std::lock_guard<std::mutex> lock(bodies_mutex);
+    check(bodies.size() == 2 && bodies[1] == block_c,
+          "B15: retry carries exactly one client info block");
+  }
+
+  // --- connection dropped mid-flight: _WritePipe/_Receive throw ---
+  server2->DrainWorkers();
+
+  client << client_info(L"appD");
+  bool threw_dropped = false;
+  try {
+    client.Transact(start);
+  } catch (...) {
+    threw_dropped = true;
+  }
+  check(threw_dropped, "B15: request on dropped connection fails");
+
+  const std::wstring block_e = client_info(L"appE");
+  bool retried2 = false;
+  for (int waited = 0; waited < 3000 && !retried2; waited += 25) {
+    client << block_e;  // restage, mirroring StartSession retry semantics
+    try {
+      retried2 = (client.Transact(start) == 7);
+    } catch (...) {
+      Sleep(25);
+    }
+  }
+  check(retried2, "B15: session retry succeeds after dropped connection");
+  {
+    std::lock_guard<std::mutex> lock(bodies_mutex);
+    check(bodies.size() == 3 && bodies[2] == block_e,
+          "B15: retry after drop carries exactly one client info block");
+  }
+
+  listener2.interrupt();
+  server2->WakeListener();
+  check(listener2.timed_join(boost::posix_time::seconds(5)),
+        "B15: server2 listener exits");
+  {
+    boost::thread drainer([server2] { server2->DrainWorkers(); });
+    check(drainer.timed_join(boost::posix_time::seconds(5)),
+          "B15: server2 workers drained");
+  }
+  delete server2;
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -577,6 +712,7 @@ int main() {
   test_failed_listener_backs_off();
   test_fast_disconnect_leaves_no_stale_worker();
   test_oversized_body_fails_loudly();
+  test_failed_transact_leaves_no_staged_body();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;
