@@ -4,8 +4,10 @@
 #include "stdafx.h"
 #include <boost/archive/text_woarchive.hpp>
 #include <boost/detail/lightweight_test.hpp>
+#include <boost/thread.hpp>
 #include <ResponseParser.h>
 #include <WeaselUtility.h>
+#include <atomic>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -217,7 +219,45 @@ void test_8() {
   BOOST_TEST(ctx.cinfo.candies.empty());
 }
 
+// B21: 多线程并发首次构造 ResponseParser（s_factories 曾为无锁懒初始化，
+// 并发 insert 属 UB）。必须最先执行：工厂表只在本进程首次构造时初始化，
+// 排在其他用例之后并发首init就无从谈起；起跑线屏障让所有线程同时进入构造
+void test_9() {
+  const int kThreads = 8;
+  weasel::CandidateInfo ci;
+  ci.candies.push_back(weasel::Text{L"候選甲"});
+  ci.candies.push_back(weasel::Text{L"候選乙"});
+  const std::wstring sample =
+      L"action=ctx,commit\n"
+      L"ctx.preedit=寫作串\n" +
+      make_cand_line(ci) + L"commit=上屏\n";
+
+  std::vector<int> ok(kThreads, 0);
+  std::atomic<int> waiting{0};
+  boost::thread_group group;
+  for (int i = 0; i < kThreads; ++i) {
+    group.create_thread([&sample, &ok, &waiting, i, kThreads] {
+      ++waiting;
+      while (waiting.load() < kThreads)
+        ;  // 起跑线：保证 8 线程同时首次构造
+      std::vector<WCHAR> buf(sample.begin(), sample.end());
+      buf.push_back(L'\0');
+      std::wstring commit;
+      weasel::Context ctx;
+      weasel::Status status;
+      weasel::ResponseParser parser(&commit, &ctx, &status);
+      parser(buf.data(), buf.size() - 1);
+      // BOOST_TEST 计数器非线程安全，线程内只记录结果
+      ok[i] = (ctx.cinfo.candies.size() == 2 && commit == L"上屏") ? 1 : 0;
+    });
+  }
+  group.join_all();
+  for (int i = 0; i < kThreads; ++i)
+    BOOST_TEST(ok[i] == 1);
+}
+
 int _tmain(int argc, _TCHAR* argv[]) {
+  test_9();  // B21: 首个构造须发生在多线程里，故最先执行
   test_1();
   test_2();
   test_3();

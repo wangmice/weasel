@@ -32,14 +32,10 @@ class Deserializer {
   virtual void Store(KeyType const& key, std::wstring const& value) {}
 
   static void Initialize(ResponseParser* pTarget);
-  static void Define(std::wstring const& action, Factory factory);
   static bool Require(std::wstring const& action, ResponseParser* pTarget);
 
  protected:
   ResponseParser* m_pTarget;
-
- private:
-  static std::map<std::wstring, Factory> s_factories;
 };
 
 }  // namespace weasel

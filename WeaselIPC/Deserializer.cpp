@@ -8,28 +8,28 @@
 
 using namespace weasel;
 
-std::map<std::wstring, Deserializer::Factory> Deserializer::s_factories;
+namespace {
+// Action registry shared by every ResponseParser. Initialized on first use:
+// C++11 magic statics make that thread-safe, so several UI threads parsing
+// their first response concurrently are safe (the former empty()-check plus
+// insert was an unsynchronized race).
+const std::map<std::wstring, Deserializer::Factory>& GetFactories() {
+  static const std::map<std::wstring, Deserializer::Factory> factories = {
+      // TODO: extend the parser's functionality in the future by defining
+      // more actions here
+      {L"action", ActionLoader::Create},
+      {L"commit", Committer::Create},
+      {L"ctx", ContextUpdater::Create},
+      {L"status", StatusUpdater::Create},
+      {L"config", Configurator::Create},
+      {L"style", Styler::Create}};
+  return factories;
+}
+}  // namespace
 
 void Deserializer::Initialize(ResponseParser* pTarget) {
-  if (s_factories.empty()) {
-    // register factory methods
-    // TODO: extend the parser's functionality in the future by defining more
-    // actions here
-    Define(L"action", ActionLoader::Create);
-    Define(L"commit", Committer::Create);
-    Define(L"ctx", ContextUpdater::Create);
-    Define(L"status", StatusUpdater::Create);
-    Define(L"config", Configurator::Create);
-    Define(L"style", Styler::Create);
-  }
-
   // loaded by default
   Require(L"action", pTarget);
-}
-
-void Deserializer::Define(std::wstring const& action, Factory factory) {
-  s_factories[action] = factory;
-  // s_factories.insert(make_pair(action, factory));
 }
 
 bool Deserializer::Require(std::wstring const& action,
@@ -37,15 +37,14 @@ bool Deserializer::Require(std::wstring const& action,
   if (!pTarget)
     return false;
 
-  std::map<std::wstring, Factory>::iterator i = s_factories.find(action);
-  if (i == s_factories.end()) {
+  auto const& factories = GetFactories();
+  auto i = factories.find(action);
+  if (i == factories.end()) {
     // unknown action type
     return false;
   }
 
-  Factory& factory = i->second;
-
+  Factory const& factory = i->second;
   pTarget->deserializers[action] = factory(pTarget);
-  // pTarget->deserializers.insert(make_pair(action, factory(pTarget)));
   return true;
 }
