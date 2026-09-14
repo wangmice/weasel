@@ -289,14 +289,14 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
       state_changed = true;
     }
   }
-  // 直通键判定交由 _Respond 补全（出现上屏/组词/状态联动即清除）
+  // 直通键判定交由 _Respond 补全（出现上屏/组词/状态联动/待展示通知即清除）
   RespondContext rc;
   rc.passthrough = !handled && !state_changed;
   _Respond(ipc_id, eat, &rc);
-  // 直通键早退（B11a）：未吃键、无上屏、未组词、无状态联动 —— rime 会话
-  // 与服务端 UI 状态均无变化，跳过 UI 全刷新（第二次 get_status、
-  // get_option、_ShowMessage、托盘刷新）。TSF 客户端的候选窗由应用进程
-  // 按 _Respond 的响应行自行渲染，与服务端刷新无关，不受影响
+  // 直通键早退（B11a）：未吃键、无上屏、未组词、无状态联动、无待展示通知
+  // —— rime 会话与服务端 UI 状态均无变化，跳过 UI 全刷新（第二次
+  // get_status、get_option、_ShowMessage、托盘刷新）。TSF 客户端的候选窗
+  // 由应用进程按 _Respond 的响应行自行渲染，与服务端刷新无关，不受影响
   if (!rc.passthrough)
     _UpdateUI(ipc_id, &rc);
   m_active_session = ipc_id;
@@ -828,6 +828,14 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id,
     }
     session_status.status = status;
     rime_api->free_status(&status);
+  }
+  {
+    // Shift 等开关键：librime 不吃键（kNoop）但已在 process_key 内切换
+    // ascii_mode 等开关，通知经 OnNotify 同步送达、待 _UpdateUI 消费展示。
+    // 有待展示通知即状态已变化，非直通键
+    std::lock_guard<std::mutex> lock(m_notifier_mutex);
+    if (rc && !m_message_type.empty())
+      rc->passthrough = false;
   }
   if (rc && is_composing)
     rc->passthrough = false;  // 组词中：非直通键

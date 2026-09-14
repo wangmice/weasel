@@ -74,9 +74,9 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool _IsDeployerRunning();
 
   // 单次请求内 _Respond → _UpdateUI 的流水数据（B11）：
-  // - passthrough：直通键标记（未吃键、无上屏、未组词、无状态联动），
-  //   由 ProcessKeyEvent 置位、_Respond 期间按实际情况清除，
-  //   用于跳过 get_context 与服务端 UI 全刷新；
+  // - passthrough：直通键标记（未吃键、无上屏、未组词、无状态联动、
+  //   无待展示通知），由 ProcessKeyEvent 置位、_Respond 期间按实际情况
+  //   清除，用于跳过 get_context 与服务端 UI 全刷新；
   // - status/have_status：_Respond 已取得的会话状态快照，
   //   供 _UpdateUI/_GetStatus 复用，免去第二次 get_status 全量拷贝
   struct RespondContext {
