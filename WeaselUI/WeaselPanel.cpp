@@ -1039,14 +1039,13 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
 
 // draw client area
 void WeaselPanel::DoPaint(CDCHandle dc) {
-  // 扩展样式切换仅在首帧执行一次：创建时显式传入的 ex 样式（含
-  // WS_EX_TRANSPARENT，未绘制的窗口不拦截鼠标）覆盖了 traits 的
-  // WS_EX_LAYERED，首次绘制时移除 TRANSPARENT、补上 LAYERED（同帧随后的
-  // UpdateLayeredWindow 需要）。之后样式不再变化，无需每帧重设。
-  if (!m_layered_style_done) {
-    ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED);
-    m_layered_style_done = true;
-  }
+  // 每帧校正扩展样式：移除 WS_EX_TRANSPARENT，确保 WS_EX_LAYERED 存在
+  // （UpdateLayeredWindow 仅对分层窗口生效）。不可只做一次：panel 对象可能
+  // 挂到新建的 HWND 上（UI::Create 复用对象重建窗口等路径），若沿用旧标志
+  // 跳过切换，新窗口无 WS_EX_LAYERED，ULW 失败且宿主（如 Electron）吞掉
+  // WM_PAINT，屏幕上只剩未初始化的黑色重定向表面（候选框全黑）。
+  // ModifyStyleEx 内部先比较再写入，样式一致时本帧只多一次 GetWindowLong。
+  ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED);
   GetClientRect(&rcw);
   // prepare memDC
   CDCHandle hdc = ::GetDC(m_hWnd);
@@ -1270,9 +1269,6 @@ LRESULT WeaselPanel::OnDestroy(UINT uMsg,
   m_hoverIndex = -1;
   m_lastMousePos = {-1, -1};
   m_sticky = false;
-  // 同一 panel 对象可能经 UI::Create 重建窗口（如 TSF Destroy(false) 后
-  // StartUI）：新窗口需要重新做首帧扩展样式切换
-  m_layered_style_done = false;
   delete m_layout;
   m_layout = NULL;
   return 0;
