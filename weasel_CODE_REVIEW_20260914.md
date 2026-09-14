@@ -20,8 +20,8 @@
 | A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | ✅ 已修复（d09c18e，批次15：bug 部分读失败不回写 + perf 部分稳态零写） |
 | A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | ✔ | ✅ 已修复（37f0da8，批次12） |
 | A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 未修复 |
-| A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | ✔ | 未修复 |
-| A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | ✔ | 未修复 |
+| A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | ✔ | ✅ 已修复（49406da，批次18） |
+| A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | ✔ | ✅ 已修复（9d16c70，批次18） |
 | A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | ✔ | ✅ 已修复（89b3e1a，批次8） |
 | A14 | P3 | bug | WeaselSetup/WeaselSetup.cpp:68-76 | 注册表字符串未强制 NUL 终止即构造 wstring | ✔ | ✅ 已修复（2e67458，批次8） |
 | A15 | P3 | perf | WeaselTSF/EditSession.cpp:8-14 | 每击键堆分配 shared_ptr<Context>+Config+parser | — | ✅ 已修复（1c3e8ec，批次15：parser 复用；Context 分配经考证为承重保留） |
@@ -52,7 +52,7 @@
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | ✅ 已修复（63d3cae，批次9） |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | ✅ 已修复（2666c70，批次15：注册表 TTL 缓存，IPC 保留有据） |
-| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 🔧 批次13/14/16/17 修 TSF+Deployer+Setup 子集（Server 子项见批次18） |
+| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | ✅ 已修复（批次13/14/16/17/18 分模块收口，杂项族全部完成） |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | ✅ 已修复（00f7695+a34af93+78d08c1，批次15：a/b/c 分项提交；compartment 读写部分随 A7） |
 | K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 不修（有据，上游一致/防串扰设计，见 §4 批次12） |
 
@@ -1021,3 +1021,14 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `dffddf2` fix(WeaselSetup): collect a meaningful WER mini dump for WeaselServer — K22②。install() 原写 DumpType=0(custom)+CustomDumpFlags=0，按 MSDN《Collecting User-Mode Dumps》表语义仅产出 MiniDumpNormal 最简内容（0+0 与注释"CustomDumpFlags, MiniDumpNormal"自洽但意图存疑）。考证上游 rime/weasel master 同段逐字同值（WebFetch 2026-09-15 核对），属上游遗留，本仓修为有意义配置：DumpType=1（mini dump，含线程栈与模块信息，足以符号化崩溃栈），删 CustomDumpFlags 写入（该值仅在 DumpType=0 时生效，升级安装残留旧值失效无害）。验证：构建+注册表值语义推理（MSDN：0=custom/1=mini/2=full，CustomDumpFlags 取 MINIDUMP_TYPE 位掩码）。
 - `1c14073` fix(WeaselSetup): join the service-restart sequence before exiting — K22③。CustomInstall 修改安装后起 detached 线程做 Sleep(500)+停服务/重启/部署序列，主流程弹完"修改成功"框即返回、_tWinMain 退出，进程结束腰斩线程（服务停在半重启状态）。改为 joinable 线程：MessageBox 移到 join 前（用户读提示的 1 秒里序列并发执行，UX 不变），框关后 join 序列必然完成；用户秒关框最多多等序列剩余约 1 秒。未采用"移到消息循环后同步执行"方案：_tWinMain 无独立消息循环（模态对话框自带），改动面更大。验证：构建+推理（消息框与线程并发的时序枚举）。
 - 构建：x86 debug WeaselSetup build ok（本批全部改动均在 x86-only 目标内）；x64 debug 全量 build ok + 测试目标 11 个全过（run_tests.sh）；release 构建通过后已切回 debug。
+
+### 批次 18（2026-09-15）：A11、A12、K22-Server 子集（WeaselServer/托盘）
+
+主题：WeaselServer/SystemTray。A11、A12 整项 + K22 的 Server 侧四项子集本批完成（①user_name[20]、②WeaselService boost::thread 临时对象、③Shutdown()/_stoppedEvent、④TestWeaselIPC /console 不可达 return）；K22 杂项族至此全部收口。
+
+- `49406da` fix(WeaselServer): bound SetIconList loop within the icon array — A11。`SetIconList(HICON*, UINT)` 循环条件 `i <= nNumIcons` 读 `pHIconList[nNumIcons]` 差一越界（全仓无调用者的潜在缺陷），改 `< nNumIcons`。核对另一重载 `SetIconList(UINT, UINT)`：按资源 ID 从 uFirstIconID 到 uLastIconID 逐个 LoadIcon（同样无调用者），闭区间 ID 枚举语义自洽无同病，不动。验证：构建+推理（纯循环边界，无调用者不可运行时测）。
+- `9d16c70` fix(WeaselServer): destroy the menu on the early return, drop the duplicate submenu destroy — A12。①OnTrayNotification 双击分支 `if (!hSubMenu) return 0;` 补 `::DestroyMenu(hMenu)`（对照单击分支既有写法与注释）；②SetMenuDefaultItem 删 `::DestroyMenu(hSubMenu)`——MSDN《DestroyMenu》明示父菜单销毁时递归销毁全部子菜单，先销毁子菜单再销毁父菜单构成对同一子菜单二次销毁，保留父菜单销毁即可。修改保持 Chris Maunder 原代码风格。验证：构建+推理（按 MSDN DestroyMenu 递归销毁契约；托盘菜单交互无自动化测试入口）。
+- `d386aab` fix(WeaselServer): use getUsername for the SYSTEM account gate — K22①。`WCHAR user_name[20]` 手写 GetUserName 不查返回值：超长用户名（>19 字符）读取失败、缓冲保持全零，`_wcsicmp(L"SYSTEM")` 不中即静默放行服务进程。改用 WeaselUtility.h 的 getUsername()（B31 已修失败路径，动态长度），读取失败返回空串同样不等于 SYSTEM；保持大小写不敏感比较。WeaselUtility.h 原已 include，零新增耦合。验证：构建+推理；getUsername 本体有 TestResponseParser test_10 持久化覆盖（B31），本项为调用点替换。
+- `0bd1141` fix(WeaselServer): remove the dead WeaselService SCM harness — K22②③。考证（②③一并裁决）：全仓 git grep 无任何 WeaselService 构造/Run() 调用（WeaselServer.cpp 仅 include 头文件；WEASEL_SERVICE_NAME "WeaselInputService" 除该类自身外零引用，安装器/install.nsi 均不注册该服务）；WeaselServer.exe 的 _tWinMain 从不调用 StartServiceCtrlDispatcher，即使外部把 exe 注册为 Windows 服务，SCM 也无法进入 ServiceMain——整类运行时不可达，属半成品死代码。上游 rime/weasel master 同样仅 include 不使用（WebFetch 2026-09-15 核对），为上游遗留残骸。按"删除死部分"处理：删 WeaselService.cpp/.h（-213 行），WeaselServer.cpp 的 include 换为直接 include WeaselServerApp.h（原经 WeaselService.h 传递获得，App 头自包含无循环），vcxproj/filters 同步移除条目，xmake `add_files("./*.cpp")` 自动收敛。②的 `boost::thread{...}` 临时对象与③的 Shutdown() 报 STOPPED 不停 app、_stoppedEvent 创建即弃均随整类消失。附带考证备注：boost::thread 析构语义为 detach（区别于 std::thread 的 terminate），原"析构即 terminate"表述不准，但代码不可达的死代码结论不受影响。验证：构建（release+debug，链接期证明无残余引用）+ git grep 全仓零引用。
+- K22④ 裁决**不修（随批次 9 重写消失）**。原 test/TestWeaselIPC.cpp:36-39 /console 分支 `return 0;` 不可达：批次 9（K20）重写后 _tmain 的 /console 分支为 `return console_main();`（可达），console_main 尾部 `return 0;` 在读循环正常退出后执行——原缺陷形态已不存在，无改动。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
