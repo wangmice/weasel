@@ -32,6 +32,12 @@ void WeaselTSF::_ClearCompositionDisplayAttributes(
 BOOL WeaselTSF::_SetCompositionDisplayAttributes(TfEditCookie ec,
                                                  _In_ ITfContext* pContext,
                                                  ITfRange* pRangeComposition) {
+  // atom 0 means _InitDisplayAttributeGuidAtom() failed (apps without
+  // display-attribute support, e.g. some OpenGL hosts): never write a bogus
+  // atom into GUID_PROP_ATTRIBUTE.
+  if (_gaDisplayAttributeInput == 0)
+    return FALSE;
+
   ITfProperty* pDisplayAttributeProperty = nullptr;
   HRESULT hr = S_OK;
 

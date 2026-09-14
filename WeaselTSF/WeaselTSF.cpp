@@ -135,10 +135,9 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
   if (!_InitKeyEventSink())
     goto ExitError;
 
-  // if (!_InitDisplayAttributeGuidAtom())
-  //	goto ExitError;
-  //	some app might init failed because it not provide DisplayAttributeInfo,
-  // like some opengl stuff
+  // Init failure is non-fatal: some apps don't provide DisplayAttributeInfo
+  // (e.g. OpenGL stuff). The atom stays 0 and the attribute setter skips the
+  // write, so no bogus atom reaches GUID_PROP_ATTRIBUTE.
   _InitDisplayAttributeGuidAtom();
 
   if (!_InitPreservedKey())

@@ -249,8 +249,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   weasel::Config _config;
   UINT64 _parsedSerial = 0;
 
-  // guidatom for the display attibute.
-  TfGuidAtom _gaDisplayAttributeInput;
+  // guidatom for the display attibute. 0 = RegisterGUID failed or not yet
+  // run; guards the SetValue in _SetCompositionDisplayAttributes.
+  TfGuidAtom _gaDisplayAttributeInput = 0;
   BOOL _committed = false;
   BOOL _isToOpenClose = false;
 };
