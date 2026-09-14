@@ -693,7 +693,8 @@ BOOL CSystemTray::SetMenuDefaultItem(UINT uItem, BOOL bByPos) {
 
   ::SetMenuDefaultItem(hSubMenu, m_DefaultMenuItemID, m_DefaultMenuItemByPos);
 
-  ::DestroyMenu(hSubMenu);
+  // DestroyMenu(hMenu) recursively destroys its submenus; destroying
+  // hSubMenu separately here would destroy it twice
   ::DestroyMenu(hMenu);
 
   return TRUE;
@@ -825,8 +826,10 @@ LRESULT CSystemTray::OnTrayNotification(WPARAM wParam, LPARAM lParam) {
         return 0;
 
       HMENU hSubMenu = ::GetSubMenu(hMenu, 0);
-      if (!hSubMenu)
+      if (!hSubMenu) {
+        ::DestroyMenu(hMenu);  // Be sure to Destroy Menu Before Returning
         return 0;
+      }
       uItem = ::GetMenuItemID(hSubMenu, m_DefaultMenuItemID);
 
       DestroyMenu(hMenu);
