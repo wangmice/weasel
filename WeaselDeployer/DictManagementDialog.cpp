@@ -9,8 +9,10 @@ void static OpenFolderAndSelectItem(std::wstring filepath) {
   filepath = std::filesystem::path(filepath).make_preferred().wstring();
   std::wstring directory = std::filesystem::path(filepath).parent_path();
 
-  HRESULT hr;
-  hr = CoInitializeEx(0, COINIT_MULTITHREADED);
+  // 主线程为 STA（_tWinMain 已 CoInitialize），MTA 初始化在此返回
+  // RPC_E_CHANGED_MODE 且不加计数；仅真正加了计数（S_OK/S_FALSE）才配对
+  // CoUninitialize，否则每次调用拆一层主线程 COM 计数
+  HRESULT hr = CoInitializeEx(0, COINIT_MULTITHREADED);
 
   auto folder = ILCreateFromPath(directory.c_str());
   std::vector<LPITEMIDLIST> v;
@@ -22,7 +24,9 @@ void static OpenFolderAndSelectItem(std::wstring filepath) {
     ILFree(idl);
   }
   ILFree(folder);
-  CoUninitialize();
+  if (SUCCEEDED(hr)) {
+    CoUninitialize();
+  }
 }
 
 template <typename T, typename U>
