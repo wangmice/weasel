@@ -141,6 +141,9 @@ static int CustomInstall(bool installing) {
   }
   if (_has_installed) {
     std::wstring dir(install_dir());
+    // 服务重启+部署序列与"修改成功"提示并发执行（用户读提示的 1 秒里
+    // 服务已在重启），但必须 join：进程先退出会腰斩 detached 线程，
+    // 服务停在半重启状态
     std::thread th([dir]() {
       ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"/q",
                     NULL, SW_SHOWNORMAL);
@@ -151,9 +154,9 @@ static int CustomInstall(bool installing) {
       ShellExecuteW(NULL, NULL, (dir + L"\\WeaselDeployer.exe").c_str(),
                     L"/deploy", NULL, SW_SHOWNORMAL);
     });
-    th.detach();
     MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
                MB_ICONINFORMATION | MB_OK);
+    th.join();
   }
 
   return 0;
