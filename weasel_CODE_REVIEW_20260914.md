@@ -43,7 +43,7 @@
 | K10 | P2 | DictManagementDialog.cpp:13,25 | STA 线程无条件 CoUninitialize 拆主循环计数 | ✔ | ✅ 已修复（b01eeea，批次16） |
 | K11 | P2 | WeaselSetup/imesetup.cpp:178-464 | WOW64 重定向 4 处提前 return 不恢复；install() 忽略文件拷贝结果 | ✔ | ✅ 已修复（ec3678e，批次8） |
 | K12 | P2 | imesetup.cpp:364-375 | regsvr32 退出码不检查，失败仍报成功 | ✔ | ✅ 已修复（f409c78，批次8） |
-| K13 | P2 | imesetup.cpp:514-517 | 卸载不清 HKCU 配置；RegDeleteKey 有子键即失败 | ✔ | 未修复 |
+| K13 | P2 | imesetup.cpp:514-517 | 卸载不清 HKCU 配置；RegDeleteKey 有子键即失败 | ✔ | ✅ 已修复（d5c6941，批次17） |
 | K14 | P2 | WeaselSetup/WeaselSetup.cpp:109-111 | 改 profile 只写注册表不重注册 TSF profile | ✔ | ✅ 已修复（daced50，批次8） |
 | K15 | P2 | WeaselSetup/WeaselSetup.cpp:209-212 | /userdir 引号不剥离 | ✔ | ✅ 已修复（25c1efc，批次8） |
 | K16 | P2 | WeaselTSF/Composition.cpp:163,166-182 | GetTextExtent 会话泄漏 pRange 与 selection.range（每击键） | ✔ | ✅ 已修复（4ede762（含 A1），批次6） |
@@ -52,7 +52,7 @@
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | ✅ 已修复（63d3cae，批次9） |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | ✅ 已修复（2666c70，批次15：注册表 TTL 缓存，IPC 保留有据） |
-| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 🔧 批次13/14/16 修 TSF+Deployer 子集（Setup/Server 子项见批次17/18） |
+| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 🔧 批次13/14/16/17 修 TSF+Deployer+Setup 子集（Server 子项见批次18） |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | ✅ 已修复（00f7695+a34af93+78d08c1，批次15：a/b/c 分项提交；compartment 读写部分随 A7） |
 | K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 不修（有据，上游一致/防串扰设计，见 §4 批次12） |
 
@@ -1011,3 +1011,13 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `a7b8061` fix(WeaselDeployer): survive a missing rime levers module — K22②。构造函数原先直接解引用 `find_module("levers")->get_api()`，levers 模块缺失（部署损坏）即空指针崩溃。改为判空：缺失时 LOG(ERROR) 并留空 api_，OnInitDialog 检测后以新增字符串资源 IDS_STR_ERR_LEVERS_MISSING（159，zh-CN/zh-TW/en 三语言块）提示重新安装/重新部署并 EndDialog 关闭，不崩；对话框随即关闭，后续 api_ 调用不可达。验证：构建（含 .rc 资源编译，UTF-16 编码经 iconv diff 验证仅增三行）+推理。
 - `e46664b` fix(WeaselDeployer): reload the dict list after a restore — K22③。restore 成功后 `user_dict_list_` 不刷新，列表仍显示旧状态、后续继续操作旧条目。`Populate()` 改为自包含刷新（ResetContent 后重枚举；程序化 `SetCurSel(-1)` 不触发 LBN_SELCHANGE，末尾手动复位 backup/export/import 按钮与初始化状态一致），OnRestore 成功分支调用 Populate。OnInitDialog 首次填充路径控件已 attach，行为不变。验证：构建+推理。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
+
+### 批次 17（2026-09-15）：K13、K22-Setup 子集（WeaselSetup）
+
+主题：WeaselSetup 安装器。K13 整项 + K22 的 Setup 侧三项子集本批完成（①SetEnvironmentVariable throw、②WER dump 配置、③修改安装 detached 线程）；K22 仅剩 Server 子项归批次 18。
+
+- `d5c6941` fix(WeaselSetup): recursively delete registry trees and clear HKCU config on uninstall — K13。uninstall() 原用 `RegDeleteKey(HKLM, WEASEL_REG_KEY/RIME_REG_KEY)`，键下有子键（RIME_REG_KEY 必含 Weasel 子键）即失败，卸载从不真正清掉 HKLM 注册信息。①改 `delete_reg_tree`（RegDeleteTreeW 封装，SetupUtil 供测试复用；advapi32 已链接，无需 shlwapi）递归整树删除并检查返回值（ERROR_FILE_NOT_FOUND 视为已清除，其余计入 retval 报卸载失败）。②HKCU 考证：output/install.nsi Uninstall 段只清 HKLM（`DeleteRegKey HKLM SOFTWARE\Rime` 等），全程不碰 HKCU——无人处理，按保守方案在 uninstall() 顺带递归清除 HKCU `Software\Rime\Weasel` 配置键（经 per_user_root()/per_user_subkey() 重定向感知真实用户 hive，覆盖 Profile/Hant/RimeUserDir/Language/Updates 等），用户数据目录文件留给用户处理。验证：TestWeaselSetup 新增嵌套键树用例（两层子键+值整树删除、删后无残留、缺失键返回 ERROR_FILE_NOT_FOUND），构建+运行全绿；HKLM/HKCU 真实删除路径构建+推理（不碰本机真实键）。
+- `c4d34d7` fix(WeaselSetup): report and fail instead of throwing on SetEnvironmentVariable error — K22①。register_text_service 里 SetEnvironmentVariable(TEXTSERVICE_PROFILE) 失败原抛 runtime_error，调用链（install_/uninstall_ime_file → install/uninstall → _tWinMain）无人捕获即 std::terminate。改为按本函数既有错误惯例：新增字符串资源 IDS_STR_ERR_SETENV_PROFILE（151，zh-CN/zh-TW/en 三语言块）非静默提示，返回 1 走安装失败路径，不启动 regsvr32。验证：x86 debug 构建（含 .rc 资源编译，UTF-16 经 iconv/perl 字节级 round-trip 校验仅增三行、行尾纯 CRLF）+推理。
+- `dffddf2` fix(WeaselSetup): collect a meaningful WER mini dump for WeaselServer — K22②。install() 原写 DumpType=0(custom)+CustomDumpFlags=0，按 MSDN《Collecting User-Mode Dumps》表语义仅产出 MiniDumpNormal 最简内容（0+0 与注释"CustomDumpFlags, MiniDumpNormal"自洽但意图存疑）。考证上游 rime/weasel master 同段逐字同值（WebFetch 2026-09-15 核对），属上游遗留，本仓修为有意义配置：DumpType=1（mini dump，含线程栈与模块信息，足以符号化崩溃栈），删 CustomDumpFlags 写入（该值仅在 DumpType=0 时生效，升级安装残留旧值失效无害）。验证：构建+注册表值语义推理（MSDN：0=custom/1=mini/2=full，CustomDumpFlags 取 MINIDUMP_TYPE 位掩码）。
+- `1c14073` fix(WeaselSetup): join the service-restart sequence before exiting — K22③。CustomInstall 修改安装后起 detached 线程做 Sleep(500)+停服务/重启/部署序列，主流程弹完"修改成功"框即返回、_tWinMain 退出，进程结束腰斩线程（服务停在半重启状态）。改为 joinable 线程：MessageBox 移到 join 前（用户读提示的 1 秒里序列并发执行，UX 不变），框关后 join 序列必然完成；用户秒关框最多多等序列剩余约 1 秒。未采用"移到消息循环后同步执行"方案：_tWinMain 无独立消息循环（模态对话框自带），改动面更大。验证：构建+推理（消息框与线程并发的时序枚举）。
+- 构建：x86 debug WeaselSetup build ok（本批全部改动均在 x86-only 目标内）；x64 debug 全量 build ok + 测试目标 11 个全过（run_tests.sh）；release 构建通过后已切回 debug。
