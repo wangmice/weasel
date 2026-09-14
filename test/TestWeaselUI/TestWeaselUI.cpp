@@ -289,6 +289,51 @@ static void test_layout_failure_is_shielded(UiThread& t) {
         "B8: panel recovers after layout failures");
 }
 
+/* B35-1: with exactly MAX_CANDIDATES_COUNT (100) candidates, the row/column
+ * round-info passes must not read the [i+1] neighbor past the array capacity:
+ * row_of_candidate[i+1] / col_of_candidate[i+1] used to read index [100] when
+ * i was the last candidate and count hit the 100 cap (arrays are
+ * int[MAX_CANDIDATES_COUNT]). A settled octx proves the layout+paint cycle
+ * completed. Styles below force the affected paths: horizontal wrapping into
+ * multiple rows (HorizontalLayout round-info loop) and vertical text with
+ * column wrap in both directions (VHorizontalLayout::DoLayoutWithWrap). */
+static void test_max_candidates_round_info(UiThread& t) {
+  weasel::Status status;
+  status.composing = true;
+
+  // 横排 + 窄 max_width：候选换行成多行，row_cnt > 0 进入圆角调整循环
+  weasel::UIStyle horizontal;
+  horizontal.font_face = L"Segoe UI";
+  horizontal.font_point = 12;
+  horizontal.layout_type = weasel::UIStyle::LAYOUT_HORIZONTAL;
+  horizontal.max_width = 120;
+  t.ui.SetStyle(horizontal);
+  t.ui.Update(make_candidate_ctx(100, 0), status);
+  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 100; },
+                   3000),
+        "B35-1: 100 candidates settle under horizontal multi-row layout");
+
+  // 竖排文本 + 自动换列，两个方向各走一遍 DoLayoutWithWrap 的列圆角循环
+  weasel::UIStyle vtext_wrap;
+  vtext_wrap.font_face = L"Segoe UI";
+  vtext_wrap.font_point = 12;
+  vtext_wrap.layout_type = weasel::UIStyle::LAYOUT_VERTICAL_TEXT;
+  vtext_wrap.vertical_text_with_wrap = true;
+  vtext_wrap.max_height = 120;
+
+  vtext_wrap.vertical_text_left_to_right = true;
+  t.ui.SetStyle(vtext_wrap);
+  t.ui.Update(make_candidate_ctx(100, 1), status);
+  check(wait_until([&] { return t.ui.octx().cinfo.highlighted == 1; }, 3000),
+        "B35-1: 100 candidates settle under vertical-text wrap (l2r)");
+
+  vtext_wrap.vertical_text_left_to_right = false;
+  t.ui.SetStyle(vtext_wrap);
+  t.ui.Update(make_candidate_ctx(100, 0), status);
+  check(wait_until([&] { return t.ui.octx().cinfo.highlighted == 0; }, 3000),
+        "B35-1: 100 candidates settle under vertical-text wrap (r2l)");
+}
+
 /* B23: label_text_format comes from user yaml (style/label_format) and the
  * formatted label itself can exceed the 128-wchar buffer (long custom labels).
  * Both must degrade gracefully: truncation for the overflow case (CRT asserts
@@ -337,6 +382,7 @@ int main() {
   test_hr_tolerates_s_false();
   test_layout_failure_is_shielded(t);
   test_mismatched_candidate_vectors(t);
+  test_max_candidates_round_info(t);
   test_label_text_format_bounded();
 
   t.RequestStop();

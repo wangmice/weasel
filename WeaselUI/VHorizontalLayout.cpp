@@ -560,8 +560,10 @@ void VHorizontalLayout::DoLayoutWithWrap(CDCHandle dc, PDWR pDWR) {
         if (col_of_candidate[i] == col_cnt && col_cnt > 0 &&
             col_of_candidate[i - 1] == (col_cnt - 1))
           _roundInfo[i].IsTopRightNeedToRound = true;
+        // 邻居列信息仅在存在时读取：i==count-1 时 i+1 越界（数组容量
+        // MAX_CANDIDATES_COUNT；count==100 时读 [100]）
         if (col_of_candidate[i] == 0 && col_cnt > 0 &&
-            col_of_candidate[i + 1] == 1)
+            i + 1 < candidates_count && col_of_candidate[i + 1] == 1)
           _roundInfo[i].IsBottomLeftNeedToRound = _style.inline_preedit;
       }
     }
@@ -590,8 +592,9 @@ void VHorizontalLayout::DoLayoutWithWrap(CDCHandle dc, PDWR pDWR) {
         if (col_of_candidate[i] == col_cnt && col_cnt > 0 &&
             col_of_candidate[i - 1] == (col_cnt - 1))
           _roundInfo[i].IsTopLeftNeedToRound = true;
+        // 同上：邻居列信息仅在存在时读取，i==count-1 时 i+1 越界
         if (col_of_candidate[i] == 0 && col_cnt > 0 &&
-            col_of_candidate[i + 1] == 1)
+            i + 1 < candidates_count && col_of_candidate[i + 1] == 1)
           _roundInfo[i].IsBottomRightNeedToRound = _style.inline_preedit;
       }
     }

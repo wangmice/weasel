@@ -253,7 +253,11 @@ void HorizontalLayout::DoLayout(CDCHandle dc, PDWR pDWR) {
       if (row_of_candidate[i] == row_cnt &&
           row_of_candidate[i - 1] == row_cnt - 1)
         _roundInfo[i].IsBottomLeftNeedToRound = true;
-      if (row_of_candidate[i] == 0 && row_of_candidate[i + 1] == 1)
+      // 邻居行信息仅在存在时读取：i==count-1 时 i+1 越界（数组容量
+      // MAX_CANDIDATES_COUNT；count==100 时读 [100]），最后一项的右上圆角
+      // 已在上方对 _roundInfo[candidates_count-1] 显式置 false
+      if (row_of_candidate[i] == 0 && i + 1 < candidates_count &&
+          row_of_candidate[i + 1] == 1)
         _roundInfo[i].IsTopRightNeedToRound = _style.inline_preedit;
     }
   }
