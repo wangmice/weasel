@@ -26,10 +26,10 @@ PipeChannelBase::~PipeChannelBase() {
 
 bool PipeChannelBase::_Ensure() {
   try {
-    HANDLE* phandle = _GetPipeHandle();
-    if (_Invalid(*phandle)) {
-      *phandle = _Connect(pname.c_str());
-      return !_Invalid(*phandle);
+    PipeHandleOwner* owner = _GetPipeHandle();
+    if (_Invalid(owner->handle)) {
+      owner->handle = _Connect(pname.c_str());
+      return !_Invalid(owner->handle);
     }
   } catch (...) {
     return false;
@@ -59,8 +59,8 @@ HANDLE PipeChannelBase::_Connect(const wchar_t* name) {
 }
 
 void PipeChannelBase::_Reconnect() {
-  HANDLE* phandle = _GetPipeHandle();
-  _FinalizePipe(*phandle);
+  PipeHandleOwner* owner = _GetPipeHandle();
+  owner->Finalize();
   _Ensure();
 }
 
@@ -86,14 +86,6 @@ size_t PipeChannelBase::_WritePipe(HANDLE pipe, size_t s, char* b) {
     _ThrowLastError;
   }
   return lwritten;
-}
-
-void PipeChannelBase::_FinalizePipe(HANDLE& p) {
-  if (!_Invalid(p)) {
-    DisconnectNamedPipe(p);
-    CloseHandle(p);
-  }
-  p = INVALID_HANDLE_VALUE;
 }
 
 void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len) {
@@ -139,7 +131,7 @@ HANDLE PipeChannelBase::_ConnectServerPipe(std::wstring& pn) {
   try {
     return _AcceptServerPipe(pipe);
   } catch (...) {
-    _FinalizePipe(pipe);
+    FinalizePipeHandle(pipe);
     throw;
   }
 }

@@ -9,6 +9,32 @@
 
 namespace weasel {
 
+/* Release a named pipe handle: disconnect the server end (no-op for a
+ * client end) and close the kernel handle. Idempotent. */
+inline void FinalizePipeHandle(HANDLE& p) {
+  if (p != INVALID_HANDLE_VALUE) {
+    DisconnectNamedPipe(p);
+    CloseHandle(p);
+  }
+  p = INVALID_HANDLE_VALUE;
+}
+
+/* Owns one thread's pipe handle. boost's default TSS cleanup is a plain
+ * delete, so the handle used to live in a raw HANDLE that was never
+ * closed; the owner destructor releases it when the owning thread exits
+ * without an explicit Disconnect (server-side handles live in local
+ * variables and are finalized by their own paths). */
+struct PipeHandleOwner {
+  PipeHandleOwner() = default;
+  ~PipeHandleOwner() { Finalize(); }
+  PipeHandleOwner(const PipeHandleOwner&) = delete;
+  PipeHandleOwner& operator=(const PipeHandleOwner&) = delete;
+
+  void Finalize() { FinalizePipeHandle(handle); }
+
+  HANDLE handle = INVALID_HANDLE_VALUE;
+};
+
 class PipeChannelBase {
  public:
   using Stream = boost::interprocess::wbufferstream;
@@ -41,7 +67,6 @@ class PipeChannelBase {
   /* Try to connect for one time */
   HANDLE _TryConnect();
   size_t _WritePipe(HANDLE p, size_t s, char* b);
-  void _FinalizePipe(HANDLE& p);
   void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len);
   /* Try to get a connection from client */
   HANDLE _ConnectServerPipe(std::wstring& pn);
@@ -51,9 +76,9 @@ class PipeChannelBase {
   HANDLE _AcceptServerPipe(HANDLE pipe);
   inline bool _Invalid(HANDLE p) const { return p == INVALID_HANDLE_VALUE; }
 
-  HANDLE* _GetPipeHandle() const {
+  PipeHandleOwner* _GetPipeHandle() const {
     if (!hpipe_ptr.get()) {
-      hpipe_ptr.reset(new HANDLE(INVALID_HANDLE_VALUE));
+      hpipe_ptr.reset(new PipeHandleOwner());
     }
     return hpipe_ptr.get();
   }
@@ -67,8 +92,8 @@ class PipeChannelBase {
 
  protected:
   std::wstring pname;
-  // Thread-local pipe handle for isolation
-  mutable boost::thread_specific_ptr<HANDLE> hpipe_ptr;
+  // Thread-local pipe handle; its owner closes it when the thread exits
+  mutable boost::thread_specific_ptr<PipeHandleOwner> hpipe_ptr;
   const size_t buff_size;
   // Thread-local context for buffer and state
   mutable boost::thread_specific_ptr<ChannelContext> context;
@@ -105,16 +130,12 @@ class PipeChannel : public PipeChannelBase {
 
   bool Connect() { return _Ensure(); }
   bool Connected() const {
-    HANDLE* phandle = _GetPipeHandle();
-    return !_Invalid(*phandle);
+    return !_Invalid(_GetPipeHandle()->handle);
   }
   // serial of the latest response body received on this thread; changes
   // iff the buffer now holds an unread response
   UINT64 ResponseSerial() { return _GetContext()->resp_serial; }
-  void Disconnect() {
-    HANDLE* phandle = _GetPipeHandle();
-    _FinalizePipe(*phandle);
-  }
+  void Disconnect() { _GetPipeHandle()->Finalize(); }
 
   /* Write data to buffer */
 
@@ -132,7 +153,7 @@ class PipeChannel : public PipeChannelBase {
   }
 
   _TyRes Transact(Msg& msg) {
-    HANDLE* phandle = _GetPipeHandle();
+    PipeHandleOwner* phandle = _GetPipeHandle();
     if (!_Ensure()) {
       // Server unreachable: drop any staged body so the next request starts
       // clean instead of appending to the leftover one.
@@ -140,7 +161,7 @@ class PipeChannel : public PipeChannelBase {
       throw (DWORD)ERROR_FILE_NOT_FOUND;  // server unreachable
     }
     try {
-      _Send(*phandle, msg);
+      _Send(phandle->handle, msg);
       return _ReceiveResponse();
     } catch (...) {
       // The connection died mid-request. Drop the request (it may already
@@ -212,9 +233,8 @@ class PipeChannel : public PipeChannelBase {
   }
 
   _TyRes _ReceiveResponse() {
-    HANDLE* phandle = _GetPipeHandle();
     _TyRes result;
-    _Receive(*phandle, &result, sizeof(result));
+    _Receive(_GetPipeHandle()->handle, &result, sizeof(result));
     return result;
   }
 

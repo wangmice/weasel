@@ -456,7 +456,7 @@ void PipeServer::Listen(ServerHandler const& handler) {
       pipe = _ConnectServerPipe(pname);
       _LaunchWorker(pipe, handler);
     } catch (...) {  // pipe errors and thread spawn failures alike
-      _FinalizePipe(pipe);
+      FinalizePipeHandle(pipe);
       boost::this_thread::sleep_for(kListenRetryBackoff);
     }
     boost::this_thread::interruption_point();
@@ -527,7 +527,7 @@ void PipeServer::_ProcessPipeThread(HANDLE pipe, ServerHandler const& handler) {
   // Unregister before closing the handle so the registry never lends a
   // closed (possibly reused) handle value to DrainWorkers.
   _RemoveWorker(pipe);
-  _FinalizePipe(pipe);
+  FinalizePipeHandle(pipe);
 }
 
 // weasel::Server

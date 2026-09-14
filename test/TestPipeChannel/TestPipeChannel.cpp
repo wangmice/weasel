@@ -700,6 +700,75 @@ static void test_failed_transact_leaves_no_staged_body() {
   delete server2;
 }
 
+/* B6: a client thread that exits without Disconnect() must have its
+ * thread-local pipe handle closed by the TSS owner. The old raw-HANDLE TSS
+ * was merely deleted, leaking one kernel handle per thread and keeping the
+ * peer's connection worker blocked in ReadFile until process exit. */
+static void test_thread_exit_closes_pipe_handle() {
+  std::wstring name = unique_pipe_name(L"b6");
+  ExposedServer* server = new ExposedServer(std::wstring(name));
+  auto handler = [](weasel::PipeMessage msg,
+                    weasel::PipeServer::Respond resp) { resp(msg.wParam + 1); };
+  boost::thread listener([server, &handler] { server->Listen(handler); });
+
+  // one shared channel on the main thread, as one ClientImpl serves every
+  // UI thread of the host process; only the per-thread TSS handle differs
+  ClientChannel client{std::wstring(name)};
+
+  // warmup: bring the listener up, then let its worker settle so the
+  // handle count baseline excludes startup churn
+  check(connect_with_retry(client), "B6: warmup connect");
+  weasel::PipeMessage req{WEASEL_IPC_ECHO, 1, 0};
+  check(client.Transact(req) == 2, "B6: warmup roundtrip");
+  client.Disconnect();
+  check(wait_until([&] { return server->ExposedWorkerCount() == 0; }, 5000),
+        "B6: warmup worker gone");
+
+  DWORD handles_before = 0;
+  check(::GetProcessHandleCount(::GetCurrentProcess(), &handles_before),
+        "B6: handle count baseline");
+
+  const int kThreads = 8;
+  {
+    boost::thread_group group;
+    for (int i = 0; i < kThreads; ++i) {
+      group.create_thread([&] {
+        // each thread gets its own TSS connection on the shared channel
+        if (connect_with_retry(client)) {
+          weasel::PipeMessage r{WEASEL_IPC_ECHO, 41, 0};
+          try {
+            client.Transact(r);
+          } catch (...) {
+          }
+        }
+        // exit without Disconnect: the TSS owner must close the handle
+      });
+    }
+    group.join_all();
+  }  // destroy the group so its own resources leave the handle count
+
+  // a leaked-open client handle keeps its worker blocked in ReadFile, so
+  // the registry returning to empty proves every client end was closed
+  check(wait_until([&] { return server->ExposedWorkerCount() == 0; }, 5000),
+        "B6: workers released after client threads exited");
+
+  // direct leak evidence: each leaked TSS handle would keep count +1
+  bool handles_released = wait_until([&] {
+    DWORD now = 0;
+    return ::GetProcessHandleCount(::GetCurrentProcess(), &now) &&
+           now <= handles_before;
+  }, 5000);
+  check(handles_released, "B6: thread exit closed its pipe handle");
+
+  listener.interrupt();
+  server->WakeListener();
+  check(listener.timed_join(boost::posix_time::seconds(5)),
+        "B6: listener exits");
+  boost::thread drainer([server] { server->DrainWorkers(); });
+  check(drainer.timed_join(boost::posix_time::seconds(5)), "B6: drain");
+  delete server;
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -713,6 +782,7 @@ int main() {
   test_fast_disconnect_leaves_no_stale_worker();
   test_oversized_body_fails_loudly();
   test_failed_transact_leaves_no_staged_body();
+  test_thread_exit_closes_pipe_handle();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;
