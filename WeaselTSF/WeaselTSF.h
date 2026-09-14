@@ -211,7 +211,14 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   com_ptr<ITfContext> _pTextEditSinkContext;
   DWORD _dwTextEditSinkCookie, _dwTextLayoutSinkCookie;
   BYTE _lpbKeyState[256];
-  BOOL _fTestKeyDownPending, _fTestKeyUpPending;
+  // OnTestKeyDown/OnTestKeyUp 去重状态：pending 表示该键已送服务器、等待配对
+  // 的 OnKeyDown/OnKeyUp。记录键身份，仅同一 (wParam, lParam) 的重复 test 才
+  // 去重；应用吞掉配对回调后，新键到来即复位（原布尔标志跨键残留会吞掉后续键）
+  struct PendingTestKey {
+    BOOL pending = FALSE;
+    WPARAM wParam = 0;
+    LPARAM lParam = 0;
+  } _testKeyDownPending, _testKeyUpPending;
   // Caps Lock 模拟的跨按键状态。键事件 sink 按 thread manager 各持一份，
   // 实例化即按线程隔离（原文件级 static 被同进程多实例/多线程共享）
   weasel::KeyEvent _prevKeyEvent;

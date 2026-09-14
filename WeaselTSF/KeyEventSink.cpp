@@ -76,25 +76,33 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
  *  Some sends OnKeyDown() only. (QQ2012)
  *  Some sends multiple OnTestKeyDown() for a single key event. (MS WORD 2010
  * x64)
+ *  Some swallows the key after an eaten OnTestKeyDown(), so the paired
+ * OnKeyDown() never comes.
  *
- * We assume every key event will eventually cause a OnKeyDown() call.
- * We use _fTestKeyDownPending to omit multiple OnTestKeyDown() calls,
- *  and for OnKeyDown() to check if the key has already been sent to the server.
+ * We use the pending state to omit multiple OnTestKeyDown() calls, and for
+ * OnKeyDown() to check if the key has already been sent to the server. The
+ * pending state remembers the (wParam, lParam) that armed it: only a
+ * repeated test of that same key event is deduplicated, while any event for
+ * a different key starts a new cycle, so a stale pending flag (its paired
+ * call was swallowed) cannot eat the next key.
  */
 
 STDMETHODIMP WeaselTSF::OnTestKeyDown(ITfContext* pContext,
                                       WPARAM wParam,
                                       LPARAM lParam,
                                       BOOL* pfEaten) {
-  _fTestKeyUpPending = FALSE;
-  if (_fTestKeyDownPending) {
+  _testKeyUpPending.pending = FALSE;
+  if (_testKeyDownPending.pending &&
+      _testKeyDownPending.wParam == wParam &&
+      _testKeyDownPending.lParam == lParam) {
     *pfEaten = TRUE;
     return S_OK;
   }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
-  if (*pfEaten)
-    _fTestKeyDownPending = TRUE;
+  _testKeyDownPending.pending = *pfEaten;
+  _testKeyDownPending.wParam = wParam;
+  _testKeyDownPending.lParam = lParam;
   return S_OK;
 }
 
@@ -102,9 +110,12 @@ STDMETHODIMP WeaselTSF::OnKeyDown(ITfContext* pContext,
                                   WPARAM wParam,
                                   LPARAM lParam,
                                   BOOL* pfEaten) {
-  _fTestKeyUpPending = FALSE;
-  if (_fTestKeyDownPending) {
-    _fTestKeyDownPending = FALSE;
+  _testKeyUpPending.pending = FALSE;
+  BOOL fDuplicate = _testKeyDownPending.pending &&
+                    _testKeyDownPending.wParam == wParam &&
+                    _testKeyDownPending.lParam == lParam;
+  _testKeyDownPending.pending = FALSE;
+  if (fDuplicate) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);
@@ -117,15 +128,17 @@ STDMETHODIMP WeaselTSF::OnTestKeyUp(ITfContext* pContext,
                                     WPARAM wParam,
                                     LPARAM lParam,
                                     BOOL* pfEaten) {
-  _fTestKeyDownPending = FALSE;
-  if (_fTestKeyUpPending) {
+  _testKeyDownPending.pending = FALSE;
+  if (_testKeyUpPending.pending && _testKeyUpPending.wParam == wParam &&
+      _testKeyUpPending.lParam == lParam) {
     *pfEaten = TRUE;
     return S_OK;
   }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
-  if (*pfEaten)
-    _fTestKeyUpPending = TRUE;
+  _testKeyUpPending.pending = *pfEaten;
+  _testKeyUpPending.wParam = wParam;
+  _testKeyUpPending.lParam = lParam;
   return S_OK;
 }
 
@@ -133,9 +146,12 @@ STDMETHODIMP WeaselTSF::OnKeyUp(ITfContext* pContext,
                                 WPARAM wParam,
                                 LPARAM lParam,
                                 BOOL* pfEaten) {
-  _fTestKeyDownPending = FALSE;
-  if (_fTestKeyUpPending) {
-    _fTestKeyUpPending = FALSE;
+  _testKeyDownPending.pending = FALSE;
+  BOOL fDuplicate = _testKeyUpPending.pending &&
+                    _testKeyUpPending.wParam == wParam &&
+                    _testKeyUpPending.lParam == lParam;
+  _testKeyUpPending.pending = FALSE;
+  if (fDuplicate) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);
