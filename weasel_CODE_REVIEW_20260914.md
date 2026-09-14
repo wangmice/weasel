@@ -81,7 +81,7 @@
 | B19 | P3 | bug | WeaselUI/WeaselPanel.cpp:1261-1264 | MoveTo marshal 不检查 PostMessage 返回值泄漏 RECT | ✔ | ✅ 已修复（cc3507b，批次2） |
 | B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | ✔ | ✅ 已修复（116238a，批次2） |
 | B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | ✅ 已修复（a6d9e9b，批次9） |
-| B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | ✔ | 未修复 |
+| B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | ✔ | ✅ 已修复（418d24a，批次11） |
 | B23 | P3 | bug | WeaselUI/StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | ✅ | 未修复 |
 | B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | ✅ 已修复（2ee9b36，批次3） |
 | B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | ✔ | ✅ 已修复（9df83ae，批次3） |
@@ -91,8 +91,8 @@
 | B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | ✅ 已修复（f354257，批次5） |
 | B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | ✔ | ✅ 已修复（d416100，批次2） |
 | B31 | P3 | bug | include/WeaselUtility.h:14-32 | getUsername 二次调用失败未校验 | ✔ | ✅ 已修复（7aa5fb9，批次10） |
-| B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | ✔ | 未修复 |
-| B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | ⚠ | 未修复 |
+| B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | ✔ | ✅ 已修复（b9d89f0，批次11） |
+| B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | ❌（librime 源码佐证被推翻，见 §4 批次11） | 不修（有据，35b9789 留锁约束注释，批次11） |
 | B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | ✅ 已修复（090634b，批次10） |
 | B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | 未修复 |
 | B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | ✅ 已修复（53541b8，批次5） |
@@ -949,3 +949,11 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `931afeb` fix(WeaselUtility): decode DebugStream<<std::string as utf-8 like const char* — B35④。与 const char* 分支统一用 u8tow 解码，收参改 const 引用（原 acptow 与注释/兄弟分支矛盾，日志乱码）。TestResponseParser test_11 钉死解码器语义：非 ASCII 的 utf-8 字节 u8tow 还原、acptow 必不还原；DebugStream 输出经 OutputDebugString 不可捕获，分支一致性按代码审阅确认，负向验证同 B31（还原 operator 改动 test_11 仍绿，因其钉的是解码函数而非 operator）。
 - `088bf21` fix(WeaselIPC): drop the dead ServerLauncher parameter of Client::Connect — B35⑦。调查结论：管道化 IPC 重写以来该参数一直被忽略（上游 master 同样如此，历史 launcher 语义属管道化之前的 HWND 消息客户端）；仓库内全部调用方只传默认值或 NULL（WeaselTSF 传 NULL，其余不传），测试无人传，死服务端实际全靠 autostart 注册兜底。选择删除参数（编译期暴露漏改调用方，且不引入"连接失败即启动进程"的新风险面），ServerLauncher typedef 一并移除（CommandHandler 另有菜单用途保留）；负向验证：还原 `Connect(NULL)` 调用即编译错误 C2660。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；9 个测试目标全过。TestPipeChannel 现 73 项断言（B6 新增 8 项）；TestResponseParser 增 test_10/test_11。B35 其余子项（①②③⑤⑥）归后续批次，B35 行状态未改。
+
+### 批次 11（2026-09-15）：B22、B32、B33、B35③（RimeWithWeasel）
+
+- `67c1507` fix(RimeWithWeasel): null-check m_ui before the closing SetStyle of UpdateColorTheme — B35③。与同函数上文（config 块内）判空风格一致；触发前提是 m_ui 为空（当前 WeaselServerApp 恒传入 &m_ui，属防御性收口）。验证：全量构建 + 既有套件；无运行时负向验证可做（构造期 ui 恒非空，注入需要重构构造路径，不值得）。
+- `b9d89f0` fix(RimeWithWeasel): reject failed rime create_session in AddSession — B32。`create_session()` 返回 0（rime 初始化失败/维护中，librime `RimeCreateSession` → `Service::CreateSession` 在服务未启动时返回 0）时 LOG(ERROR) 并返回 0，不再把 session_id=0 的死会话入表（后续 5+ 次 rime 调用静默失败的"假会话"）。返回值语义核对：客户端 `ClientImpl::StartSession` 将结果存入 session_id，0 即 `_Active()==false`，后续 ProcessKeyEvent/FocusIn 全部直通跳过，TSF 侧重连/重开会话时再次 StartSession 自动重试——客户端天然感知失败，无需额外信令。验证：构建 + 代码路径核对（维护中建会话：AddSession 先走 EndMaintenance 自愈，仍失败即返回 0）；负向验证不可行（create_session 返回 0 需真实 librime 运行态，仓库内 librime/ 为空、仅预编译产物，无法在单测中构造）。
+- `418d24a` fix(RimeWithWeasel): never insert into the session map on lookup — B22。`to_session_id/get_session_status`（operator[] 默认插入）改为 find 语义：to_session_id 未知会话返回 0（librime 无效会话号，API 调用安全落空，librime `RimeFindSession`/`RimeGetStatus` 对 session_id=0 显式返回 False）；get_session_status 改为返回指针的 find_session_status，8 个调用点逐一判空早退/降级，new_session_status（AddSession）成为会话表唯一插入点（grep 证明 `m_session_status_map[` 全仓仅此一处）。行为保持：_Respond 对未知会话用本地 orphan 状态应答（响应行形态不变；唯一差异是死条目原本记忆的 __synced 不复存在，未知会话每次重发 style 行——更自洽）；维护路径 `_UpdateUI(0)` 与未知/恶意 ipc_id 不再撑大 map（也消除了 `_GenerateNewWeaselSessionId` 在 map 尾部被 0xFFFFFFFF 级死键占据后自增回绕到 0 的隐患）。有意的行为改进（原为死条目退化路径）：UpdateColorTheme 无活动会话时退回刚刷新的 m_base_style，而非默认构造的裸 UIStyle。验证：TestWeaselIPC 不链接 RimeWithWeasel（deps 仅 WeaselIPC/WeaselIPCServer，服务端走 TestRequestHandler 替身；RimeWithWeaselHandler 构造函数即调 rime_api->setup 写真实用户目录、依赖全局 rime_api 与 weasel::UI，无单测基建），采用全量构建 + 逐调用点核对 + grep 证明唯一插入点；负向验证不可行同 B32（需真实 librime 会话态），非插入路径行为不变性按代码等价性论证（每处早退分支在旧代码中对应的都是"对默认构造条目操作且结果无人消费"）。
+- `35b9789` docs(RimeWithWeasel): record the non-reentrancy constraint of m_notifier_mutex — B33，裁决为**不修（有据）**。佐证（librime@33e7814 源码）：OnNotify 持锁调用的 `rime_api->get_state_label` 是纯配置查询——`RimeGetStateLabel` → `RimeGetStateLabelAbbreviated` → `Service::instance().GetSession(session_id)` + `session->schema()->config()` + `Switches::GetStateLabel`，仅读 config 的 switches/states 列表，不派发通知、不回调 handler、不触发部署；真正同步派发通知的路径（set_option 的 option 变更、部署事件）均在锁外调用。故"get_state_label 同步回调 OnNotify 重入自锁"的前提不成立，自锁不可达，锁结构维持非递归即可（改 recursive_mutex 反而是掩盖式修法）。代码注释记录该不可重入约束（持锁段内不得调用会同步触发 OnNotify 的 rime API）。static 评估结论：m_message_*/m_notifier_mutex 保持 static——OnNotify 运行于 rime 线程（含部署线程）且不解引用 this，handler 析构后被 librime 回调亦安全；改为实例成员反而引入悬垂 this 风险，单实例服务进程内 static 共享无实际影响，不值得去 static。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；9 个测试目标全过（两次运行 0 failed）。B35 行状态未改（本批仅完成 ③ 子项，其余子项归后续批次）。
