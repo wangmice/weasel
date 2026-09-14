@@ -35,8 +35,13 @@ BOOL WeaselTSF::_SetCompositionDisplayAttributes(TfEditCookie ec,
   ITfProperty* pDisplayAttributeProperty = nullptr;
   HRESULT hr = S_OK;
 
-  if (pRangeComposition == nullptr)
+  // An async session can run after _FinalizeComposition() nulled the member;
+  // without a range or a composition there is nothing to annotate.
+  if (pRangeComposition == nullptr) {
+    if (_pComposition == nullptr)
+      return FALSE;
     hr = _pComposition->GetRange(&pRangeComposition);
+  }
   if (FAILED(hr)) {
     return FALSE;
   }
