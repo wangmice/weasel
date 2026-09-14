@@ -22,8 +22,8 @@
 | A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 未修复 |
 | A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | ✔ | 未修复 |
 | A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | ✔ | 未修复 |
-| A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | ✔ | 未修复 |
-| A14 | P3 | bug | WeaselSetup/WeaselSetup.cpp:68-76 | 注册表字符串未强制 NUL 终止即构造 wstring | ✔ | 未修复 |
+| A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | ✔ | ✅ 已修复（89b3e1a，批次8） |
+| A14 | P3 | bug | WeaselSetup/WeaselSetup.cpp:68-76 | 注册表字符串未强制 NUL 终止即构造 wstring | ✔ | ✅ 已修复（2e67458，批次8） |
 | A15 | P3 | perf | WeaselTSF/EditSession.cpp:8-14 | 每击键堆分配 shared_ptr<Context>+Config+parser | — | 未修复 |
 | A16 | P3 | bug | WeaselDeployer/UIStyleSettings.cpp:42-58 等 | 预览路径用 ACP 解码 UTF-8，非 ASCII 用户名下必失败 | ✅ | ✅ 已修复（0f1574a，批次7） |
 
@@ -41,11 +41,11 @@
 | K8 | P2 | SwitcherSettingsDialog.cpp:114-155 | 未初始化 HKEY、无条件 close、INFINITE 等待、无 NUL | ✔ | ✅ 已修复（03ea36a，批次7） |
 | K9 | P2 | WeaselDeployer/DictManagementDialog.cpp:109-123 | CP_ACP 解码 UTF-8 + LB_GETTEXT 缓冲可溢出 | ✔ | 未修复 |
 | K10 | P2 | DictManagementDialog.cpp:13,25 | STA 线程无条件 CoUninitialize 拆主循环计数 | ✔ | 未修复 |
-| K11 | P2 | WeaselSetup/imesetup.cpp:178-464 | WOW64 重定向 4 处提前 return 不恢复；install() 忽略文件拷贝结果 | ✔ | 未修复 |
-| K12 | P2 | imesetup.cpp:364-375 | regsvr32 退出码不检查，失败仍报成功 | ✔ | 未修复 |
+| K11 | P2 | WeaselSetup/imesetup.cpp:178-464 | WOW64 重定向 4 处提前 return 不恢复；install() 忽略文件拷贝结果 | ✔ | ✅ 已修复（ec3678e，批次8） |
+| K12 | P2 | imesetup.cpp:364-375 | regsvr32 退出码不检查，失败仍报成功 | ✔ | ✅ 已修复（f409c78，批次8） |
 | K13 | P2 | imesetup.cpp:514-517 | 卸载不清 HKCU 配置；RegDeleteKey 有子键即失败 | ✔ | 未修复 |
-| K14 | P2 | WeaselSetup/WeaselSetup.cpp:109-111 | 改 profile 只写注册表不重注册 TSF profile | ✔ | 未修复 |
-| K15 | P2 | WeaselSetup/WeaselSetup.cpp:209-212 | /userdir 引号不剥离 | ✔ | 未修复 |
+| K14 | P2 | WeaselSetup/WeaselSetup.cpp:109-111 | 改 profile 只写注册表不重注册 TSF profile | ✔ | ✅ 已修复（daced50，批次8） |
+| K15 | P2 | WeaselSetup/WeaselSetup.cpp:209-212 | /userdir 引号不剥离 | ✔ | ✅ 已修复（25c1efc，批次8） |
 | K16 | P2 | WeaselTSF/Composition.cpp:163,166-182 | GetTextExtent 会话泄漏 pRange 与 selection.range（每击键） | ✔ | ✅ 已修复（4ede762（含 A1），批次6） |
 | K17 | P2 | WeaselTSF/CandidateList.cpp:160-163 | SetSelection 不校验 nIndex（下游裸数组越界，= B9 同族） | ✔ | ✅ 已修复（41dbd23，批次6） |
 | K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | ✔ | ✅ 已修复（29c1a62，批次7） |
@@ -916,3 +916,17 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `04b7775` fix(WeaselDeployer): join maintenance thread before resuming service — K19。UpdateWorkspace/DictManagement 复用 K1 的 MaintenanceReleaser（join 在前、EndMaintenance 在析构，异常路径同样恢复）。
 - `0f1574a` fix(WeaselDeployer): decode color scheme preview paths as UTF-8 — A16。acptow→u8tow 两处，删误导注释。
 - 验证：GUI 路径按构建+推理；release/debug 全量 build ok；8 个测试目标全过（TestPipeChannel 47 用例）。上游 master 三处同题均未修（本仓独立改进）。
+
+### 批次 8（2026-09-14）：K11、K12、K14、K15、A13、A14（WeaselSetup）
+
+- `ec3678e` fix(WeaselSetup): restore WOW64 redirection on early exits and abort install on file failure — K11。Wow64FsRedirectionGuard RAII（幂等）；install() 在 install_ime_file 失败时立即返回，不再继续写注册表/弹成功。
+- `f409c78` fix(WeaselSetup): check the regsvr32 exit code when registering the text service — K12。GetExitCodeProcess 检查退出码，失败复用 IDS_STR_ERRREGTSF 报错并跳过 enable_profile。
+- `daced50` fix(WeaselSetup): re-register the TSF profile when changing it on an installed system — K14。考证：五 langid 条目安装时已全注册，换 profile 无需 regsvr32，只需启用位/输入法列表调整；实现 switch_registered_profile（先启新、失败保留旧），InstallLayoutOrTip 抽公共 helper（enum class LayoutOrTipAction）。
+- `25c1efc` fix(WeaselSetup): strip quotes from the /userdir argument and return explicit status — K15。新增 SetupUtil::unquote_argument；返回值 LSTATUS→0/1。
+- `89b3e1a` fix(WeaselSetup): abort the /i install when the options dialog is cancelled — A13。取消一律 return 1（顺带根除 _has_installed 过期路径）。
+- `2e67458` fix(WeaselSetup): bound registry string reads to the returned data length — A14。SetupUtil::read_reg_sz 按返回长度定界。
+- 验证：WeaselSetup 以 xmake f -a x86 单独构建通过；x64 debug/release 全量 build ok；新增 test/TestWeaselSetup（9 个 unquote + 7 个私有注册表用例），9 个测试目标全过。
+
+### 阶段性收尾（2026-09-14）
+
+应用户要求，修复工作到批次 8 为止（未做批次 9）。剩余未修复项见 §0 索引"未修复"标记，主要为：TSF 静态/线程安全族（K2/K3）、TIP 注册清理（K5）、字典管理对话框（K9/K10）、安装器残余（K13）、TSF P3 杂项族（K22/K24 及若干返回值问题）、IPC P3 族（B5/B6/B15/B16/B21/B23/B28/B31/B32/B33/B34/B35）、UI 性能大项（B12 模糊缓存/layout 复用、K21/K23/A15/A7）。
