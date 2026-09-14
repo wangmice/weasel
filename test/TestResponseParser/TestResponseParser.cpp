@@ -179,6 +179,44 @@ void test_7() {
   BOOST_TEST(unescape_string(std::wstring(L"end\\")) == L"end");
 }
 
+// B5: 损坏/截断的归档行必须被记录并丢弃——不得弹模态框（输入线程冻结），
+// 不得把异常抛出解析器；候选数超过渲染上限（100，见 WeaselUI
+// MAX_CANDIDATES_COUNT）视为损坏数据，整体丢弃
+void test_8() {
+  const WCHAR* responses[] = {
+      L"action=ctx\nctx.cand=garbage header\n",              // 非归档数据
+      L"action=ctx\nctx.cand=22 serialization::archive\n",   // 截断归档
+      L"action=ctx\nctx.cand=99 serialization::archive 15\n",  // 版本不匹配
+      L"action=style\nstyle=not an archive\n",               // Styler 同路径
+  };
+  for (auto* resp : responses) {
+    std::vector<WCHAR> buf(resp, resp + wcslen(resp) + 1);
+    std::wstring commit;
+    weasel::Context ctx;
+    weasel::Status status;
+    weasel::ResponseParser parser(&commit, &ctx, &status);
+    parser(buf.data(), wcslen(resp));
+    BOOST_TEST(ctx.cinfo.candies.empty());
+  }
+
+  // 101 个候选：归档合法但超限，cinfo 整体清空
+  weasel::CandidateInfo ci;
+  ci.currentPage = 0;
+  ci.totalPages = 1;
+  ci.highlighted = 0;
+  for (int i = 0; i < 101; ++i)
+    ci.candies.push_back(weasel::Text{L"候"});
+  std::wstring resp = L"action=ctx\n" + make_cand_line(ci);
+  std::vector<WCHAR> buf(resp.begin(), resp.end());
+  buf.push_back(L'\0');
+  std::wstring commit;
+  weasel::Context ctx;
+  weasel::Status status;
+  weasel::ResponseParser parser(&commit, &ctx, &status);
+  parser(buf.data(), buf.size() - 1);
+  BOOST_TEST(ctx.cinfo.candies.empty());
+}
+
 int _tmain(int argc, _TCHAR* argv[]) {
   test_1();
   test_2();
@@ -187,6 +225,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
   test_5();
   test_6();
   test_7();
+  test_8();
 
   return boost::report_errors();
 }

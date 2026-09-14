@@ -1,17 +1,24 @@
 #pragma once
 #include <ResponseParser.h>
+#include <logging.h>
+#include <boost/archive/text_wiarchive.hpp>
 #include <functional>
+#include <sstream>
 
 namespace weasel {
 
+// Parses one archive line from an IPC response. Runs on the host
+// application's input thread: malformed data must be logged and dropped,
+// never shown as a modal dialog (freezes all input) or thrown out.
+// Archive construction included: it throws on bad header data too.
 template <typename T>
-void TryDeserialize(boost::archive::text_wiarchive& ia, T& t) {
+void TryDeserialize(std::wstring const& value, T& t) {
   try {
+    std::wstringstream ss(value);
+    boost::archive::text_wiarchive ia(ss);
     ia >> t;
   } catch (const boost::archive::archive_exception& e) {
-    const std::string msg =
-        std::string("boost::archive::archive_exception: ") + e.what();
-    MessageBoxA(NULL, msg.c_str(), "IPC exception", MB_OK | MB_ICONERROR);
+    LOG(ERROR) << "IPC response archive error: " << e.what();
   }
 }
 class Deserializer {
