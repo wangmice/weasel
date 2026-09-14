@@ -270,6 +270,17 @@ void test_10() {
   BOOST_TEST(user.size() == len - 1);  // len includes the terminator
 }
 
+// B35④: DebugStream<<(std::string) decodes its input as utf-8, matching
+// the const char* branch; the decoder is u8tow. OutputDebugString cannot
+// be captured, so the shared decoder is asserted directly instead.
+void test_11() {
+  const std::wstring zh = L"小狼毫";
+  std::string utf8 = wtou8(zh);
+  BOOST_TEST(!utf8.empty());
+  BOOST_TEST(u8tow(utf8) == zh);  // utf-8 decode restores the text
+  BOOST_TEST(acptow(utf8) != zh);  // the old ACP decode mangled it
+}
+
 int _tmain(int argc, _TCHAR* argv[]) {
   test_9();  // B21: 首个构造须发生在多线程里，故最先执行
   test_1();
@@ -281,6 +292,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
   test_7();
   test_8();
   test_10();
+  test_11();
 
   return boost::report_errors();
 }

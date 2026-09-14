@@ -270,8 +270,8 @@ class DebugStream {
     }
     return *this;
   }
-  DebugStream& operator<<(const std::string value) {
-    std::wstring wvalue(acptow(value));  // utf-8
+  DebugStream& operator<<(const std::string& value) {
+    std::wstring wvalue(u8tow(value));  // utf-8, same as const char*
     ss << wvalue;
     return *this;
   }
