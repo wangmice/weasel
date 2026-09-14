@@ -76,15 +76,20 @@ BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
   com_ptr<ITfSource> pSource;
   BOOL fRet;
 
-  /* clear out any previous sink first */
-  if (_dwTextEditSinkCookie != TF_INVALID_COOKIE) {
+  /* clear out any previous sink first: either advise may have succeeded
+   * alone, so check both cookies and only unadvise the valid ones */
+  if (_dwTextEditSinkCookie != TF_INVALID_COOKIE ||
+      _dwTextLayoutSinkCookie != TF_INVALID_COOKIE) {
     _pTextEditSinkContext->QueryInterface(&pSource);
     if (pSource != nullptr) {
-      pSource->UnadviseSink(_dwTextEditSinkCookie);
-      pSource->UnadviseSink(_dwTextLayoutSinkCookie);
+      if (_dwTextEditSinkCookie != TF_INVALID_COOKIE)
+        pSource->UnadviseSink(_dwTextEditSinkCookie);
+      if (_dwTextLayoutSinkCookie != TF_INVALID_COOKIE)
+        pSource->UnadviseSink(_dwTextLayoutSinkCookie);
     }
     _pTextEditSinkContext = nullptr;
     _dwTextEditSinkCookie = TF_INVALID_COOKIE;
+    _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
   }
   if (pDocMgr == NULL)
     return TRUE;
