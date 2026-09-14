@@ -27,6 +27,10 @@ ServerImpl::ServerImpl()
       m_darkMode(IsUserDarkMode()),
       channel(std::make_unique<PipeServer>(GetPipeName(), sa.get_attr())) {
   m_hUser32Module = GetModuleHandle(_T("user32.dll"));
+  m_pPhysicalToLogicalPointForPerMonitorDPI =
+      reinterpret_cast<PPhysicalToLogicalPointForPerMonitorDPI>(
+          ::GetProcAddress(m_hUser32Module,
+                           "PhysicalToLogicalPointForPerMonitorDPI"));
 }
 
 ServerImpl::~ServerImpl() {
@@ -309,15 +313,14 @@ DWORD ServerImpl::OnUpdateInputPosition(WEASEL_IPC_COMMAND uMsg,
   rc.right = rc.left + width;
   rc.bottom = rc.top + height;
 
-  {
-    using PPTLPFPMDPI = BOOL(WINAPI*)(HWND, LPPOINT);
-    PPTLPFPMDPI PhysicalToLogicalPointForPerMonitorDPI =
-        (PPTLPFPMDPI)::GetProcAddress(m_hUser32Module,
-                                      "PhysicalToLogicalPointForPerMonitorDPI");
+  // PhysicalToLogicalPointForPerMonitorDPI exists since Win8.1 (the process
+  // gate in WeaselServer.cpp enforces it); if the lookup still failed, skip
+  // the conversion instead of calling a null pointer.
+  if (m_pPhysicalToLogicalPointForPerMonitorDPI) {
     POINT lt = {rc.left, rc.top};
     POINT rb = {rc.right, rc.bottom};
-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &lt);
-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &rb);
+    m_pPhysicalToLogicalPointForPerMonitorDPI(NULL, &lt);
+    m_pPhysicalToLogicalPointForPerMonitorDPI(NULL, &rb);
     rc = {lt.x, lt.y, rb.x, rb.y};
   }
 

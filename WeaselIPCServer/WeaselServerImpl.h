@@ -95,6 +95,9 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   }
 
  private:
+  using PPhysicalToLogicalPointForPerMonitorDPI =
+      BOOL(WINAPI*)(HWND, LPPOINT);
+
   void _Finailize();
   /* Interrupt and join the pipe listener and its workers; idempotent */
   void _StopPipeServer();
@@ -107,6 +110,9 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   std::map<UINT, CommandHandler> m_MenuHandlers;
   std::function<void()> m_trayRefreshCallback;
   HMODULE m_hUser32Module;
+  /* Resolved once in the ctor; stays null if user32 does not export it
+   * (below Win8.1), and OnUpdateInputPosition then keeps physical coords */
+  PPhysicalToLogicalPointForPerMonitorDPI m_pPhysicalToLogicalPointForPerMonitorDPI;
   SecurityAttribute sa;
   BOOL m_darkMode;
 };
