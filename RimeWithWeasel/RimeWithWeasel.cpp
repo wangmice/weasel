@@ -260,7 +260,8 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
       rime_api->free_status(&status);
     }
   }
-  m_ui->SetStyle(get_session_status(m_active_session).style);
+  if (m_ui)
+    m_ui->SetStyle(get_session_status(m_active_session).style);
 }
 
 BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
