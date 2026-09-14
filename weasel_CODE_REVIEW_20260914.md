@@ -18,7 +18,7 @@
 | A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | ✔ | 未修复 |
 | A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | ✔ | 未修复 |
 | A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | 未修复 |
-| A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | ✔ | 未修复 |
+| A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | ✔ | ✅ 已修复（37f0da8，批次12） |
 | A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 未修复 |
 | A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | ✔ | 未修复 |
 | A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | ✔ | 未修复 |
@@ -32,8 +32,8 @@
 | 编号 | 级别 | 位置 | 描述 | 验证 | 修复 |
 |---|---|---|---|---|---|
 | K1 | **P1** | WeaselDeployer/Configurator.cpp:220-228 | SyncUserData 失败不调 EndMaintenance → 服务端永久维护态、全系统禁输 | ✔ | ✅ 已修复（f3a888f，批次1） |
-| K2 | P2 | WeaselTSF/KeyEventSink.cpp:7-60 | static 三件套跨实例/线程共享；pfEaten 未写即存 static | ✔ | 未修复 |
-| K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | ✔ | 未修复 |
+| K2 | P2 | WeaselTSF/KeyEventSink.cpp:7-60 | static 三件套跨实例/线程共享；pfEaten 未写即存 static | ✔ | ✅ 已修复（7e41ec3，批次12） |
+| K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | ✔ | ✅ 已修复（09b2e4c，批次12） |
 | K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | ✅ | ✅ 已修复（cd59189，批次2） |
 | K5 | P2 | WeaselTSF/Register.cpp:10,226-231 | "Microsft" 拼写 + HKCR 下清理对真实 TIP 键结构上无效 | ✔ | 未修复 |
 | K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | ✔ | ✅ 已修复（55221cb，批次7） |
@@ -54,7 +54,7 @@
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | 未修复 |
 | K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 未修复 |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | 未修复 |
-| K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 未修复 |
+| K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 不修（有据，上游一致/防串扰设计，见 §4 批次12） |
 
 ### B 路发现
 
@@ -957,3 +957,11 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `418d24a` fix(RimeWithWeasel): never insert into the session map on lookup — B22。`to_session_id/get_session_status`（operator[] 默认插入）改为 find 语义：to_session_id 未知会话返回 0（librime 无效会话号，API 调用安全落空，librime `RimeFindSession`/`RimeGetStatus` 对 session_id=0 显式返回 False）；get_session_status 改为返回指针的 find_session_status，8 个调用点逐一判空早退/降级，new_session_status（AddSession）成为会话表唯一插入点（grep 证明 `m_session_status_map[` 全仓仅此一处）。行为保持：_Respond 对未知会话用本地 orphan 状态应答（响应行形态不变；唯一差异是死条目原本记忆的 __synced 不复存在，未知会话每次重发 style 行——更自洽）；维护路径 `_UpdateUI(0)` 与未知/恶意 ipc_id 不再撑大 map（也消除了 `_GenerateNewWeaselSessionId` 在 map 尾部被 0xFFFFFFFF 级死键占据后自增回绕到 0 的隐患）。有意的行为改进（原为死条目退化路径）：UpdateColorTheme 无活动会话时退回刚刷新的 m_base_style，而非默认构造的裸 UIStyle。验证：TestWeaselIPC 不链接 RimeWithWeasel（deps 仅 WeaselIPC/WeaselIPCServer，服务端走 TestRequestHandler 替身；RimeWithWeaselHandler 构造函数即调 rime_api->setup 写真实用户目录、依赖全局 rime_api 与 weasel::UI，无单测基建），采用全量构建 + 逐调用点核对 + grep 证明唯一插入点；负向验证不可行同 B32（需真实 librime 会话态），非插入路径行为不变性按代码等价性论证（每处早退分支在旧代码中对应的都是"对默认构造条目操作且结果无人消费"）。
 - `35b9789` docs(RimeWithWeasel): record the non-reentrancy constraint of m_notifier_mutex — B33，裁决为**不修（有据）**。佐证（librime@33e7814 源码）：OnNotify 持锁调用的 `rime_api->get_state_label` 是纯配置查询——`RimeGetStateLabel` → `RimeGetStateLabelAbbreviated` → `Service::instance().GetSession(session_id)` + `session->schema()->config()` + `Switches::GetStateLabel`，仅读 config 的 switches/states 列表，不派发通知、不回调 handler、不触发部署；真正同步派发通知的路径（set_option 的 option 变更、部署事件）均在锁外调用。故"get_state_label 同步回调 OnNotify 重入自锁"的前提不成立，自锁不可达，锁结构维持非递归即可（改 recursive_mutex 反而是掩盖式修法）。代码注释记录该不可重入约束（持锁段内不得调用会同步触发 OnNotify 的 rime API）。static 评估结论：m_message_*/m_notifier_mutex 保持 static——OnNotify 运行于 rime 线程（含部署线程）且不解引用 this，handler 析构后被 librime 回调亦安全；改为实例成员反而引入悬垂 this 风险，单实例服务进程内 static 共享无实际影响，不值得去 static。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；9 个测试目标全过（两次运行 0 failed）。B35 行状态未改（本批仅完成 ③ 子项，其余子项归后续批次）。
+
+### 批次 12（2026-09-15）：K2、K3、K24、A8（WeaselTSF 静态/线程安全）
+
+- `7e41ec3` fix(WeaselTSF): own the caps-lock simulation state per instance — K2（P2）。文件级三 static（prevKeyEvent/prevfEaten/keyCountToSimulate）改为 WeaselTSF 实例成员（默认值与原 static 初始化等价）：同进程多 TIP 实例（每 thread manager 一个，如多 STA 输入线程宿主）与多线程不再共享 Caps Lock 模拟状态——A 线程按键不再改写 B 线程可见的判定输入。同实例语义核对：键事件由 advise 时所属 thread manager 的 keystroke manager 派发到本线程，down/up 与 SendInput 模拟键（注入到焦点输入队列＝处理原键的同一线程）恒命中同一实例，实例化即线程隔离。附带收口"未写即存"：`_keyCountToSimulate != 0` 期间 `*pfEaten` 原本不写却无条件存入 prevfEaten 并上报 TSF（垃圾值可污染下一轮模拟判定），现先置 FALSE 再按需覆写（模拟键不转发服务器，"未吃"语义不变）。TSF COM 交互无法控制台复现，验证：全量构建 + 路径推演。
+- `09b2e4c` fix(WeaselTSF): make ConvertKeyEvent reentrant and pass the real scan code — K3（P2）。ToUnicodeEx 兜底路径的 `static WCHAR buf[8]/static BYTE table[256]` 改栈上局部（并发键事件不再撕裂缓冲；每键 256 字节 memcpy 相对本就存在的 GetKeyboardState+IPC 可忽略）；`ToUnicodeEx(vkey, UINT(kinfo), ...)` 第二参按 MS 文档收 8 位硬件扫描码，改传 `kinfo.scanCode`（原打包值低 16 位是 repeatCount——常态翻译按 VK 进行故侥幸可用，但扫描码真正生效的场合（Alt+小键盘输入、press/release 区分）拿到的是垃圾；bit15 key-up 标记维持不设，与既有行为一致）。上游 master 同位置仍是旧代码（static + 打包值），本仓独立修复。新增 test/TestKeyEvent（debug 段第 10 个测试目标，参考 TestCompartmentUtil 直接编译 WeaselTSF/KeyEvent.cpp）：18 项布局无关断言——KeyInfo 位域解包/`operator UINT32` 打包往返、VK→ibus 翻译（Enter/KP_Enter、Shift_L/R 按扫描码、Control_R 扩展位等）、修饰 mask（Shift/Ctrl/Alt/LOCK、Caps 按下 XOR 还原）、未分配 VK（0xE8）走 ToUnicodeEx 兜底判未知键不崩；字符兜底依赖活动键盘布局（法式 AZERTY 数字行即不同），不做字符级断言，扫描码修正按构造（位域提取）+ 文档契约验证，负向验证不适用（还原旧传参测试仍绿，差异仅在扫描码敏感场合）。
+- K24 裁决为**不修（上游一致/防串扰设计）**。考证：① 上游 rime/weasel master 的 KeyEventSink.cpp `OnSetFocus(FALSE)` 与本仓逐字一致（`m_client.FocusOut(); _AbortComposition();`，WebFetch 2026-09-15 核对）；② 本仓该文件仅 3 个 commit（路径/签名修饰/01885fc 响应解析），失焦 abort 非本仓引入；③ 设计上 TSF 组合（composition range）绑定焦点文档，失焦后残留组合在旧应用文档中属非法状态（宿主亦会主动终止触发 OnCompositionTerminated），且不清编码会把 A 应用打到一半的句子串进 B 应用（跨应用串输入状态）。OnCompositionTerminated 中"宿主终止但保留 Rime 编码"的 8f2561f 路径针对同焦点内的空组合终止，与失焦路径语义不同，不构成"失焦可保留"的反例。修改将引入组合状态机跨焦点的不确定性（切回焦点需恢复 TSF 组合+候选窗+Rime 会话三方状态），按风险控制原则不修。
+- `37f0da8` refactor(WeaselTSF): remove the dead error_message helper — A8。全仓 grep 零调用（仅报告内提及），连同其"输入线程弹模态框 + static GetTickCount 回绕判定"陷阱形态一并删除；`get_weasel_ime_name` 在 Register.cpp 另有使用，无连带清理。负向验证：删除为纯死代码移除，编译即验证。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 10 个全过（原 9 个 + 新增 TestKeyEvent，run_tests.sh 已同步）。
