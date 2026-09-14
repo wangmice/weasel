@@ -226,10 +226,6 @@ void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
     Show(FALSE);
 }
 
-void CCandidateList::UpdateStyle(const UIStyle& sty) {
-  _ui->style() = sty;
-}
-
 void CCandidateList::UpdateInputPosition(RECT const& rc) {
   _ui->UpdateInputPosition(rc);
 }
