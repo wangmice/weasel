@@ -65,7 +65,7 @@
 | B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | ✅ | ✅ 已修复（22cf009，批次2） |
 | B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | ✅ 已修复（6d43edc，批次2） |
 | B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | ✅ 已修复（8083f76，批次9） |
-| B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | ✔ | 未修复 |
+| B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | ✔ | ✅ 已修复（3b7f9c9，批次10） |
 | B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | ❌ | 未修复 |
 | B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | ✅ 已修复（22cf921+7a67c20，批次3） |
 | B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | ✔ | ✅ 已修复（35c1b48，批次3） |
@@ -87,13 +87,13 @@
 | B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | ✔ | ✅ 已修复（9df83ae，批次3） |
 | B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | ✔ | ✅ 已修复（23d69ba，批次3） |
 | B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | ✅ 已修复（d43914f，批次4） |
-| B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | ✔ | 未修复 |
+| B28 | P3 | bug | WeaselServerImpl.cpp:307-315 | 每键 GetProcAddress 且不判空 | ✔ | ✅ 已修复（37e5eda，批次10） |
 | B29 | P3 | perf | RimeWithWeasel.cpp:27-31 | 会话表按值拷贝 | — | ✅ 已修复（f354257，批次5） |
 | B30 | P3 | bug | RimeWithWeasel.cpp:1462-1463 | schema_name/id 未判空构造 std::string UB | ✔ | ✅ 已修复（d416100，批次2） |
-| B31 | P3 | bug | include/WeaselUtility.h:14-32 | getUsername 二次调用失败未校验 | ✔ | 未修复 |
+| B31 | P3 | bug | include/WeaselUtility.h:14-32 | getUsername 二次调用失败未校验 | ✔ | ✅ 已修复（7aa5fb9，批次10） |
 | B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | ✔ | 未修复 |
 | B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | ⚠ | 未修复 |
-| B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | 未修复 |
+| B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | ✅ 已修复（090634b，批次10） |
 | B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | 未修复 |
 | B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | ✅ 已修复（53541b8，批次5） |
 | B37 | P3 | bug | WeaselUI/WeaselPanel.cpp | _DrawCandidates 的 comments.at(i)/GetLabelText 的 labels.at(id) 在向量短于 candies 时抛 out_of_range（批次3 测试中实际触发；现被 B8 防护兜住不再致命） | ✔（批次3 实测触发） | ✅ 已修复（9b71523，批次4） |
@@ -939,3 +939,13 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `4d8777f` fix(WeaselIPC): drop staged request bodies on every Transact failure — B15。_Ensure 失败分支抛错前 ClearBufferStream，mid-request catch 在 _Reconnect 前同样清理——任何 Transact 失败后 TSS 通道状态干净，失败请求的暂存体不再拼进下一次 START_SESSION 或搭车无体命令。TestPipeChannel 新增双失败模式用例（服务端不可达 / 连接中途断开），各自重试的 START_SESSION 服务端必须恰好收到一份客户端信息（重试按真实 StartSession 语义逐次重暂存）；负向验证：还原清理逻辑两条"恰好一份"断言 FAIL（双份 body）。
 - `63d3cae` fix(WeaselIPC): match the RequestHandler signatures in the test server — K20（P2）。TestRequestHandler 四个方法改为与基类逐字一致的签名（DWORD/EatLine）并加 override（签名漂移变编译错误）；AddSession 经 eat 回调推送状态行。默认（无参）模式改为进程内自测：经 RequestHandler 基类指针调用（与 ServerImpl::OnStartSession 同形），断言会话计数 1→2 增长、FindSession 应答、两个 eat 回调生效——旧默认模式只连当时在跑的服务端、从不触达本 handler（且本机有常驻 WeaselServer.exe，exit 0 依赖环境）。手动 harness 保留为 /start /stop /console /client；负向验证：还原隐藏签名 4 条断言 FAIL、exit 1。
 - 构建：release/debug 全量 build ok；9 个测试目标全过（TestPipeChannel 53 用例；TestResponseParser 9 组；TestWeaselIPC 自测 7 断言且不再依赖常驻服务端）。
+
+### 批次 10（2026-09-15）：B6、B34、B28、B31、B35④⑦（管道/基建）
+
+- `3b7f9c9` fix(WeaselIPC): close the thread-local pipe handle when its thread exits — B6（P2）。TSS 从裸 `HANDLE*` 改为 RAII `PipeHandleOwner`（析构执行 _FinalizePipe 语义：DisconnectNamedPipe+CloseHandle，幂等——显式 Disconnect/_Reconnect 先置 INVALID，不会双重关闭）；`_FinalizePipe` 收敛为两者共用的自由函数 `FinalizePipeHandle`（服务端 Listen catch/_ConnectServerPipe catch/_ProcessPipeThread 的裸句柄路径同用它）。核对结论：服务端线程从不触碰 hpipe TSS（Listen/worker 全用局部句柄），泄漏仅在客户端宿主线程；boost TSS 线程退出清理 = delete（实测 boost 1.92 源码确认），包装后即触发析构关句柄。TestPipeChannel 新增 B6 用例（共享通道 + 8 个短命线程连接后不 Disconnect 直接退出）：服务端 worker 注册表必须清空（泄漏句柄会钉死 worker 的 ReadFile）+ 进程句柄数必须回基线；负向验证：还原旧代码两条断言 FAIL（worker 阻塞不清零、句柄数 +8），exit 1。
+- `090634b` fix(WeaselIPC): make ClientImpl::session_id an atomic — B34。`std::atomic<UINT>` + 宽松序（纯值读写不携带顺序），全部使用点走 `_SessionId()/_SetSessionId()`；按加固处理（形式 UB、无实证并发路径，x86 对齐 UINT 实际良性）。验证：编译期类型级变更 + 全量构建/测试；无功能级负向验证可做（良性竞态无可观测退化）。
+- `37e5eda` fix(WeaselIPCServer): resolve PhysicalToLogicalPointForPerMonitorDPI once, null-check before use — B28。构造函数一次解析为类型化成员指针，OnUpdateInputPosition 判空调用；解析失败跳过转换保持物理坐标（现状为不判空调 null 即崩，判空属防御——WeaselServer.exe 有 IsWindowsBlueOrLaterEx 进程级 gate（WeaselServer.cpp:29），Win8.1+ 该导出必在）。无法单测（依赖 ServerImpl 窗口消息路径），验证方式：全量构建 + 现有套件 + 回退语义核对；负向验证不可复现（本机 Win10 必有该导出）。
+- `7aa5fb9` fix(WeaselUtility): check the second GetUserName result in getUsername — B31（+测试修正 `06aefcf`）。第二次 GetUserName 返回值检查，失败走与首次相同的空串路径（旧代码失败时 len 不变照样用未初始化缓冲构造 wstring）。TestResponseParser test_10：返回非空且长度与查询调用精确一致；失败路径无法注入（win32 调用不可 mock，除非重构 API），按检查验证，成功路径负向无退化可断言（还原旧代码 test_10 仍绿）。附注：06aefcf 修正 test_10 误写 `weasel::getUsername()`（该头文件无 weasel 命名空间，此前被 cmd 管道返回 tail 退出码的假象掩盖，未真正编译过）。
+- `931afeb` fix(WeaselUtility): decode DebugStream<<std::string as utf-8 like const char* — B35④。与 const char* 分支统一用 u8tow 解码，收参改 const 引用（原 acptow 与注释/兄弟分支矛盾，日志乱码）。TestResponseParser test_11 钉死解码器语义：非 ASCII 的 utf-8 字节 u8tow 还原、acptow 必不还原；DebugStream 输出经 OutputDebugString 不可捕获，分支一致性按代码审阅确认，负向验证同 B31（还原 operator 改动 test_11 仍绿，因其钉的是解码函数而非 operator）。
+- `088bf21` fix(WeaselIPC): drop the dead ServerLauncher parameter of Client::Connect — B35⑦。调查结论：管道化 IPC 重写以来该参数一直被忽略（上游 master 同样如此，历史 launcher 语义属管道化之前的 HWND 消息客户端）；仓库内全部调用方只传默认值或 NULL（WeaselTSF 传 NULL，其余不传），测试无人传，死服务端实际全靠 autostart 注册兜底。选择删除参数（编译期暴露漏改调用方，且不引入"连接失败即启动进程"的新风险面），ServerLauncher typedef 一并移除（CommandHandler 另有菜单用途保留）；负向验证：还原 `Connect(NULL)` 调用即编译错误 C2660。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；9 个测试目标全过。TestPipeChannel 现 73 项断言（B6 新增 8 项）；TestResponseParser 增 test_10/test_11。B35 其余子项（①②③⑤⑥）归后续批次，B35 行状态未改。
