@@ -334,6 +334,29 @@ static void test_max_candidates_round_info(UiThread& t) {
         "B35-1: 100 candidates settle under vertical-text wrap (r2l)");
 }
 
+/* B35-5: candidate abbreviation (candidate_abbreviate_length) used to cut
+ * per-wchar: a cut landing between the high and low surrogate of an astral
+ * character (emoji) produced an unpaired surrogate that renders as U+FFFD.
+ * AbbreviateText must retreat the cut point and keep the trailing code point
+ * whole. */
+static void test_candidate_abbreviation_surrogate_safe() {
+  const std::wstring grin{0xD83D, 0xDE00};  // 😀 U+1F600（代理对 D83D DE00）
+
+  check(AbbreviateText(L"abcdefgh", 5) == L"abcd...h",
+        "B35-5: BMP abbreviation keeps the old shape");
+  check(AbbreviateText(L"abcde", 5) == L"abcde",
+        "B35-5: at max_length untouched");
+  check(AbbreviateText(L"abc", 5) == L"abc", "B35-5: short input untouched");
+
+  // 截断点落在代理对中间：头部退一个 wchar，不再以孤立高代理结尾
+  check(AbbreviateText(L"ab" + grin + L"cd", 4) == L"ab...d",
+        "B35-5: cut between surrogates retreats one wchar");
+
+  // 末码点是增补平面字符：连同其高代理一起保留，不再产生孤立低代理
+  check(AbbreviateText(L"abcd" + grin, 4) == L"abc..." + grin,
+        "B35-5: astral tail kept as a complete pair");
+}
+
 /* B23: label_text_format comes from user yaml (style/label_format) and the
  * formatted label itself can exceed the 128-wchar buffer (long custom labels).
  * Both must degrade gracefully: truncation for the overflow case (CRT asserts
@@ -383,6 +406,7 @@ int main() {
   test_layout_failure_is_shielded(t);
   test_mismatched_candidate_vectors(t);
   test_max_candidates_round_info(t);
+  test_candidate_abbreviation_surrogate_safe();
   test_label_text_format_bounded();
 
   t.RequestStop();

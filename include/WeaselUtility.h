@@ -229,6 +229,30 @@ inline std::wstring FormatLabelText(const wchar_t* format,
   return std::wstring(buffer);
 }
 
+// ---- 候选词缩写的代理对安全截断 ----
+inline bool IsUtf16HighSurrogate(wchar_t ch) {
+  return ch >= 0xD800 && ch <= 0xDBFF;
+}
+inline bool IsUtf16LowSurrogate(wchar_t ch) {
+  return ch >= 0xDC00 && ch <= 0xDFFF;
+}
+
+// 超过 max_length（wchar 计）时缩写为首部 + "..." + 末码点。截断点落在
+// 代理对中间时退一个 wchar、末尾连同其高代理一起取，保证不产生孤立代理
+// （emoji 等增补平面字符被切成半个会渲染成 U+FFFD）
+inline std::wstring AbbreviateText(const std::wstring& str, size_t max_length) {
+  if (max_length == 0 || str.length() <= max_length)
+    return str;
+  size_t cut = max_length - 1;
+  if (cut > 0 && IsUtf16HighSurrogate(str[cut - 1]) &&
+      IsUtf16LowSurrogate(str[cut]))
+    --cut;  // 不把高代理与其低代理分开
+  const std::wstring tail =
+      IsUtf16LowSurrogate(str.back()) ? str.substr(str.length() - 2)
+                                      : str.substr(str.length() - 1);
+  return str.substr(0, cut) + L"..." + tail;
+}
+
 inline std::wstring get_weasel_ime_name() {
   LANGID langId = GetUserDefaultUILanguage();
 

@@ -1459,12 +1459,10 @@ void WeaselPanel::_ApplyUpdate(Context const& ctx, Status const& status) {
   m_ctx = ctx;
   m_status = status;
   if (m_style.candidate_abbreviate_length > 0) {
+    // 缩写截断保证代理对完整（emoji 等增补平面字符，见 WeaselUtility.h）
     for (auto& c : m_ctx.cinfo.candies) {
-      if (c.str.length() > (size_t)m_style.candidate_abbreviate_length) {
-        c.str =
-            c.str.substr(0, (size_t)m_style.candidate_abbreviate_length - 1) +
-            L"..." + c.str.substr(c.str.length() - 1);
-      }
+      c.str = AbbreviateText(c.str,
+                             (size_t)m_style.candidate_abbreviate_length);
     }
   }
   Refresh();
