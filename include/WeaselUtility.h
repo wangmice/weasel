@@ -21,8 +21,9 @@ inline std::wstring getUsername() {
 
   wchar_t* username = new wchar_t[len + 1];
 
-  GetUserName(username, &len);
-  if (len <= 0) {
+  // the second call can fail too: then the buffer stays uninitialized
+  // while len keeps its input value, so it must not be used
+  if (!GetUserName(username, &len) || len <= 0) {
     delete[] username;
     return L"";
   }

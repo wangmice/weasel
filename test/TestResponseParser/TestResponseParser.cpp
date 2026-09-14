@@ -256,6 +256,20 @@ void test_9() {
     BOOST_TEST(ok[i] == 1);
 }
 
+// B31: getUsername must return the account name; the second GetUserName
+// call is now checked, so a failure returns the empty string instead of
+// building a wstring from an uninitialized buffer (failure injection is
+// not possible without refactoring the win32 call away, so the normal
+// path guards against regressions).
+void test_10() {
+  std::wstring user = weasel::getUsername();
+  BOOST_TEST(!user.empty());
+  // the querying call must have sized the buffer to fit it exactly
+  DWORD len = 0;
+  GetUserName(NULL, &len);
+  BOOST_TEST(user.size() == len - 1);  // len includes the terminator
+}
+
 int _tmain(int argc, _TCHAR* argv[]) {
   test_9();  // B21: 首个构造须发生在多线程里，故最先执行
   test_1();
@@ -266,6 +280,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
   test_6();
   test_7();
   test_8();
+  test_10();
 
   return boost::report_errors();
 }
