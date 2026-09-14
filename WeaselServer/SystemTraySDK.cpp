@@ -428,7 +428,7 @@ BOOL CSystemTray::SetIconList(HICON* pHIconList, UINT nNumIcons) {
   m_IconList.clear();
 
   try {
-    for (UINT i = 0; i <= nNumIcons; i++)
+    for (UINT i = 0; i < nNumIcons; i++)
       m_IconList.push_back(pHIconList[i]);
   } catch (...) {
     m_IconList.clear();
