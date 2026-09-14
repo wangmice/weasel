@@ -17,14 +17,14 @@
 | A4 | P3 | bug | WeaselTSF/Compartment.cpp:75-89 | _Unadvise 对 null _compartment 解引用；_cookie 未初始化 | ✔ | ✅ 已修复（42eb9ff（含 A3），批次6） |
 | A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | ✔ | ✅ 已修复（8266e0b，批次13） |
 | A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | ✔ | ✅ 已修复（7b2b021，批次13） |
-| A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | 未修复 |
+| A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | ✅ 已修复（d09c18e，批次15：bug 部分读失败不回写 + perf 部分稳态零写） |
 | A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | ✔ | ✅ 已修复（37f0da8，批次12） |
 | A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 未修复 |
 | A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | ✔ | 未修复 |
 | A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | ✔ | 未修复 |
 | A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | ✔ | ✅ 已修复（89b3e1a，批次8） |
 | A14 | P3 | bug | WeaselSetup/WeaselSetup.cpp:68-76 | 注册表字符串未强制 NUL 终止即构造 wstring | ✔ | ✅ 已修复（2e67458，批次8） |
-| A15 | P3 | perf | WeaselTSF/EditSession.cpp:8-14 | 每击键堆分配 shared_ptr<Context>+Config+parser | — | 未修复 |
+| A15 | P3 | perf | WeaselTSF/EditSession.cpp:8-14 | 每击键堆分配 shared_ptr<Context>+Config+parser | — | ✅ 已修复（1c3e8ec，批次15：parser 复用；Context 分配经考证为承重保留） |
 | A16 | P3 | bug | WeaselDeployer/UIStyleSettings.cpp:42-58 等 | 预览路径用 ACP 解码 UTF-8，非 ASCII 用户名下必失败 | ✅ | ✅ 已修复（0f1574a，批次7） |
 
 ### A 路：旧报告已知且确认仍未修复（K 系列）
@@ -51,9 +51,9 @@
 | K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | ✔ | ✅ 已修复（29c1a62，批次7） |
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | ✅ 已修复（63d3cae，批次9） |
-| K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | 未修复 |
+| K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | ✅ 已修复（2666c70，批次15：注册表 TTL 缓存，IPC 保留有据） |
 | K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 🔧 批次13/14 修 TSF 子集（Deployer/Setup/Server 子项见批次16-18） |
-| K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | 未修复 |
+| K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | ✅ 已修复（00f7695+a34af93+78d08c1，批次15：a/b/c 分项提交；compartment 读写部分随 A7） |
 | K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 不修（有据，上游一致/防串扰设计，见 §4 批次12） |
 
 ### B 路发现
@@ -986,4 +986,16 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `1c8406b` refactor(WeaselTSF): remove unused GetActiveProfileLangId — K22⑧。git grep 全仓（含 test/）零调用，static 函数纯删除；其 CComPtr/ITfInputProcessorProfileMgr 用法为该文件唯一，无连带清理。验证：构建（编译期证明无引用）。
 - `fb689b8` refactor(WeaselTSF): remove unused CCandidateList::UpdateStyle — K22⑨。git grep 全仓（含 test/）零调用，函数+声明删除；style 变更实际经 StartUI 重建 UI 时落入（与审查注记一致），git 历史可找回。验证：构建（编译期证明无引用）。
 - K22 的 TSF 部分全部收口（批次 13 ①②③ + 本批 ④-⑨，其中 ⑥ 裁决不修）；§0 行状态改 🔧。族内 Deployer/Setup/Server 侧子项（user_name[20]、Deployer 静默退出、CustomInstall detached 线程、SetEnvironmentVariable throw、WeaselService 死代码等）归批次 16/17/18。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
+
+### 批次 15（2026-09-15）：A7、K23、K21、A15（WeaselTSF 性能）
+
+主题：击键/焦点热路径性能。热路径定义：每次击键（含纯 ASCII 直通）与每次焦点/线程焦点切换。逐项给出可数指标（COM 调用、IPC 往返、堆分配、读盘）前后对比，行为不变性论证见各 commit message 与下述摘要。
+
+- `d09c18e` fix(WeaselTSF): skip stale conversion-mode compartment write — A7（bug+perf）。bug 部分：`_UpdateLanguageBar` 读取 INPUTMODE_CONVERSION 失败（VT_EMPTY 之外的 FAILED 态）时 flags 保持 0，仅按 ascii/full_shape 重建回写，清掉宿主设置的 TF_CONVERSIONMODE_ROMAN/KATAKANA/NO_CONVERSION 等无关位——改为读取失败不回写（保留 compartment 现值）。S_FALSE（VT_EMPTY，从未设置）仍以 0 为基首次初始化，与原语义一致。perf 部分：缓存上次成功写入值，新值与之相同则跳过 SetValue。读保留（外部改动可见性不劣化：宿主改写的外部位在下一次真需要写时仍被读取并保留；读值无其他消费方，全仓核对过）；Deactivate 时缓存失效。同值 SetValue 本就不触发 OnChange（否则现网早该在 _HandleCompartment↔SetValue 环路上栈溢出），跳过等价。计数：每键 6 次 COM（读 3+写 3）→ 3 次（读 3+写 0）；读失败路径写 1 次 → 0 次。
+- `00f7695` perf(WeaselTSF): notify the language bar only on real status change — K23a。`UpdateWeaselStatus` 原无条件 `OnUpdate(TF_LBI_STATUS|TF_LBI_ICON)`，每键触发系统回查 GetStatus/GetIcon。改为 ascii_mode/zhung 图标路径/ascii 图标路径三项比较均无变化才跳过。行为不变性：图标内容由三项惟一决定，无变化时系统重查结果相同；`_status` 位不经本函数变化（SetLangbarStatus 自带变化检测）；OnClick 自身的中/英切换仍直接 OnUpdate。计数：稳态每键 OnUpdate 1 次（连带系统 GetStatus+GetIcon 各 1 次）→ 0 次。
+- `a34af93` perf(WeaselTSF): cache file-loaded lang bar icons, hand out copies — K23b。`GetIcon` 自定义图标路径每次 `LR_LOADFROMFILE` 读盘。所有权考证（MSDN《ITfLangBarItemButton::GetIcon》）：调用方（语言栏）负责 `DestroyIcon` 销毁返回值——故不能直接返回缓存句柄（二次销毁/使用已销毁句柄）。方案：按路径缓存 master HICON（本对象持有，析构统一销毁；路径变化即重载，频率≈schema 切换），GetIcon 每次返回 `CopyIcon` 副本。行为不变性：副本与新加载句柄对语言栏等价（同为可销毁独立句柄、像素相同）；加载失败仍 NULL+E_FAIL；资源图标 LR_SHARED 路径原样保留（DestroyIcon 对共享句柄为文档化无效操作，上游既有行为）。计数：每次 GetIcon 磁盘读 1 次+句柄分配 1 → 内存 CopyIcon 1 次、磁盘读 0（路径变化时 1 次）。
+- `78d08c1` perf(WeaselTSF): cache the keyboard-disabled state with compartment sinks — K23c。`_IsKeyboardDisabled` 每键 ~7 次 COM（GetFocus+GetTop+QI+2×GetCompartment/GetValue，另有 4 次 Release）。KEYBOARD_DISABLED/EMPTYCONTEXT 是 context 级 compartment：两个 CCompartmentEventSink（复用既有基建）挂在焦点 top context 上，值变化置脏；`_IsKeyboardDisabled` 先 GetFocus/GetTop（2 次 COM），context 身份不变且未脏则返回缓存。context 变化（文档焦点切换、push/pop 改变 GetTop）按身份比对自动重挂+失效；advise 失败或无焦点路径不缓存，退回逐键全量查询（与原实现一致）。行为不变性：缓存仅在 sink 成功挂上当前查询的同一 context 后启用，其两个 compartment 的任何 SetValue 都会置脏（TSF compartment sink 保证，与现有 OPENCLOSE sink 同机制）；无焦点/无 top context 仍返回 TRUE 不缓存。计数：稳态每键 7 次 COM → 2 次；焦点 context 切换额外 2 次 advise（切换级非每键级）。
+- `2666c70` perf(WeaselTSF): throttle the per-focus registry read, keep the resync IPC — K21。注册表：`ToggleImeOnOpenClose`（仅 WeaselSetup 写入）改为 TTL 10s 限频缓存，外部改动最迟 TTL 后的下一次焦点切换生效，与原逐次读取一致。IPC 考证后**保留**：① Echo 是会话有效性闸门（服务端 OnEcho=FindSession）——省掉后会话失效时服务端对孤儿会话跑 process_key 并把 m_active_session 指向死 id（RimeWithWeasel.cpp:316 无条件赋值），改变服务端可见时序；② ProcessKeyEvent(0)（keycode=0，librime processor 均不吃，服务端 handled=False）的真实作用是借 `_Respond` 取回全量 status 快照（RimeWithWeasel.cpp:788+ 恒写 status.* 行）——tray 中/英切换（作用于服务端 m_active_session）与 global_ascii_mode 跨会话联动（_Respond 内直接改其他会话 option）都可在本客户端零通知时改变本会话状态，焦点切换时须重新同步 _status/语言栏，省掉会让图标陈旧至下一次击键；上游 master 同构（WebFetch 核对）。计数：每次线程焦点切换注册表读 1 次（open+query+close）→ ≤1 次/10s；IPC 2 次往返保留（有据）。
+- `1c3e8ec` perf(WeaselTSF): reuse the response parser across parses — A15。01885fc 后 `_ConsumeResponse` 每键构造 ResponseParser：Initialize 注册 action + ActionLoader 按响应 action 列表逐个注册，每动作=对象+控制块+map 节点 3 次堆分配，典型响应 ~9-15 次/键。改为成员 parser 复用 + `Deserializer::Require` 幂等（已注册直接复用），第二次解析起零分配；目标指针每次解析前重指（各 deserializer 均在 Store 时经 `m_pTarget->p_*` 读目标，无构造期缓存）。**make_shared<Context> 按键新建保留（考证承重）**：CInlinePreeditEditSession 持有旧快照 shared_ptr 副本，异步排队会话若读到复用后的同一分配会看到后续键数据，破坏 01885fc 快照隔离；`weasel::Config` 仅含 bool 无堆分配，local+成功后拷贝的失败语义保留（解析失败 _config/_context 不落地，_status 原地解析为既有行为）。行为不变性：deserializer 无跨解析状态，复用与重建等价；一次性 parser（TestResponseParser 等）表为空不命中幂等分支。计数：每键堆分配 ~9-15 次+Context 1 次 → 0 次+Context 1 次（保留）。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
