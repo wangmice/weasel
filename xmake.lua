@@ -140,6 +140,7 @@ if is_mode("debug") then
   includes("test/TestBstrUtil")
   includes("test/TestWeaselSetup")
   includes("test/TestKeyEvent")
+  includes("test/TestRegisterTipKeys")
 else
   add_cxflags("/GL")
   add_ldflags("/LTCG /INCREMENTAL:NO", {force = true})

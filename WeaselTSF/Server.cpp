@@ -111,6 +111,5 @@ STDAPI DllRegisterServer() {
 STDAPI DllUnregisterServer() {
   UnregisterProfiles();
   UnregisterCategories();
-  UnregisterServer();
-  return S_OK;
+  return UnregisterServer() ? S_OK : SELFREG_E_CLASS;
 }

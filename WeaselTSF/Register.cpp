@@ -7,7 +7,10 @@
 #define CLSID_STRLEN 38  // strlen("{xxxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx}")
 
 static const char c_szInfoKeyPrefix[] = "CLSID\\";
-static const char c_szTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
+// RegisterProfile 的真实 TIP 键前缀（HKLM\SOFTWARE 下）
+static const char c_szTipKeyPrefix[] = "Software\\Microsoft\\CTF\\TIP\\";
+// 历史安装器按拼错路径写下的坏键前缀；清理须沿用历史拼写
+static const char c_szLegacyTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
 static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
 
@@ -214,19 +217,48 @@ BOOL RegisterServer() {
   return fRet;
 }
 
-void UnregisterServer() {
+BOOL DeleteTipKeyUnderRoot(HKEY root, TipKeyPath path, REFGUID clsid) {
+  const char* prefix = nullptr;
+  size_t prefixLen = 0;
+  switch (path) {
+    case TipKeyPath::Registered:
+      prefix = c_szTipKeyPrefix;
+      prefixLen = ARRAYSIZE(c_szTipKeyPrefix) - 1;
+      break;
+    case TipKeyPath::LegacyTypo:
+      prefix = c_szLegacyTipKeyPrefix;
+      prefixLen = ARRAYSIZE(c_szLegacyTipKeyPrefix) - 1;
+      break;
+  }
+
+  char tipKey[MAX_PATH];
+  if (prefixLen + CLSID_STRLEN + 1 > ARRAYSIZE(tipKey))
+    return FALSE;
+  if (!CLSIDToStringA(clsid, tipKey + prefixLen))
+    return FALSE;
+  memcpy(tipKey, prefix, prefixLen);
+
+  // RecurseDeleteKeyA treats a missing key as success; report real failures.
+  return RecurseDeleteKeyA(root, tipKey) == ERROR_SUCCESS;
+}
+
+BOOL UnregisterServer() {
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
   if (!CLSIDToStringA(c_clsidTextService,
                       achIMEKey + ARRAYSIZE(c_szInfoKeyPrefix) - 1))
-    return;
+    return FALSE;
   memcpy(achIMEKey, c_szInfoKeyPrefix, sizeof(c_szInfoKeyPrefix) - 1);
-  RecurseDeleteKeyA(HKEY_CLASSES_ROOT, achIMEKey);
+  BOOL fRet = RecurseDeleteKeyA(HKEY_CLASSES_ROOT, achIMEKey) == ERROR_SUCCESS;
 
-  // On Windows 8, we need to manually delete the registry key for our TIP
-  char tipKey[ARRAYSIZE(c_szTipKeyPrefix) + CLSID_STRLEN];
-  if (!CLSIDToStringA(c_clsidTextService,
-                      tipKey + ARRAYSIZE(c_szTipKeyPrefix) - 1))
-    return;
-  memcpy(tipKey, c_szTipKeyPrefix, sizeof(c_szTipKeyPrefix) - 1);
-  RecurseDeleteKeyA(HKEY_CLASSES_ROOT, tipKey);
+  // Win8+ leaves the TIP key behind on unregister: clean the real location
+  // (HKLM, where RegisterProfile writes) plus the misspelled keys historical
+  // installers left under HKCR.
+  if (!DeleteTipKeyUnderRoot(HKEY_LOCAL_MACHINE, TipKeyPath::Registered,
+                             c_clsidTextService))
+    fRet = FALSE;
+  if (!DeleteTipKeyUnderRoot(HKEY_CLASSES_ROOT, TipKeyPath::LegacyTypo,
+                             c_clsidTextService))
+    fRet = FALSE;
+
+  return fRet;
 }

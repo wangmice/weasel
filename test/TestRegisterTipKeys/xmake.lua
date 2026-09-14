@@ -1,0 +1,8 @@
+target("TestRegisterTipKeys")
+  set_kind("binary")
+  add_files("./*.cpp")
+  add_files("../../WeaselTSF/Register.cpp")
+  add_files("../../WeaselTSF/Globals.cpp")
+  add_files("../../WeaselTSF/FindIME.cpp")
+  add_rules("subcmd")
+  add_links("advapi32", "ole32")
