@@ -4,7 +4,7 @@
 
 #include "stdafx.h"
 #include "resource.h"
-#include "WeaselService.h"
+#include "WeaselServerApp.h"
 #include <WeaselIPC.h>
 #include <WeaselUI.h>
 #include <RimeWithWeasel.h>

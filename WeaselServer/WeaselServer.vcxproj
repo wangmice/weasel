@@ -492,7 +492,6 @@
     <ClCompile Include="SystemTraySDK.cpp" />
     <ClCompile Include="WeaselServer.cpp" />
     <ClCompile Include="WeaselServerApp.cpp" />
-    <ClCompile Include="WeaselService.cpp" />
     <ClCompile Include="WeaselTrayIcon.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -500,7 +499,6 @@
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="SystemTraySDK.h" />
     <ClInclude Include="WeaselServerApp.h" />
-    <ClInclude Include="WeaselService.h" />
     <ClInclude Include="WeaselTrayIcon.h" />
   </ItemGroup>
   <ItemGroup>
