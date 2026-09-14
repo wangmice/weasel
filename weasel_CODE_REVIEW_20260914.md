@@ -15,8 +15,8 @@
 | A9 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘快照在管道线程读 UI style_/status_（wstring）数据竞争（= B2，合并处理） | ✔ | ✅ 已修复（cef6c26（=B2），批次4） |
 | A3 | P3 | bug | WeaselTSF/CandidateList.h:85 | uiid 未初始化即传入 UpdateUIElement | ✔ | ✅ 已修复（42eb9ff（含 A4），批次6） |
 | A4 | P3 | bug | WeaselTSF/Compartment.cpp:75-89 | _Unadvise 对 null _compartment 解引用；_cookie 未初始化 | ✔ | ✅ 已修复（42eb9ff（含 A3），批次6） |
-| A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | ✔ | 未修复 |
-| A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | ✔ | 未修复 |
+| A5 | P3 | bug | WeaselTSF/DisplayAttribute.cpp:38-39 | 空 range 时对可能 null 的 _pComposition 解引用（潜在） | ✔ | ✅ 已修复（8266e0b，批次13） |
+| A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | ✔ | ✅ 已修复（7b2b021，批次13） |
 | A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | 未修复 |
 | A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | ✔ | ✅ 已修复（37f0da8，批次12） |
 | A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 未修复 |
@@ -35,7 +35,7 @@
 | K2 | P2 | WeaselTSF/KeyEventSink.cpp:7-60 | static 三件套跨实例/线程共享；pfEaten 未写即存 static | ✔ | ✅ 已修复（7e41ec3，批次12） |
 | K3 | P2 | WeaselTSF/KeyEvent.cpp:44-51 | ConvertKeyEvent 函数级 static buf/table 非线程安全；扫描码传参错误 | ✔ | ✅ 已修复（09b2e4c，批次12） |
 | K4 | P2 | WeaselTSF/CandidateList.cpp:129 | SysAllocStringLen(size()+1) BSTR 长度差一 | ✅ | ✅ 已修复（cd59189，批次2） |
-| K5 | P2 | WeaselTSF/Register.cpp:10,226-231 | "Microsft" 拼写 + HKCR 下清理对真实 TIP 键结构上无效 | ✔ | 未修复 |
+| K5 | P2 | WeaselTSF/Register.cpp:10,226-231 | "Microsft" 拼写 + HKCR 下清理对真实 TIP 键结构上无效 | ✔ | ✅ 已修复（20d0f4c，批次13） |
 | K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | ✔ | ✅ 已修复（55221cb，批次7） |
 | K7 | P2 | SwitcherSettingsDialog.cpp:20-23; UIStyleSettings.cpp:5-8 | schema list / settings 无对应 destroy | ✔ | ✅ 已修复（6258af1，批次7） |
 | K8 | P2 | SwitcherSettingsDialog.cpp:114-155 | 未初始化 HKEY、无条件 close、INFINITE 等待、无 NUL | ✔ | ✅ 已修复（03ea36a，批次7） |
@@ -965,3 +965,14 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - K24 裁决为**不修（上游一致/防串扰设计）**。考证：① 上游 rime/weasel master 的 KeyEventSink.cpp `OnSetFocus(FALSE)` 与本仓逐字一致（`m_client.FocusOut(); _AbortComposition();`，WebFetch 2026-09-15 核对）；② 本仓该文件仅 3 个 commit（路径/签名修饰/01885fc 响应解析），失焦 abort 非本仓引入；③ 设计上 TSF 组合（composition range）绑定焦点文档，失焦后残留组合在旧应用文档中属非法状态（宿主亦会主动终止触发 OnCompositionTerminated），且不清编码会把 A 应用打到一半的句子串进 B 应用（跨应用串输入状态）。OnCompositionTerminated 中"宿主终止但保留 Rime 编码"的 8f2561f 路径针对同焦点内的空组合终止，与失焦路径语义不同，不构成"失焦可保留"的反例。修改将引入组合状态机跨焦点的不确定性（切回焦点需恢复 TSF 组合+候选窗+Rime 会话三方状态），按风险控制原则不修。
 - `37f0da8` refactor(WeaselTSF): remove the dead error_message helper — A8。全仓 grep 零调用（仅报告内提及），连同其"输入线程弹模态框 + static GetTickCount 回绕判定"陷阱形态一并删除；`get_weasel_ime_name` 在 Register.cpp 另有使用，无连带清理。负向验证：删除为纯死代码移除，编译即验证。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 10 个全过（原 9 个 + 新增 TestKeyEvent，run_tests.sh 已同步）。
+
+### 批次 13（2026-09-15）：A5、A6、K5、K22①②③（WeaselTSF P3）
+
+- `8266e0b` fix(WeaselTSF): null-check _pComposition in the empty-range attribute path — A5。`_SetCompositionDisplayAttributes` 的 `pRangeComposition == nullptr` 分支先判 `!_pComposition` 返回 FALSE 再 GetRange（异步会话排队后、执行前 `_FinalizeComposition()` 置空的场景），与同文件 `_ClearCompositionDisplayAttributes` 的判空注释呼应。验证：TSF COM 路径无法控制台复现，构建+推理（当前唯一调用方 Composition.cpp 恒传非空 range，属防御性收口，无行为变化）。
+- `7b2b021` fix(WeaselTSF): zero-init the display attribute atom and skip writes when unregistered — A6。`TfGuidAtom _gaDisplayAttributeInput = 0` 就地初始化；`_SetCompositionDisplayAttributes` 开头判 `== 0` 返回 FALSE（不把垃圾 atom 写进 GUID_PROP_ATTRIBUTE）；ActivateEx 调用点注释改写为"初始化失败非致命，atom 保持 0、setter 跳过写入"（失败场景已被 0 守卫兜住，无需 LOG）。验证：构建+推理（0 守卫按任务设计兜底：RegisterGUID 失败时 atom 保持 0、setter 跳过写入；即便极端情况下 0 为合法 atom，跳过的也只是一次属性写入而非写入垃圾值）。
+- `20d0f4c` fix(WeaselTSF): clean the real HKLM TIP key on unregister, keep the legacy typo cleanup — K5（P2）。历史考证：该清理源自上游 2013 年 commit 2676cfb（googlecode Issue 531，"remaining registry key for TSF on Windows 8 after install"），意图即删 Win8 残留的**真实** TIP 键 `HKLM\SOFTWARE\Microsoft\CTF\TIP\{clsid}`（本机 reg query 证实该键真实存在），但作者把根键写成 HKCR、拼写误作 "Microsft"，清理对真键从未生效（HKCR 只合并 Software\Classes）。修复：新增 `DeleteTipKeyUnderRoot(root, TipKeyPath, clsid)`（enum class 选择路径拼写，编译期防错；键不存在视为成功）；UnregisterServer 同时清理两个位置——正确键 HKLM\SOFTWARE\Microsoft\CTF\TIP + 历史坏键 HKCR\Software\Microsft\CTF\TIP（沿用错误拼写，本机核实不存在、其他机器可能残留）；返回 BOOL 并核对了 RecurseDeleteKeyA 的删除结果，DllUnregisterServer 失败改报 SELFREG_E_CLASS。新增 test/TestRegisterTipKeys（debug 段第 11 个测试目标，编译 Register.cpp+Globals.cpp+FindIME.cpp）：5 项断言——缺失键算成功、Registered 清理只删 Microsoft 拼写子树（嵌套子键递归删净）且不动 Microsft 树、Legacy 清理删 Microsft 子树；测试用假 CLSID 在 HKCU 造键、删完即清（不触碰本机真实注册项，HKLM 真键仅 reg query 只读核对）；负向验证：把 Registered 前缀临时改回错误拼写，2 条断言 FAIL、exit 1，恢复后全绿。
+- `f7cd26f` fix(WeaselTSF): return S_OK from edit sessions on success — K22①。CStartCompositionEditSession::DoEditSession 成功路径返回 S_OK（原 `hr` 初始化 E_FAIL 且成功分支不更新，两处成功路径误报失败），StartComposition 失败/空 composition 仍返回 E_FAIL；WeaselTSF::DoEditSession 末尾 `return TRUE`（=1=S_FALSE）改 S_OK。grep 证明无调用方依赖旧值：全部 RequestEditSession 调用点中仅 `_UpdateCompositionWindow` 用 SUCCEEDED(hr) 且该会话（CGetTextExtentEditSession）本就返回 S_OK；编辑会话返回值语义（同步授予时透传 phrSession）修正为文档要求的 S_OK。验证：构建+推理。
+- `abcf981` fix(WeaselTSF): track both compartment advise results, log failures — K22②。`_InitCompartment` 的 `DWORD hr` 改两个独立 HRESULT（hrKeyboard/hrConversion），第一个失败不再被第二个成功覆盖；任一失败 LOG(ERROR)（include/logging.h，默认 no_logging 编译为空、开启 glog 时生效）并返回 FALSE（现状对可检测失败即中止激活，对称化后首个失败同样中止；Deactivate→_Unadvise 判空安全——A4 修复保证了这条路径）。验证：构建+推理。
+- `1ddc53d` fix(WeaselTSF): handle ToUnicodeEx surrogate pairs and dead keys in the fallback — K22③。核对 MSDN（ToUnicodeEx，2026-09-15）：返回值 <0 为死键（buf 只是死键字符的 spacing 版本，非本键翻译）、>0 为写入的 UTF-16 码元数、"布局可能以代理对返回增补字符"。修复：`ret==2` 且 buf[0..1] 构成合法代理对时合成完整码位作为 keycode（与单字符路径同为"码位即 keycode"语义）；死键与"死键无法组合返回两个非代理码元"的场合均按未知键处理（ret==-1 原本即落 false 分支，注释写明契约；死键残留双码元场景维持现状不变）。死键/代理对依赖真实键盘布局无法在单测模拟（TestKeyEvent 布局无关约束），验证：文档契约论证 + 构建 + 既有 18 项断言全绿。
+- K22 行状态未改：本批完成其 TSF 子集 3 组（Composition/EditSession 返回值、Compartment Advise 覆盖、KeyEvent ToUnicodeEx），族内其余（TextEditSink 清理跳过、KeyEventSink pending 挂起、dllmain 吞异常、WeaselService/WeaselServer/WeaselSetup/WeaselDeployer 各项）归批次 14。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（原 10 个 + 新增 TestRegisterTipKeys，run_tests.sh 已同步）。
