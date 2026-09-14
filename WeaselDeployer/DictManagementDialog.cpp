@@ -97,6 +97,17 @@ LRESULT DictManagementDialog::OnClose(UINT, WPARAM, LPARAM, BOOL&) {
   return 0;
 }
 
+// LB_GETTEXT 不截断整串拷贝，须先查长度再动态分配，防止栈溢出
+static std::wstring GetSelectedDictName(CListBox& list, int sel) {
+  int len = list.GetTextLen(sel);
+  if (len == LB_ERR)
+    return std::wstring();
+  std::vector<wchar_t> buf(len + 1, L'\0');
+  if (list.GetText(sel, buf.data()) == LB_ERR)
+    return std::wstring();
+  return std::wstring(buf.data());
+}
+
 LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   int sel = user_dict_list_.GetCurSel();
   if (sel < 0 || sel >= user_dict_list_.GetCount()) {
@@ -117,8 +128,7 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
     MSG_BY_IDS(IDS_STR_ERREXPORT_SYNC_UV, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     return 0;
   }
-  WCHAR dict_name[100] = {0};
-  user_dict_list_.GetText(sel, dict_name);
+  std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
   path += std::wstring(L"\\") + dict_name + L".userdb.txt";
   std::string dict_name_str = wtou8(dict_name);
   if (!api_->backup_user_dict(dict_name_str.c_str())) {
@@ -183,10 +193,8 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
                MB_OK | MB_ICONINFORMATION);
     return 0;
   }
-  WCHAR dict_name[MAX_PATH] = {0};
-  user_dict_list_.GetText(sel, dict_name);
-  std::wstring file_name(dict_name);
-  file_name += L"_export.txt";
+  std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
+  std::wstring file_name = dict_name + L"_export.txt";
 
   COMDLG_FILTERSPEC filter[2] = {{txt_files_name.c_str(), L"*.txt"},
                                  {all_files_name.c_str(), L"*.*"}};
@@ -234,10 +242,8 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
                MB_OK | MB_ICONINFORMATION);
     return 0;
   }
-  WCHAR dict_name[MAX_PATH] = {0};
-  user_dict_list_.GetText(sel, dict_name);
-  std::wstring file_name(dict_name);
-  file_name += L"_export.txt";
+  std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
+  std::wstring file_name = dict_name + L"_export.txt";
 
   COMDLG_FILTERSPEC filter[2] = {{txt_files_name.c_str(), L"*.txt"},
                                  {all_files_name.c_str(), L"*.*"}};
