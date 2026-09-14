@@ -171,6 +171,13 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
       return 0;
   }
   RimeSessionId session_id = (RimeSessionId)rime_api->create_session();
+  if (!session_id) {
+    // rime 初始化失败/维护中：建会话失败。返回 0 让客户端感知失败
+    // （客户端 session_id=0 即未激活），下次 StartSession 自动重试；
+    // 不再把 0 会话入表，避免后续 rime 调用全链路静默失败
+    LOG(ERROR) << "AddSession: rime create_session failed.";
+    return 0;
+  }
   if (m_global_ascii_mode) {
     for (const auto& pair : m_session_status_map) {
       if (pair.first) {
