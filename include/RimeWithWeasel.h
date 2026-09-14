@@ -136,10 +136,18 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                        uintptr_t session_id,
                        const char* message_type,
                        const char* message_value);
+  // 消息暂存与互斥为 static：OnNotify 运行于 rime 线程（含部署线程），
+  // 不解引用 this，handler 析构后被 librime 回调亦安全；单实例服务进程
+  // 内跨实例共享无实际影响
   static std::string m_message_type;
   static std::string m_message_value;
   static std::string m_message_label;
   static std::string m_option_name;
+  // 非递归锁，OnNotify 与 _ShowMessage/_UpdateUI/_Respond 共用：
+  // 持锁段内不得调用会同步触发 OnNotify 的 rime API。当前持锁段内唯一的
+  // rime 调用 get_state_label 为纯配置查询（librime：
+  // RimeGetStateLabel → Service::GetSession + Switches::GetStateLabel），
+  // 不派发通知，无自锁路径
   static std::mutex m_notifier_mutex;
   SessionStatusMap m_session_status_map;
   bool m_current_dark_mode;
