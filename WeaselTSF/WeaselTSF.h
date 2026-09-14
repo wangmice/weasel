@@ -3,6 +3,7 @@
 #include "Globals.h"
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
+#include <ResponseParser.h>
 
 class CCandidateList;
 class CLangBarItemButton;
@@ -279,6 +280,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
       std::make_shared<weasel::Context>();
   weasel::Config _config;
   UINT64 _parsedSerial = 0;
+  // 复用的响应解析器：deserializer 注册表只建一次（Require 幂等），
+  // 每次解析前重指目标；目标指针仅在 _ConsumeResponse 执行期间有效
+  weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr,
+                                 nullptr};
 
   // guidatom for the display attibute. 0 = RegisterGUID failed or not yet
   // run; guards the SetValue in _SetCompositionDisplayAttributes.

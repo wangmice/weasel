@@ -405,10 +405,18 @@ BOOL WeaselTSF::_InsertText(com_ptr<ITfContext> pContext,
 bool WeaselTSF::_ConsumeResponse(LPWSTR buffer, DWORD length) {
   std::wstring commit;
   weasel::Config config;
+  // Context 仍按键新建：排队中的编辑会话（如 CInlinePreeditEditSession）
+  // 持有旧快照的 shared_ptr 副本，复用同一分配会让异步会话读到后续键的
+  // 数据（01885fc 的快照隔离语义，承重，保留）
   auto context = std::make_shared<weasel::Context>();
-  weasel::ResponseParser parser(&commit, context.get(), &_status, &config,
-                                &_cand->style());
-  bool ok = parser(buffer, length);
+  // 复用成员 parser 免去每键重建 deserializer 注册表；各 deserializer
+  // 均在 Store 时经 m_pTarget->p_* 读目标，解析前重指即可
+  _parser.p_commit = &commit;
+  _parser.p_context = context.get();
+  _parser.p_status = &_status;
+  _parser.p_config = &config;
+  _parser.p_style = &_cand->style();
+  bool ok = _parser(buffer, length);
   if (!ok)
     return false;
   _pendingCommit.append(commit);

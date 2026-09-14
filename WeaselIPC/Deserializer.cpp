@@ -37,6 +37,11 @@ bool Deserializer::Require(std::wstring const& action,
   if (!pTarget)
     return false;
 
+  // 已注册的动作直接复用：解析器跨响应复用时免去重建注册表（约每键
+  // 12 次堆分配）。一次性解析器表为空不会命中，语义不变
+  if (pTarget->deserializers.find(action) != pTarget->deserializers.end())
+    return true;
+
   auto const& factories = GetFactories();
   auto i = factories.find(action);
   if (i == factories.end()) {
