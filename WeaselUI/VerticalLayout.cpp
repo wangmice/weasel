@@ -8,7 +8,8 @@ void weasel::VerticalLayout::DoLayout(CDCHandle dc, PDWR pDWR) {
   int width = 0, height = real_margin_y;
 
   if ((_style.hilited_mark_color & 0xff000000)) {
-    CSize sg;
+    // candidates_count==0 时下方不测量：零初始化，mark_* 读到确定值
+    CSize sg{0, 0};
     if (candidates_count) {
       if (_style.mark_text.empty())
         GetTextSizeDW(L"|", 1, pDWR->pTextFormat, pDWR, &sg);
