@@ -66,6 +66,7 @@ CLangBarItemButton::CLangBarItemButton(WeaselTSF* pTextService,
 }
 
 CLangBarItemButton::~CLangBarItemButton() {
+  _DestroyCachedIcons();
   DllRelease();
 }
 
@@ -180,6 +181,42 @@ STDMETHODIMP CLangBarItemButton::OnMenuSelect(UINT wID) {
   return S_OK;
 }
 
+// 命中缓存返回 master 的副本；路径变化或首次调用时 LR_LOADFROMFILE
+// 重载 master。调用方（语言栏）按 MSDN 约定 DestroyIcon 销毁返回值，
+// 因此每次都返回 CopyIcon 副本，绝不能把 master 本身交出去
+HICON CLangBarItemButton::_LoadCachedFileIcon(const std::wstring& path,
+                                              std::wstring& cachedPath,
+                                              HICON& cachedIcon) {
+  if (cachedIcon == NULL || cachedPath != path) {
+    if (cachedIcon != NULL) {
+      DestroyIcon(cachedIcon);
+      cachedIcon = NULL;
+      cachedPath.clear();
+    }
+    cachedIcon = (HICON)LoadImageW(NULL, path.c_str(), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON),
+                                   GetSystemMetrics(SM_CYSMICON),
+                                   LR_LOADFROMFILE);
+    if (cachedIcon == NULL)
+      return NULL;
+    cachedPath = path;
+  }
+  return CopyIcon(cachedIcon);
+}
+
+void CLangBarItemButton::_DestroyCachedIcons() {
+  if (_zhung_icon != NULL) {
+    DestroyIcon(_zhung_icon);
+    _zhung_icon = NULL;
+    _zhung_icon_path.clear();
+  }
+  if (_ascii_icon != NULL) {
+    DestroyIcon(_ascii_icon);
+    _ascii_icon = NULL;
+    _ascii_icon_path.clear();
+  }
+}
+
 STDMETHODIMP CLangBarItemButton::GetIcon(HICON* phIcon) {
   if (ascii_mode) {
     if (_style.current_ascii_icon.empty())
@@ -187,20 +224,16 @@ STDMETHODIMP CLangBarItemButton::GetIcon(HICON* phIcon) {
                                   GetSystemMetrics(SM_CXSMICON),
                                   GetSystemMetrics(SM_CYSMICON), LR_SHARED);
     else
-      *phIcon =
-          (HICON)LoadImageW(NULL, _style.current_ascii_icon.c_str(), IMAGE_ICON,
-                            GetSystemMetrics(SM_CXSMICON),
-                            GetSystemMetrics(SM_CYSMICON), LR_LOADFROMFILE);
+      *phIcon = _LoadCachedFileIcon(_style.current_ascii_icon,
+                                    _ascii_icon_path, _ascii_icon);
   } else {
     if (_style.current_zhung_icon.empty())
       *phIcon = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(IDI_ZH), IMAGE_ICON,
                                   GetSystemMetrics(SM_CXSMICON),
                                   GetSystemMetrics(SM_CYSMICON), LR_SHARED);
     else
-      *phIcon =
-          (HICON)LoadImageW(NULL, _style.current_zhung_icon.c_str(), IMAGE_ICON,
-                            GetSystemMetrics(SM_CXSMICON),
-                            GetSystemMetrics(SM_CYSMICON), LR_LOADFROMFILE);
+      *phIcon = _LoadCachedFileIcon(_style.current_zhung_icon,
+                                    _zhung_icon_path, _zhung_icon);
   }
   return (*phIcon == NULL) ? E_FAIL : S_OK;
 }

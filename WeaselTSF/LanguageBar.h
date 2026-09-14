@@ -36,6 +36,13 @@ class CLangBarItemButton : public ITfLangBarItemButton, public ITfSource {
   void SetLangbarStatus(DWORD dwStatus, BOOL fSet);
 
  private:
+  // 自定义图标文件缓存：master 句柄归本对象所有，GetIcon 每次返回
+  // CopyIcon 副本（语言栏按 MSDN 约定销毁返回值）；路径变化即重载
+  HICON _LoadCachedFileIcon(const std::wstring& path,
+                            std::wstring& cachedPath,
+                            HICON& cachedIcon);
+  void _DestroyCachedIcons();
+
   GUID _guid;
   // Non-owning back pointer: its lifetime is strictly nested in WeaselTSF;
   // holding a COM reference here would create a reference cycle.
@@ -47,4 +54,8 @@ class CLangBarItemButton : public ITfLangBarItemButton, public ITfSource {
   weasel::UIStyle& _style;
   std::wstring _current_schema_zhung_icon;
   std::wstring _current_schema_ascii_icon;
+  std::wstring _zhung_icon_path;
+  HICON _zhung_icon = NULL;
+  std::wstring _ascii_icon_path;
+  HICON _ascii_icon = NULL;
 };
