@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <string>
 #include <sstream>
+#include <cstdio>
 #include <wrl/client.h>
 using namespace Microsoft::WRL;
 
@@ -193,6 +194,40 @@ inline std::basic_string<CharT> unescape_string(
 
 // resource
 std::string GetCustomResource(const char* name, const char* type);
+
+// ---- 候选 label 格式化（label_text_format）----
+// 格式串可来自用户 yaml（style/label_format），却始终只以单个字符串参数
+// 执行格式化：除 %s / %% 外的说明符（%d、%n、尾部孤立 %…）以及第二个 %s
+// 都与实参不匹配，属未定义行为，一律回退默认格式 %s.（UIStyle 的默认值）
+inline bool IsSafeLabelTextFormat(const wchar_t* format) {
+  bool has_conversion = false;
+  for (const wchar_t* p = format; *p != L'\0'; ++p) {
+    if (*p != L'%')
+      continue;
+    const wchar_t next = p[1];  // 尾部孤立 % 时为 L'\0'，同样判非法
+    if (next == L's') {
+      if (has_conversion)
+        return false;  // 多个 %s：第二个起没有对应实参
+      has_conversion = true;
+    } else if (next != L'%') {
+      return false;
+    }
+    ++p;  // 跳过说明符的第二个字符（%% 时跳过被转义的 %）
+  }
+  return true;
+}
+
+// 有界格式化：结果超长按 127 个 wchar 截断（_TRUNCATE 截断返回 -1，不触发
+// CRT invalid-parameter 终止；swprintf_s 会直接终止进程），格式非法回退 %s.
+inline std::wstring FormatLabelText(const wchar_t* format,
+                                    const std::wstring& label) {
+  if (!format)
+    format = L"%s.";
+  const wchar_t* safe = IsSafeLabelTextFormat(format) ? format : L"%s.";
+  wchar_t buffer[128];
+  _snwprintf_s(buffer, _TRUNCATE, safe, label.c_str());
+  return std::wstring(buffer);
+}
 
 inline std::wstring get_weasel_ime_name() {
   LANGID langId = GetUserDefaultUILanguage();

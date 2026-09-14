@@ -780,9 +780,8 @@ bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
 inline std::string _GetLabelText(const std::vector<Text>& labels,
                                  int id,
                                  const wchar_t* format) {
-  wchar_t buffer[128];
-  swprintf_s<128>(buffer, format, labels.at(id).str.c_str());
-  return wtou8(std::wstring(buffer));
+  // 有界安全格式化：超长截断、非法格式回退（B23，见 WeaselUtility.h）
+  return wtou8(FormatLabelText(format, labels.at(id).str));
 }
 
 bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id,
@@ -937,11 +936,10 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id,
           for (auto i = 0; i < ctx.menu.num_candidates; i++) {
             std::wstring label_w;
             if (label_valid) {
-              wchar_t buf_lbl[128];
-              swprintf_s<128>(buf_lbl,
-                              session_status.style.label_text_format.c_str(),
-                              cinfo.labels.at(i).str.c_str());
-              label_w = std::wstring(buf_lbl);
+              // 有界安全格式化：超长截断、非法格式回退（B23，见 WeaselUtility.h）
+              label_w = FormatLabelText(
+                  session_status.style.label_text_format.c_str(),
+                  cinfo.labels.at(i).str);
             }
             std::wstring comment_w =
                 comment_valid ? cinfo.comments.at(i).str : std::wstring();

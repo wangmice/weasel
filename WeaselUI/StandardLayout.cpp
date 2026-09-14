@@ -8,9 +8,8 @@ std::wstring StandardLayout::GetLabelText(const std::vector<Text>& labels,
                                           const wchar_t* format) const {
   // labels 可能短于 candies：越界按空标签处理（见 Layout::TextAt）
   const std::wstring& label = TextAt(labels, id).str;
-  wchar_t buffer[128];
-  swprintf_s<128>(buffer, format, label.c_str());
-  return std::wstring(buffer);
+  // 有界安全格式化：超长截断、非法格式回退（B23，见 WeaselUtility.h）
+  return FormatLabelText(format, label);
 }
 
 void weasel::StandardLayout::GetTextSizeDW(

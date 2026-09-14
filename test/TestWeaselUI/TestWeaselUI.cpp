@@ -12,10 +12,26 @@
 #include <boost/thread.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 
 static int g_failures = 0;
+
+/* B23: counted via _set_invalid_parameter_handler. The safe formatting path
+ * (_snwprintf_s + _TRUNCATE) must never raise it; the handler makes a
+ * regression (back to swprintf_s) fail the test loudly instead of killing
+ * the debug process with the "Buffer too small" assertion (repro_b23). */
+static int g_invalid_parameter_fired = 0;
+
+static void count_invalid_parameter(const wchar_t* /*expression*/,
+                                    const wchar_t* /*function*/,
+                                    const wchar_t* /*file*/,
+                                    unsigned int /*line*/,
+                                    uintptr_t /*reserved*/) {
+  ++g_invalid_parameter_fired;
+}
 
 static void check(bool ok, const char* what) {
   if (!ok) {
@@ -273,7 +289,39 @@ static void test_layout_failure_is_shielded(UiThread& t) {
         "B8: panel recovers after layout failures");
 }
 
+/* B23: label_text_format comes from user yaml (style/label_format) and the
+ * formatted label itself can exceed the 128-wchar buffer (long custom labels).
+ * Both must degrade gracefully: truncation for the overflow case (CRT asserts
+ * and terminates the process with plain swprintf_s, repro_b23), fallback to
+ * the default "%s." for format strings that do not match the single string
+ * argument (%d, %n, double %s, trailing lone %). */
+static void test_label_text_format_bounded() {
+  check(FormatLabelText(L"%s.", L"1") == L"1.", "B23: default %s. format");
+  check(FormatLabelText(L"%s", L"abc") == L"abc", "B23: bare %s");
+  check(FormatLabelText(L"(%s)", L"5") == L"(5)", "B23: literals around %s");
+  check(FormatLabelText(L"%%", L"x") == L"%", "B23: %% escapes to a literal %");
+  check(FormatLabelText(L"", L"x").empty(), "B23: empty format is allowed");
+
+  // 超长 label（repro_b23 的 140 字符场景）：截断到 127 个 wchar，进程存活
+  std::wstring long_label(140, L'x');
+  std::wstring formatted = FormatLabelText(L"%s.", long_label);
+  check(formatted.size() == 127 && formatted == std::wstring(127, L'x'),
+        "B23: 140-char label truncated to 127 wchars, no CRT termination");
+
+  // 与唯一字符串参数不匹配的格式串：回退默认 %s.
+  check(FormatLabelText(L"%d", L"7") == L"7.", "B23: %d falls back to %s.");
+  check(FormatLabelText(L"%n", L"7") == L"7.", "B23: %n falls back to %s.");
+  check(FormatLabelText(L"%ls", L"7") == L"7.", "B23: %ls falls back to %s.");
+  check(FormatLabelText(L"abc%", L"7") == L"7.", "B23: trailing % falls back");
+  check(FormatLabelText(L"%s%s", L"7") == L"7.", "B23: double %s falls back");
+  check(FormatLabelText(nullptr, L"7") == L"7.", "B23: null format falls back");
+
+  check(g_invalid_parameter_fired == 0,
+        "B23: formatting never raises the CRT invalid parameter");
+}
+
 int main() {
+  _set_invalid_parameter_handler(count_invalid_parameter);
   UiThread t;
   boost::thread ui_thread([&t] { t.Run(); });
   t.NotifyReady();
@@ -289,6 +337,7 @@ int main() {
   test_hr_tolerates_s_false();
   test_layout_failure_is_shielded(t);
   test_mismatched_candidate_vectors(t);
+  test_label_text_format_bounded();
 
   t.RequestStop();
   check(ui_thread.timed_join(boost::posix_time::seconds(5)),
