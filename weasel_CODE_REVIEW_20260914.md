@@ -82,8 +82,8 @@
 | B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | ✔ | ✅ 已修复（116238a，批次2） |
 | B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | ✅ 已修复（a6d9e9b，批次9） |
 | B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | ✔ | ✅ 已修复（418d24a，批次11） |
-| B23 | P3 | bug | WeaselUI/StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | ✅ | 未修复 |
-| B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | ✅ 已修复（2ee9b36，批次3） |
+| B23 | P3 | bug | WeaselUI/StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | ✅ | ✅ 已修复（f96f9f2，批次19） |
+| B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | ✅ 结案（2ee9b36 首帧化 → 0da2dea 回退：panel 对象可复用于重建的 HWND，样式切换必须每帧执行；每帧成本仅一次样式比较，代码注释已写明。保留每帧实现） |
 | B25 | P3 | bug | WeaselPanel.cpp:1088-1091 | EndDraw 失败仍送无文字帧 | ✔ | ✅ 已修复（9df83ae，批次3） |
 | B26 | P3 | bug | DirectWriteResources.cpp:98-136 | init_font 忽略 wrap 形参，preedit 换行失效 | ✔ | ✅ 已修复（23d69ba，批次3） |
 | B27 | P3 | bug | FullScreenLayout.cpp:68-123 | AdjustFontPoint 永久污染共享字号 | ✔ | ✅ 已修复（d43914f，批次4） |
@@ -94,7 +94,7 @@
 | B32 | P3 | bug | RimeWithWeasel.cpp:177 | create_session 返回 0 未检查全链路静默失败 | ✔ | ✅ 已修复（b9d89f0，批次11） |
 | B33 | P3 | bug | RimeWithWeasel.cpp:394-417 | 非递归互斥自锁风险（待验证） | ❌（librime 源码佐证被推翻，见 §4 批次11） | 不修（有据，35b9789 留锁约束注释，批次11） |
 | B34 | P3 | bug | WeaselIPC/WeaselClientImpl.h:45 | session_id 跨线程非原子 | ⚠ | ✅ 已修复（090634b，批次10） |
-| B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | 未修复 |
+| B35 | P3 | bug | 多处 | 杂项边界（见 B 路报告 P3 表） | ✔ | ✅ 已修复（批次11③/10④⑦/19①②⑤⑥，杂项族全部完成） |
 | B36 | P3 | perf | include/WeaselUtility.h:144-184 | escape/unescape 每串一个 stringstream（每键 ~6N 次） | — | ✅ 已修复（53541b8，批次5） |
 | B37 | P3 | bug | WeaselUI/WeaselPanel.cpp | _DrawCandidates 的 comments.at(i)/GetLabelText 的 labels.at(id) 在向量短于 candies 时抛 out_of_range（批次3 测试中实际触发；现被 B8 防护兜住不再致命） | ✔（批次3 实测触发） | ✅ 已修复（9b71523，批次4） |
 
@@ -1032,3 +1032,15 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `0bd1141` fix(WeaselServer): remove the dead WeaselService SCM harness — K22②③。考证（②③一并裁决）：全仓 git grep 无任何 WeaselService 构造/Run() 调用（WeaselServer.cpp 仅 include 头文件；WEASEL_SERVICE_NAME "WeaselInputService" 除该类自身外零引用，安装器/install.nsi 均不注册该服务）；WeaselServer.exe 的 _tWinMain 从不调用 StartServiceCtrlDispatcher，即使外部把 exe 注册为 Windows 服务，SCM 也无法进入 ServiceMain——整类运行时不可达，属半成品死代码。上游 rime/weasel master 同样仅 include 不使用（WebFetch 2026-09-15 核对），为上游遗留残骸。按"删除死部分"处理：删 WeaselService.cpp/.h（-213 行），WeaselServer.cpp 的 include 换为直接 include WeaselServerApp.h（原经 WeaselService.h 传递获得，App 头自包含无循环），vcxproj/filters 同步移除条目，xmake `add_files("./*.cpp")` 自动收敛。②的 `boost::thread{...}` 临时对象与③的 Shutdown() 报 STOPPED 不停 app、_stoppedEvent 创建即弃均随整类消失。附带考证备注：boost::thread 析构语义为 detach（区别于 std::thread 的 terminate），原"析构即 terminate"表述不准，但代码不可达的死代码结论不受影响。验证：构建（release+debug，链接期证明无残余引用）+ git grep 全仓零引用。
 - K22④ 裁决**不修（随批次 9 重写消失）**。原 test/TestWeaselIPC.cpp:36-39 /console 分支 `return 0;` 不可达：批次 9（K20）重写后 _tmain 的 /console 分支为 `return console_main();`（可达），console_main 尾部 `return 0;` 在读循环正常退出后执行——原缺陷形态已不存在，无改动。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
+
+### 批次 19（2026-09-15）：B23、B35①②⑤⑥、B24 结案（WeaselUI P3 族）
+
+主题：WeaselUI 布局/面板 P3 族。B23 整项 + B35 的 ①②⑤⑥ 四个子项本批完成；B35 杂项族至此全部收口（③ 批次11、④⑦ 批次10）。B24 结案（无代码改动）。
+
+- `f96f9f2` fix(WeaselUI): bound label formatting and validate user format strings — B23。`swprintf_s<128>` 格式化候选 label：超长（140 字符参数，repro_b23 实测退出码 3）触发 CRT invalid-parameter 直接终止进程；且 `label_text_format` 直取用户 yaml（style/label_format），非常规格式符（%d/%n/%ls、尾部孤立 %、第二个 %s）与唯一字符串实参不匹配即 UB。修复：WeaselUtility.h 新增两个内联纯函数——`IsSafeLabelTextFormat`（校验：至多一个 %s、任意个 %%、其余说明符一律拒绝）与 `FormatLabelText`（`_snwprintf_s` + `_TRUNCATE` 有界格式化：超长按 127 wchar 截断返回 -1 不触发 invalid-parameter；非法格式回退 UIStyle 默认 `%s.`），三个调用点（StandardLayout::GetLabelText、RimeWithWeasel `_GetLabelText` 与 PREVIEW_ALL 块）统一走它。验证：TestWeaselUI 新增 test_label_text_format_bounded（13 项断言：140 字符截断不终止、各非法格式回退、%s/%%/空格式正常）并装 `_set_invalid_parameter_handler` 计数器（_TRUNCATE 路径根本不触发 handler，计数器兼作回归哨兵）；负向验证：本地临时还原 swprintf_s 实现，5 项断言 FAIL（handler 拦住终止，进程存活可报告失败），恢复后全绿。
+- `31ce111` fix(WeaselUI): bound the neighbor row/col lookup in round-info passes — B35①。HorizontalLayout 与 VHorizontalLayout::DoLayoutWithWrap 两个方向的圆角调整循环在 i==candidates_count-1 时读 `row_of_candidate[i+1]`/`col_of_candidate[i+1]`：count==MAX_CANDIDATES_COUNT(100) 时读下标 [100]，越过 `int[100]` 数组末尾（栈上裸数组，debug CRT 不插桩，运行时无告警）。修复：邻居查询加 `i + 1 < candidates_count` 守卫（最后一项受影响的圆角位已由循环上方显式赋值）。验证：TestWeaselUI 新增 test_max_candidates_round_info——恰 100 候选走横排窄 max_width 多行换行、竖排文本自动换列两个方向，三条布局+绘制全链路 settle 断言全过；负向验证按 _countof 心算说明（数组容量 100，未加守卫时 i==99 求值 [100]，裸数组无法运行期捕获）。
+- `86ecf2d` fix(WeaselUI): zero-init the mark-size CSize in all layout DoLayouts — B35②。三个布局（含 VHorizontalLayout::DoLayoutWithWrap 共 4 处）`CSize sg;` 未初始化，candidates_count==0 时跳过测量但仍读 `sg.cx/cy` 进 mark_width/mark_height（UB-but-benign，读值只喂给零候选时用不到的 base_offset）。统一 `CSize sg{0, 0};`。验证：构建 + 全量 TestWeaselUI 绿；count==0 路径读值经检查无下游消费，无可观察行为变化。
+- `ac3f9f7` fix(WeaselUI): keep surrogate pairs whole when abbreviating candidates — B35⑤。`_ApplyUpdate` 的候选缩写按 wchar 截断：截断点落在高/低代理中间产生孤立代理（emoji 变 U+FFFD），尾部固定取末一个 wchar 又切开末尾增补平面字符。WeaselUtility.h 新增 `AbbreviateText`：截断点拆对时退一个 wchar（缩写短一位但码点完整），末尾为低代理时连同高代理一起取；BMP 输入与旧表达式逐字节一致。验证：TestWeaselUI 新增 test_candidate_abbreviation_surrogate_safe（5 项断言，U+1F600 双向拆对场景）；负向验证：本地临时还原旧逐 wchar 截断，恰好两条代理对断言 FAIL、三条 BMP 断言仍绿，恢复后全绿。
+- `1fe6fc6` fix(WeaselUI): retry custom status icon loads instead of caching failures — B35⑥。`LoadIconNecessary` 在加载前就缓存路径：文件暂缺/损坏时 LoadImage 失败被缓存到路径变化为止，用户中途补装图标文件也一直不显示（且 CIcon 被 NULL 化成空图标）。修复：仅成功才缓存路径，失败保留当前图标、下次绘制自动重试；调用频率已核对——该函数在 DoPaint 内（状态图标可见时每次绘制刷新走到，随用户输入触发而非动画循环），失败重试是一次落空的文件打开，开销可忽略。模板参数换成具体类型（编译期类型检查），空路径回退内置资源图标的行为保留。验证：TestWeaselUI 新增 test_missing_status_icon_files（四个自定义图标路径全缺失 + ascii 模式显示状态图标，两次布局+绘制 settle）；"文件补上后恢复显示"不可经公共 API 观察（CIcon 状态在 panel 内部），按代码审阅确认 loaded_path 仅在加载成功时赋值。
+- B24 结案（无代码改动）。批次 3 的 `2ee9b36` 把 DoPaint 首行的 `ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED)` 改为首帧一次性，后被 `0da2dea` 回退：panel 对象可复用于重建的 HWND（UI::Create 复用对象重建窗口等路径），沿用"已切换"标志会让新窗口缺 WS_EX_LAYERED，UpdateLayeredWindow 失败且宿主（如 Electron）吞掉 WM_PAINT 时候选框全黑。样式切换必须每帧执行；ModifyStyleEx 内部先比较再写入，稳态每帧只多一次 GetWindowLong。现实现（WeaselPanel.cpp DoPaint 首行）已带完整注释，保留每帧实现，本项按"结案"处理。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。TestWeaselUI 现 45 项断言（批次 19 新增 23 项）。
