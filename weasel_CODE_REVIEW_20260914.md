@@ -50,7 +50,7 @@
 | K17 | P2 | WeaselTSF/CandidateList.cpp:160-163 | SetSelection 不校验 nIndex（下游裸数组越界，= B9 同族） | ✔ | ✅ 已修复（41dbd23，批次6） |
 | K18 | P2 | WeaselDeployer/Configurator.cpp:103-106 | && 短路：取消方案对话框静默跳过 UI 风格设置 | ✔ | ✅ 已修复（29c1a62，批次7） |
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
-| K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | 未修复 |
+| K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | ✅ 已修复（63d3cae，批次9） |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | 未修复 |
 | K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 未修复 |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | 未修复 |
@@ -64,7 +64,7 @@
 | B2 | P2 | bug | WeaselServer/WeaselTrayIcon.cpp:40-53 | 托盘刷新在管道线程读 ui.style_/status_（= A9） | ✔ | ✅ 已修复（cef6c26（=A9），批次4） |
 | B3 | P2 | bug | WeaselUI/StandardLayout.cpp:98 | substr(start,end) 第二参误当长度（旧 V1 已复现，此处漏修） | ✅ | ✅ 已修复（22cf009，批次2） |
 | B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | ✅ 已修复（6d43edc，批次2） |
-| B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | 未修复 |
+| B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | ✅ 已修复（8083f76，批次9） |
 | B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | ✔ | 未修复 |
 | B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | ❌ | 未修复 |
 | B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | ✅ 已修复（22cf921+7a67c20，批次3） |
@@ -74,13 +74,13 @@
 | B12 | P2 | perf | WeaselUI/WeaselPanel.cpp 等 | 每键整窗重算重绘：布局重建、双 layout、全幅模糊 | — | 未修复 |
 | B13 | P2 | perf | include/WeaselIPCData.h:103,166 | notequal/operator== 按值深拷贝候选向量（每键 6 份） | — | ✅ 已修复（a3d94fa，批次5） |
 | B14 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp:73-87 | explorer.exe 每键 detached 线程 + Sleep(100) | — | ✅ 已修复（ad4e3fa（含 B11c），批次4） |
-| B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | ✔ | 未修复 |
-| B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | ✅ | 未修复 |
+| B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | ✔ | ✅ 已修复（4d8777f，批次9） |
+| B16 | P3 | bug | include/PipeChannel.h:171-184 | body>64KB 时 failbit → 静默只发头不发 body | ✅ | ✅ 已修复（8314d82，批次9） |
 | B17 | P3 | bug | WeaselIPCServer/WeaselServerImpl.cpp:445-461 | Listen catch(...) 后无退避，管道创建持续失败时 100% CPU | ✔ | ✅ 已修复（7c086f0，批次1） |
 | B18 | P3 | bug | WeaselServerImpl.cpp:450-519 | worker 先于 _RegisterWorker 结束 → m_workers 残留已关闭句柄 | ✔ | ✅ 已修复（7aa084b，批次1） |
 | B19 | P3 | bug | WeaselUI/WeaselPanel.cpp:1261-1264 | MoveTo marshal 不检查 PostMessage 返回值泄漏 RECT | ✔ | ✅ 已修复（cc3507b，批次2） |
 | B20 | P3 | bug | WeaselIPC/Configurator.cpp:17-21 | 守卫检查 p_context 却解引用 p_config | ✔ | ✅ 已修复（116238a，批次2） |
-| B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | 未修复 |
+| B21 | P3 | bug | WeaselIPC/Deserializer.cpp:13-28 | s_factories 无锁懒初始化 | ✔ | ✅ 已修复（a6d9e9b，批次9） |
 | B22 | P3 | bug | RimeWithWeasel.cpp:549 等 | operator[] 向会话表插入死条目 | ✔ | 未修复 |
 | B23 | P3 | bug | WeaselUI/StandardLayout.cpp:6-12 等 | swprintf_s 超长/非法格式符 → CRT 直接终止进程 | ✅ | 未修复 |
 | B24 | P3 | bug | WeaselUI/WeaselPanel.cpp:1003 | DoPaint 每帧 ModifyStyleEx | ✔ | ✅ 已修复（2ee9b36，批次3） |
@@ -929,4 +929,13 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 
 ### 阶段性收尾（2026-09-14）
 
-应用户要求，修复工作到批次 8 为止（未做批次 9）。剩余未修复项见 §0 索引"未修复"标记，主要为：TSF 静态/线程安全族（K2/K3）、TIP 注册清理（K5）、字典管理对话框（K9/K10）、安装器残余（K13）、TSF P3 杂项族（K22/K24 及若干返回值问题）、IPC P3 族（B5/B6/B15/B16/B21/B23/B28/B31/B32/B33/B34/B35）、UI 性能大项（B12 模糊缓存/layout 复用、K21/K23/A15/A7）。
+应用户要求，修复工作在批次 8 后暂停（批次 9 后于 2026-09-15 补做，见下节）。剩余未修复项见 §0 索引"未修复"标记，主要为：TSF 静态/线程安全族（K2/K3）、TIP 注册清理（K5）、字典管理对话框（K9/K10）、安装器残余（K13）、TSF P3 杂项族（K22/K24 及若干返回值问题）、IPC P3 族（B5/B6/B15/B16/B21/B23/B28/B31/B32/B33/B34/B35）、UI 性能大项（B12 模糊缓存/layout 复用、K21/K23/A15/A7）。
+
+### 批次 9（2026-09-15）：B5、B21、B15、B16、K20（IPC 核心）
+
+- `8083f76` fix(WeaselIPC): log and drop malformed response archives instead of a modal box — B5（P2）。TryDeserialize 改收原始行、归档流/归档构造全部挪进 try，archive_exception 落 LOG(ERROR)（不再在宿主输入线程弹模态框）；_StoreCand 对 candies>100（对齐 UI 侧 MAX_CANDIDATES_COUNT）整体丢弃。TestResponseParser 新增 test_8（损坏/截断归档 + 101 候选用例）；负向验证：还原 MessageBoxA 则测试挂死在模态框（timeout 15s 捕获），去掉上限校验则 test_8 exit 1。
+- `a6d9e9b` fix(WeaselIPC): make the deserializer action registry init thread-safe — B21。s_factories 静态成员 + 无锁 empty() 检查 + Define 插入，改为函数内 static const map（C++11 magic statics 恰好一次初始化），删除无人使用的 Define API，注册表内容不变。TestResponseParser 新增 test_9（8 线程起跑线屏障后并发首次构造解析，置于 main 首位保证进程首次构造发生在多线程）；负向验证：还原旧竞态代码 50 次运行 1 次失败（UB 概率性复现），修复后 50/50 通过。
+- `8314d82` fix(WeaselIPC): fail explicitly when a request body overflows the send buffer — B16。_Send 检测暂存体 tellp()==-1（wbufferstream failbit）即清暂存、LOG(ERROR) 并抛 ERROR_MORE_DATA，不再静默只发头；顺带删除不可达的 buff_size 钳位。TestPipeChannel 新增超限体用例（必须抛错、零投递、通道可继续用）；负向验证：还原旧行为两条断言 FAIL（静默成功 + 头部已投递）。
+- `4d8777f` fix(WeaselIPC): drop staged request bodies on every Transact failure — B15。_Ensure 失败分支抛错前 ClearBufferStream，mid-request catch 在 _Reconnect 前同样清理——任何 Transact 失败后 TSS 通道状态干净，失败请求的暂存体不再拼进下一次 START_SESSION 或搭车无体命令。TestPipeChannel 新增双失败模式用例（服务端不可达 / 连接中途断开），各自重试的 START_SESSION 服务端必须恰好收到一份客户端信息（重试按真实 StartSession 语义逐次重暂存）；负向验证：还原清理逻辑两条"恰好一份"断言 FAIL（双份 body）。
+- `63d3cae` fix(WeaselIPC): match the RequestHandler signatures in the test server — K20（P2）。TestRequestHandler 四个方法改为与基类逐字一致的签名（DWORD/EatLine）并加 override（签名漂移变编译错误）；AddSession 经 eat 回调推送状态行。默认（无参）模式改为进程内自测：经 RequestHandler 基类指针调用（与 ServerImpl::OnStartSession 同形），断言会话计数 1→2 增长、FindSession 应答、两个 eat 回调生效——旧默认模式只连当时在跑的服务端、从不触达本 handler（且本机有常驻 WeaselServer.exe，exit 0 依赖环境）。手动 harness 保留为 /start /stop /console /client；负向验证：还原隐藏签名 4 条断言 FAIL、exit 1。
+- 构建：release/debug 全量 build ok；9 个测试目标全过（TestPipeChannel 53 用例；TestResponseParser 9 组；TestWeaselIPC 自测 7 断言且不再依赖常驻服务端）。
