@@ -11,7 +11,7 @@ class ClientImpl {
   ClientImpl();
   ~ClientImpl();
 
-  bool Connect(ServerLauncher const& launcher);
+  bool Connect();
   void Disconnect();
   void ShutdownServer();
   void StartSession();

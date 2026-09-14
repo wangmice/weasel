@@ -95,9 +95,6 @@ typedef std::function<bool(LPWSTR buffer, DWORD length)> ResponseHandler;
 // 事件處理函數
 typedef std::function<bool()> CommandHandler;
 
-// 啟動服務進程之物件
-typedef CommandHandler ServerLauncher;
-
 // IPC實現類聲明
 
 class ClientImpl;
@@ -110,8 +107,8 @@ class Client {
   Client();
   virtual ~Client();
 
-  // 连接到服务，必要时启动服务进程
-  bool Connect(ServerLauncher launcher = 0);
+  // 连接到服务进程的管道（服务进程由 TSF 注册的 autostart 保证在位）
+  bool Connect();
   // 断开连接
   void Disconnect();
   // 终止服务

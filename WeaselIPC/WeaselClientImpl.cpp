@@ -41,7 +41,7 @@ void ClientImpl::_InitializeClientInfo() {
   is_ime = ends_with(path, L".ime");
 }
 
-bool ClientImpl::Connect(ServerLauncher const& launcher) {
+bool ClientImpl::Connect() {
   return channel.Connect();
 }
 
@@ -211,8 +211,8 @@ Client::~Client() {
     delete m_pImpl;
 }
 
-bool Client::Connect(ServerLauncher launcher) {
-  return m_pImpl->Connect(launcher);
+bool Client::Connect() {
+  return m_pImpl->Connect();
 }
 
 void Client::Disconnect() {

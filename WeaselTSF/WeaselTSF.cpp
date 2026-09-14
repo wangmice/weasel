@@ -225,7 +225,7 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
 
 void WeaselTSF::_Reconnect() {
   m_client.Disconnect();
-  m_client.Connect(NULL);
+  m_client.Connect();
   m_client.StartSession();
   _ConsumeResponseIfFresh();
 }
