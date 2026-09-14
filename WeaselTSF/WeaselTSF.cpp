@@ -8,7 +8,6 @@
 #include "CandidateList.h"
 #include "LanguageBar.h"
 #include "Compartment.h"
-#include "ResponseParser.h"
 
 static void error_message(const WCHAR* msg) {
   static DWORD next_tick = 0;
@@ -181,10 +180,7 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   _isToOpenClose = (_ToggleImeOnOpenClose == L"yes");
   if (m_client.Echo()) {
     m_client.ProcessKeyEvent(0);
-    weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
-    bool ok = m_client.GetResponseData(std::ref(parser));
-    if (ok)
-      _UpdateLanguageBar(_status);
+    _ConsumeResponseIfFresh();
   }
   return S_OK;
 }
@@ -231,11 +227,7 @@ void WeaselTSF::_Reconnect() {
   m_client.Disconnect();
   m_client.Connect(NULL);
   m_client.StartSession();
-  weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
-  bool ok = m_client.GetResponseData(std::ref(parser));
-  if (ok) {
-    _UpdateLanguageBar(_status);
-  }
+  _ConsumeResponseIfFresh();
 }
 
 static int count_server_process() {

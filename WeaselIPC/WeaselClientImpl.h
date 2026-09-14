@@ -28,6 +28,7 @@ class ClientImpl {
   void FocusOut();
   void TrayCommand(UINT menuId);
   bool GetResponseData(ResponseHandler const& handler);
+  UINT64 ResponseSerial() { return channel.ResponseSerial(); }
 
   /* True while a session is established on a live pipe connection */
   bool IsSessionActive() const { return _Active(); }

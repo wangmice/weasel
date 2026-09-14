@@ -399,14 +399,45 @@ BOOL WeaselTSF::_InsertText(com_ptr<ITfContext> pContext,
   return TRUE;
 }
 
+/* Consume Server Response */
+bool WeaselTSF::_ConsumeResponse(LPWSTR buffer, DWORD length) {
+  std::wstring commit;
+  weasel::Config config;
+  auto context = std::make_shared<weasel::Context>();
+  weasel::ResponseParser parser(&commit, context.get(), &_status, &config,
+                                &_cand->style());
+  bool ok = parser(buffer, length);
+  if (!ok)
+    return false;
+  _pendingCommit.append(commit);
+  _context = std::move(context);
+  _config = config;
+  // 语言栏/输入指示随解析即时更新，不依赖可能被排队延迟的编辑会话
+  _UpdateLanguageBar(_status);
+  return true;
+}
+
+void WeaselTSF::_ConsumeResponseIfFresh() {
+  UINT64 serial = m_client.ResponseSerial();
+  if (serial == _parsedSerial)
+    return;
+  _parsedSerial = serial;
+  m_client.GetResponseData([this](LPWSTR buffer, DWORD length) {
+    return _ConsumeResponse(buffer, length);
+  });
+}
+
 void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext) {
+  // 应答缓冲会被下一次 Transact（下一键）覆盖，须在回调线程内先解析；
+  // 下面的会话只应用已解析的结果，异步排队不影响数据完整性
+  _ConsumeResponseIfFresh();
+
   HRESULT hr;
 
   _pEditSessionContext = pContext;
 
   _pEditSessionContext->RequestEditSession(
       _tfClientId, this, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
-  _async_edit = !!(hr == TF_S_ASYNC);
 }
 
 /* Composition State */

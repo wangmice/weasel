@@ -290,3 +290,7 @@ bool Client::IsSessionActive() {
 bool Client::GetResponseData(ResponseHandler handler) {
   return m_pImpl->GetResponseData(handler);
 }
+
+UINT64 Client::ResponseSerial() {
+  return m_pImpl->ResponseSerial();
+}

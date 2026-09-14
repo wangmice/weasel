@@ -16,9 +16,15 @@ class PipeChannelBase {
     std::unique_ptr<char[]> buffer;
     std::unique_ptr<Stream> write_stream;
     bool has_body;
+    // bumped each time a fresh response body is received into buffer;
+    // lets callers tell an unparsed response from a stale one (request
+    // staging or body-less replies reuse the same buffer)
+    UINT64 resp_serial;
 
     ChannelContext(size_t bs)
-        : buffer(std::make_unique<char[]>(bs)), has_body(false) {}
+        : buffer(std::make_unique<char[]>(bs)),
+          has_body(false),
+          resp_serial(0) {}
   };
 
   PipeChannelBase(std::wstring&& pn_cmd, size_t bs, SECURITY_ATTRIBUTES* s);
@@ -101,6 +107,9 @@ class PipeChannel : public PipeChannelBase {
     HANDLE* phandle = _GetPipeHandle();
     return !_Invalid(*phandle);
   }
+  // serial of the latest response body received on this thread; changes
+  // iff the buffer now holds an unread response
+  UINT64 ResponseSerial() { return _GetContext()->resp_serial; }
   void Disconnect() {
     HANDLE* phandle = _GetPipeHandle();
     _FinalizePipe(*phandle);

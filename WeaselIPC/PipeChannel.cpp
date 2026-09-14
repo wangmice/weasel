@@ -108,6 +108,7 @@ void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len) {
     if (!success) {
       _ThrowLastError;
     }
+    ctx->resp_serial++;  // a fresh response body now occupies the buffer
   }
   _GetContext()->has_body = false;
 }

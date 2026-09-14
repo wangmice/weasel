@@ -118,6 +118,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _ShowInlinePreedit(com_ptr<ITfContext> pContext,
                           const std::shared_ptr<weasel::Context> context);
   void _UpdateComposition(com_ptr<ITfContext> pContext);
+  bool _ConsumeResponse(LPWSTR buffer, DWORD length);
+  void _ConsumeResponseIfFresh();
   BOOL _IsComposing();
   BOOL _IsCurrentComposition(ITfComposition* pComposition);
   void _SetComposition(com_ptr<ITfComposition> pComposition);
@@ -212,7 +214,6 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _fTestKeyDownPending, _fTestKeyUpPending;
 
   com_ptr<ITfContext> _pEditSessionContext;
-  std::wstring _editSessionText;
 
   com_ptr<CCompartmentEventSink> _pKeyboardCompartmentSink;
   com_ptr<CCompartmentEventSink> _pConvertionCompartmentSink;
@@ -235,9 +236,16 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   /* IME status */
   weasel::Status _status;
 
+  /* 已解析、待编辑会话应用的服务器应答；解析发生在按键/UI 回调线程内
+   * （应答缓冲在下一次 Transact 前有效），会话可能异步排队、晚于解析 */
+  std::wstring _pendingCommit;  // commit 是事件流：应用前按序累积
+  std::shared_ptr<weasel::Context> _context =
+      std::make_shared<weasel::Context>();
+  weasel::Config _config;
+  UINT64 _parsedSerial = 0;
+
   // guidatom for the display attibute.
   TfGuidAtom _gaDisplayAttributeInput;
-  BOOL _async_edit = false;
   BOOL _committed = false;
   BOOL _isToOpenClose = false;
 };

@@ -150,6 +150,8 @@ class Client {
   void TrayCommand(UINT menuId);
   // 读取server返回的数据
   bool GetResponseData(ResponseHandler handler);
+  // 本线程最近一次收到的带体应答序号；前进意味着缓冲区中有一份未解析的应答
+  UINT64 ResponseSerial();
 
  private:
   ClientImpl* m_pImpl;
