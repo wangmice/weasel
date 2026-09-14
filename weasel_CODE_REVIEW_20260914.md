@@ -52,7 +52,7 @@
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | ✅ 已修复（63d3cae，批次9） |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | 未修复 |
-| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 未修复 |
+| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 🔧 批次13/14 修 TSF 子集（Deployer/Setup/Server 子项见批次16-18） |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | 未修复 |
 | K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 不修（有据，上游一致/防串扰设计，见 §4 批次12） |
 
@@ -976,3 +976,14 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `1ddc53d` fix(WeaselTSF): handle ToUnicodeEx surrogate pairs and dead keys in the fallback — K22③。核对 MSDN（ToUnicodeEx，2026-09-15）：返回值 <0 为死键（buf 只是死键字符的 spacing 版本，非本键翻译）、>0 为写入的 UTF-16 码元数、"布局可能以代理对返回增补字符"。修复：`ret==2` 且 buf[0..1] 构成合法代理对时合成完整码位作为 keycode（与单字符路径同为"码位即 keycode"语义）；死键与"死键无法组合返回两个非代理码元"的场合均按未知键处理（ret==-1 原本即落 false 分支，注释写明契约；死键残留双码元场景维持现状不变）。死键/代理对依赖真实键盘布局无法在单测模拟（TestKeyEvent 布局无关约束），验证：文档契约论证 + 构建 + 既有 18 项断言全绿。
 - K22 行状态未改：本批完成其 TSF 子集 3 组（Composition/EditSession 返回值、Compartment Advise 覆盖、KeyEvent ToUnicodeEx），族内其余（TextEditSink 清理跳过、KeyEventSink pending 挂起、dllmain 吞异常、WeaselService/WeaselServer/WeaselSetup/WeaselDeployer 各项）归批次 14。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（原 10 个 + 新增 TestRegisterTipKeys，run_tests.sh 已同步）。
+
+### 批次 14（2026-09-15）：K22④⑤⑥⑦⑧⑨（WeaselTSF K22 剩余）
+
+- `1b5b7bd` fix(WeaselTSF): unadvise each text sink cookie by its own validity — K22④。`_InitTextEditSink` 的清理块原以 `_dwTextEditSinkCookie != TF_INVALID_COOKIE` 为总开关：text-edit advise 失败（cookie 置 INVALID）而 layout advise 成功时（fRet=TRUE、context 保留），下轮清理整块跳过，已成功的 layout sink cookie 泄漏（旧 context 上的通知仍投递到本对象）。修复：任一 cookie 有效即进入清理，仅 unadvise 有效者，且两 cookie 一并复位（原代码漏复位 layout cookie）。验证：构建+推理（状态组合枚举：单边成功→必经新条件完成清理；双失败→双 INVALID 且 context 已置空，清理正确跳过；Deactivate 走 `pDocMgr==NULL` 同一清理路径）。TSF COM 无法控制台复现。
+- `3514b28` fix(WeaselTSF): reset the key-event pending state per key identity — K22⑤。考证：上游 rime/weasel master 的 KeyEventSink.cpp 与本仓逐字一致（同样布尔 pending，WebFetch 2026-09-15 核对），上游无修复可援引，按保守思路自行设计。缺陷机制：OnTestKeyDown eaten 后置 pending=TRUE，若应用吞掉该键不再回调 OnKeyDown，布尔 pending 永久挂起，后续每个 OnTestKeyDown 都被判重直接 eaten=TRUE、永不到达服务器（直到某次 key-up 才被交叉清除）。修复：pending 状态（down/up 两侧对称，struct PendingTestKey）记录置位键的 (wParam, lParam)，仅同一键事件的重复 test 判重（WORD 2010 单事件多次 OnTestKeyDown 去重保持）；任何不同键事件即开新周期——OnTestKeyDown 处理新键并重置 pending，OnKeyDown/OnKeyUp 对不同键正常 _ProcessKeyEvent。QQ2012（仅 OnKeyDown）、正常 test→key 配对、自动重复（repeat 的 lParam previous-state 位不同且配对 key 已消费 pending）行为均不变；极限场景：应用吞掉配对回调后**同键同 lParam** 再次按下仍会漏送一次（键身份信息量所限，远窄于原"全部后续键被吞"）。验证：构建+推理（全量状态机推演含上述 5 类序列）+ TestKeyEvent 18 项断言全绿（KeyEvent.cpp 未动，纯回归）。
+- K22⑥ 裁决**不修（重入环路不可达）**。考证：MSDN《ITfCompartment::SetValue》Return values 明列 E_UNEXPECTED 触发条件 "this method was called during a ITfCompartmentEventSink::OnChange notification"，《ITfCompartmentEventSink::OnChange》Remarks 亦写明 "SetValue will return E_UNEXPECTED if called from within this notification"（2026-09-15 核对，两页互证）。核对当前实现：OPENCLOSE 处理器内唯一的自管写入是 `_SetKeyboardOpen(true)`（Compartment.cpp，写入的正是正在通知的同一 OPENCLOSE compartment），TSF 对该写入直接返回 E_UNEXPECTED、不落值、不再触发 sink——"写触发自己 sink"的重入环路在协议层即被阻断，写前比较现值无从谈起（写本身就不发生）。上游 master 同位置代码逐字一致。附带发现（超出本项，记录备查）：这意味着 `ToggleImeOnOpenClose != yes` 模式下"翻 ascii 后强制重开键盘"的写入恒被 TSF 拒绝且返回值被忽略——属功能性缺陷（键盘实际不会重开）而非重入崩溃，修复需把写延迟到 OnChange 返回之后（投递消息等），留待后续批次。验证：文档契约论证 + 构建。
+- `03fc270` fix(WeaselTSF): keep host crash reporting alive in the exception filter — K22⑦。考证：过滤器用途是向 `%TEMP%\rime.weasel` 写 minidump 供小狼毫崩溃诊断（上游 master 同代码同返回值，非本仓引入）；原返回 EXCEPTION_EXECUTE_HANDLER 使**任意宿主进程**异常（含与 weasel 无关的崩溃）被吞——进程静默终止、WER/宿主自身崩溃上报链全部失效。修复（按最小改动）：保留 minidump 记录，返回值改 EXCEPTION_CONTINUE_SEARCH 让宿主/WER 链继续处理。未采用"转发宿主旧过滤器"方案：旧过滤器指针可能随宿主 DLL 卸载而悬空，在崩溃回调里二次崩溃风险更大。验证：构建+推理（按 MSDN SetUnhandledExceptionFilter 返回值语义；过滤器为进程级末端回调，无单测入口）。
+- `1c8406b` refactor(WeaselTSF): remove unused GetActiveProfileLangId — K22⑧。git grep 全仓（含 test/）零调用，static 函数纯删除；其 CComPtr/ITfInputProcessorProfileMgr 用法为该文件唯一，无连带清理。验证：构建（编译期证明无引用）。
+- `fb689b8` refactor(WeaselTSF): remove unused CCandidateList::UpdateStyle — K22⑨。git grep 全仓（含 test/）零调用，函数+声明删除；style 变更实际经 StartUI 重建 UI 时落入（与审查注记一致），git 历史可找回。验证：构建（编译期证明无引用）。
+- K22 的 TSF 部分全部收口（批次 13 ①②③ + 本批 ④-⑨，其中 ⑥ 裁决不修）；§0 行状态改 🔧。族内 Deployer/Setup/Server 侧子项（user_name[20]、Deployer 静默退出、CustomInstall detached 线程、SetEnvironmentVariable throw、WeaselService 死代码等）归批次 16/17/18。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
