@@ -60,7 +60,7 @@ bool ClientImpl::ProcessKeyEvent(KeyEvent const& keyEvent) {
     return false;
 
   LRESULT ret =
-      _SendMessage(WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, session_id);
+      _SendMessage(WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, _SessionId());
   return ret != 0;
 }
 
@@ -68,7 +68,7 @@ bool ClientImpl::CommitComposition() {
   if (!_Active())
     return false;
 
-  LRESULT ret = _SendMessage(WEASEL_IPC_COMMIT_COMPOSITION, 0, session_id);
+  LRESULT ret = _SendMessage(WEASEL_IPC_COMMIT_COMPOSITION, 0, _SessionId());
   return ret != 0;
 }
 
@@ -76,7 +76,7 @@ bool ClientImpl::ClearComposition() {
   if (!_Active())
     return false;
 
-  LRESULT ret = _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, session_id);
+  LRESULT ret = _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId());
   return ret != 0;
 }
 
@@ -84,7 +84,7 @@ bool ClientImpl::SelectCandidateOnCurrentPage(size_t index) {
   if (!_Active())
     return false;
   LRESULT ret = _SendMessage(WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, index,
-                             session_id);
+                             _SessionId());
   return ret != 0;
 }
 
@@ -92,14 +92,14 @@ bool ClientImpl::HighlightCandidateOnCurrentPage(size_t index) {
   if (!_Active())
     return false;
   LRESULT ret = _SendMessage(WEASEL_IPC_HIGHLIGHT_CANDIDATE_ON_CURRENT_PAGE,
-                             index, session_id);
+                             index, _SessionId());
   return ret != 0;
 }
 
 bool ClientImpl::ChangePage(bool backward) {
   if (!_Active())
     return false;
-  LRESULT ret = _SendMessage(WEASEL_IPC_CHANGE_PAGE, backward, session_id);
+  LRESULT ret = _SendMessage(WEASEL_IPC_CHANGE_PAGE, backward, _SessionId());
   return ret != 0;
 }
 
@@ -126,20 +126,20 @@ void ClientImpl::UpdateInputPosition(RECT const& rc) {
   int height = max(0, min(127, (rc.bottom - rc.top) >> hi_res));
   DWORD compressed_rect = ((hi_res & 0x01) << 31) | ((height & 0x7f) << 24) |
                           ((top & 0xfff) << 12) | (left & 0xfff);
-  _SendMessage(WEASEL_IPC_UPDATE_INPUT_POS, compressed_rect, session_id);
+  _SendMessage(WEASEL_IPC_UPDATE_INPUT_POS, compressed_rect, _SessionId());
 }
 
 void ClientImpl::FocusIn() {
   DWORD client_caps = 0; /* TODO */
-  _SendMessage(WEASEL_IPC_FOCUS_IN, client_caps, session_id);
+  _SendMessage(WEASEL_IPC_FOCUS_IN, client_caps, _SessionId());
 }
 
 void ClientImpl::FocusOut() {
-  _SendMessage(WEASEL_IPC_FOCUS_OUT, 0, session_id);
+  _SendMessage(WEASEL_IPC_FOCUS_OUT, 0, _SessionId());
 }
 
 void ClientImpl::TrayCommand(UINT menuId) {
-  _SendMessage(WEASEL_IPC_TRAY_COMMAND, menuId, session_id);
+  _SendMessage(WEASEL_IPC_TRAY_COMMAND, menuId, _SessionId());
 }
 
 void ClientImpl::StartSession() {
@@ -148,30 +148,30 @@ void ClientImpl::StartSession() {
 
   _WriteClientInfo();
   UINT ret = _SendMessage(WEASEL_IPC_START_SESSION, 0, 0);
-  session_id = ret;
+  _SetSessionId(ret);
 }
 
 void ClientImpl::EndSession() {
-  _SendMessage(WEASEL_IPC_END_SESSION, 0, session_id);
-  session_id = 0;
+  _SendMessage(WEASEL_IPC_END_SESSION, 0, _SessionId());
+  _SetSessionId(0);
 }
 
 void ClientImpl::StartMaintenance() {
   _SendMessage(WEASEL_IPC_START_MAINTENANCE, 0, 0);
-  session_id = 0;
+  _SetSessionId(0);
 }
 
 void ClientImpl::EndMaintenance() {
   _SendMessage(WEASEL_IPC_END_MAINTENANCE, 0, 0);
-  session_id = 0;
+  _SetSessionId(0);
 }
 
 bool ClientImpl::Echo() {
   if (!_Active())
     return false;
 
-  UINT serverEcho = _SendMessage(WEASEL_IPC_ECHO, 0, session_id);
-  return (serverEcho == session_id);
+  UINT serverEcho = _SendMessage(WEASEL_IPC_ECHO, 0, _SessionId());
+  return (serverEcho == _SessionId());
 }
 
 bool ClientImpl::GetResponseData(ResponseHandler const& handler) {
@@ -199,7 +199,7 @@ LRESULT ClientImpl::_SendMessage(WEASEL_IPC_COMMAND Msg,
   } catch (...) {
     // The session died with the connection; lazily re-established by the
     // next StartSession/EnsureServerConnected round.
-    session_id = 0;
+    _SetSessionId(0);
     return 0;
   }
 }

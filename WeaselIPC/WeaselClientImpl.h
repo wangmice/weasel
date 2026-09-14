@@ -2,6 +2,8 @@
 #include <WeaselIPC.h>
 #include <PipeChannel.h>
 
+#include <atomic>
+
 namespace weasel {
 
 class ClientImpl {
@@ -40,10 +42,20 @@ class ClientImpl {
   LRESULT _SendMessage(WEASEL_IPC_COMMAND Msg, DWORD wParam, DWORD lParam);
 
   bool _Connected() const { return channel.Connected(); }
-  bool _Active() const { return channel.Connected() && session_id != 0; }
+  bool _Active() const {
+    return channel.Connected() && _SessionId() != 0;
+  }
 
  private:
-  UINT session_id;
+  // Written by the connecting thread, read by every UI thread of the host
+  // process (the pipe handle itself is thread-local); relaxed load/store
+  // suffice: it is a plain value, no ordering is carried through it
+  std::atomic<UINT> session_id;
+
+  UINT _SessionId() const { return session_id.load(std::memory_order_relaxed); }
+  void _SetSessionId(UINT id) {
+    session_id.store(id, std::memory_order_relaxed);
+  }
   std::wstring app_name;
   bool is_ime;
 
