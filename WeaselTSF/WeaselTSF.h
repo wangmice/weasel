@@ -194,6 +194,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _UninitCompartment();
   HRESULT _HandleCompartment(REFGUID guidCompartment);
 
+  // K23c：_IsKeyboardDisabled 的禁用态缓存。KEYBOARD_DISABLED/
+  // EMPTYCONTEXT 是 context 级 compartment，sink 挂在焦点 top context
+  // 上，值变化置脏；context 变化（含 push/pop 改变 GetTop）时按身份
+  // 比对重挂。advise 失败则不缓存，退回逐键查询
+  HRESULT _OnKeyboardDisabledCompartmentChange(REFGUID guidCompartment);
+  void _RetargetKeyboardDisabledSinks(com_ptr<ITfContext> pContext);
+
   void _Reconnect();
   std::wstring _GetRootDir();
   // consecutive failed reconnect attempts (per instance, was a shared
@@ -229,6 +236,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   com_ptr<CCompartmentEventSink> _pKeyboardCompartmentSink;
   com_ptr<CCompartmentEventSink> _pConvertionCompartmentSink;
+
+  // 禁用态缓存（K23c）：_pDisabledCacheContext 为空表示不缓存
+  com_ptr<CCompartmentEventSink> _pKeyboardDisabledSink;
+  com_ptr<CCompartmentEventSink> _pEmptyContextSink;
+  com_ptr<ITfContext> _pDisabledCacheContext;
+  BOOL _fKeyboardDisabled = FALSE;
+  BOOL _fKeyboardDisabledDirty = TRUE;
 
   com_ptr<ITfComposition> _pComposition;
 

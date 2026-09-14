@@ -96,57 +96,99 @@ HRESULT CCompartmentEventSink::_Unadvise() {
 }
 
 BOOL WeaselTSF::_IsKeyboardDisabled() {
-  ITfCompartmentMgr* pCompMgr = NULL;
-  ITfDocumentMgr* pDocMgrFocus = NULL;
-  ITfContext* pContext = NULL;
-  BOOL fDisabled = FALSE;
+  com_ptr<ITfDocumentMgr> pDocMgrFocus;
+  com_ptr<ITfContext> pContext;
 
+  // 与原实现一致：无焦点文档/无 top context 视为禁用（不缓存：瞬态）
   if ((_pThreadMgr->GetFocus(&pDocMgrFocus) != S_OK) ||
-      (pDocMgrFocus == NULL)) {
-    fDisabled = TRUE;
-    goto Exit;
-  }
+      (pDocMgrFocus == NULL))
+    return TRUE;
+  if ((pDocMgrFocus->GetTop(&pContext) != S_OK) || (pContext == NULL))
+    return TRUE;
 
-  if ((pDocMgrFocus->GetTop(&pContext) != S_OK) || (pContext == NULL)) {
-    fDisabled = TRUE;
-    goto Exit;
-  }
+  // 焦点 top context 变化（文档切换、push/pop）时重挂 sink 并使缓存失效
+  if (pContext != _pDisabledCacheContext)
+    _RetargetKeyboardDisabledSinks(pContext);
 
+  // 命中缓存：sink 已挂在当前 context 上，且值未被事件置脏
+  if ((_pDisabledCacheContext != nullptr) && !_fKeyboardDisabledDirty)
+    return _fKeyboardDisabled;
+
+  BOOL fDisabled = FALSE;
+  com_ptr<ITfCompartmentMgr> pCompMgr;
   if (pContext->QueryInterface(IID_ITfCompartmentMgr, (void**)&pCompMgr) ==
       S_OK) {
-    ITfCompartment* pCompartmentDisabled;
-    ITfCompartment* pCompartmentEmptyContext;
-
     /* Check GUID_COMPARTMENT_KEYBOARD_DISABLED */
-    if (pCompMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_DISABLED,
-                                 &pCompartmentDisabled) == S_OK) {
-      VARIANT var;
-      if (pCompartmentDisabled->GetValue(&var) == S_OK) {
-        if (var.vt == VT_I4)  // Even VT_EMPTY, GetValue() can succeed
-          fDisabled = (BOOL)var.lVal;
+    {
+      com_ptr<ITfCompartment> pCompartmentDisabled;
+      if (pCompMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_DISABLED,
+                                   &pCompartmentDisabled) == S_OK) {
+        VARIANT var;
+        if (pCompartmentDisabled->GetValue(&var) == S_OK) {
+          if (var.vt == VT_I4)  // Even VT_EMPTY, GetValue() can succeed
+            fDisabled = (BOOL)var.lVal;
+        }
       }
-      pCompartmentDisabled->Release();
     }
 
     /* Check GUID_COMPARTMENT_EMPTYCONTEXT */
-    if (pCompMgr->GetCompartment(GUID_COMPARTMENT_EMPTYCONTEXT,
-                                 &pCompartmentEmptyContext) == S_OK) {
-      VARIANT var;
-      if (pCompartmentEmptyContext->GetValue(&var) == S_OK) {
-        if (var.vt == VT_I4)  // Even VT_EMPTY, GetValue() can succeed
-          fDisabled = (BOOL)var.lVal;
+    {
+      com_ptr<ITfCompartment> pCompartmentEmptyContext;
+      if (pCompMgr->GetCompartment(GUID_COMPARTMENT_EMPTYCONTEXT,
+                                   &pCompartmentEmptyContext) == S_OK) {
+        VARIANT var;
+        if (pCompartmentEmptyContext->GetValue(&var) == S_OK) {
+          if (var.vt == VT_I4)  // Even VT_EMPTY, GetValue() can succeed
+            fDisabled = (BOOL)var.lVal;
+        }
       }
-      pCompartmentEmptyContext->Release();
     }
-    pCompMgr->Release();
   }
 
-Exit:
-  if (pContext)
-    pContext->Release();
-  if (pDocMgrFocus)
-    pDocMgrFocus->Release();
+  // 仅当 sink 就绪（能收到后续置脏事件）才缓存，否则逐键查询
+  if (_pDisabledCacheContext != nullptr) {
+    _fKeyboardDisabled = fDisabled;
+    _fKeyboardDisabledDirty = FALSE;
+  }
   return fDisabled;
+}
+
+void WeaselTSF::_RetargetKeyboardDisabledSinks(
+    com_ptr<ITfContext> pContext) {
+  using namespace std::placeholders;
+
+  if (_pKeyboardDisabledSink)
+    _pKeyboardDisabledSink->_Unadvise();
+  if (_pEmptyContextSink)
+    _pEmptyContextSink->_Unadvise();
+  _pDisabledCacheContext = nullptr;
+  _fKeyboardDisabledDirty = TRUE;
+
+  if (pContext == nullptr)
+    return;
+
+  auto callback = std::bind(&WeaselTSF::_OnKeyboardDisabledCompartmentChange,
+                            this, _1);
+  if (!_pKeyboardDisabledSink)
+    _pKeyboardDisabledSink = new CCompartmentEventSink(callback);
+  if (!_pEmptyContextSink)
+    _pEmptyContextSink = new CCompartmentEventSink(callback);
+
+  HRESULT hrDisabled = _pKeyboardDisabledSink->_Advise(
+      (IUnknown*)pContext, GUID_COMPARTMENT_KEYBOARD_DISABLED);
+  HRESULT hrEmpty = _pEmptyContextSink->_Advise((IUnknown*)pContext,
+                                                GUID_COMPARTMENT_EMPTYCONTEXT);
+  if (SUCCEEDED(hrDisabled) && SUCCEEDED(hrEmpty)) {
+    _pDisabledCacheContext = pContext;
+  }
+  // advise 失败：_pDisabledCacheContext 保持空，_IsKeyboardDisabled
+  // 不缓存、逐键全量查询，行为与原实现一致
+}
+
+HRESULT WeaselTSF::_OnKeyboardDisabledCompartmentChange(
+    REFGUID guidCompartment) {
+  _fKeyboardDisabledDirty = TRUE;
+  return S_OK;
 }
 
 BOOL WeaselTSF::_IsKeyboardOpen() {
@@ -230,6 +272,16 @@ void WeaselTSF::_UninitCompartment() {
     _pConvertionCompartmentSink->_Unadvise();
     _pConvertionCompartmentSink = NULL;
   }
+  if (_pKeyboardDisabledSink) {
+    _pKeyboardDisabledSink->_Unadvise();
+    _pKeyboardDisabledSink = NULL;
+  }
+  if (_pEmptyContextSink) {
+    _pEmptyContextSink->_Unadvise();
+    _pEmptyContextSink = NULL;
+  }
+  _pDisabledCacheContext = NULL;
+  _fKeyboardDisabledDirty = TRUE;
 }
 
 HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
