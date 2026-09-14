@@ -262,7 +262,7 @@ void test_9() {
 // not possible without refactoring the win32 call away, so the normal
 // path guards against regressions).
 void test_10() {
-  std::wstring user = weasel::getUsername();
+  std::wstring user = getUsername();
   BOOST_TEST(!user.empty());
   // the querying call must have sized the buffer to fit it exactly
   DWORD len = 0;
