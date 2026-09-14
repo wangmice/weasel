@@ -119,21 +119,6 @@ STDMETHODIMP CLangBarItemButton::Show(BOOL fShow) {
   return S_OK;
 }
 
-static LANGID GetActiveProfileLangId() {
-  CComPtr<ITfInputProcessorProfileMgr> pInputProcessorProfileMgr;
-  HRESULT hr = pInputProcessorProfileMgr.CoCreateInstance(
-      CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_ALL);
-  if (FAILED(hr))
-    return MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
-
-  TF_INPUTPROCESSORPROFILE profile;
-  hr = pInputProcessorProfileMgr->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD,
-                                                   &profile);
-  if (FAILED(hr))
-    return MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
-  return profile.langid;
-}
-
 STDMETHODIMP CLangBarItemButton::GetTooltipString(BSTR* pbstrToolTip) {
   LANGID langid = get_language_id();
   if (langid == TEXTSERVICE_LANGID_HANS) {
