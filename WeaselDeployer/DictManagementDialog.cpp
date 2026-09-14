@@ -74,6 +74,7 @@ DictManagementDialog::DictManagementDialog() {
 DictManagementDialog::~DictManagementDialog() {}
 
 void DictManagementDialog::Populate() {
+  user_dict_list_.ResetContent();
   RimeUserDictIterator iter = {0};
   api_->user_dict_iterator_init(&iter);
   while (const char* dict = api_->next_user_dict(&iter)) {
@@ -82,6 +83,10 @@ void DictManagementDialog::Populate() {
   }
   api_->user_dict_iterator_destroy(&iter);
   user_dict_list_.SetCurSel(-1);
+  // 程序化 SetCurSel(-1) 不触发 LBN_SELCHANGE，须手动复位按钮状态
+  backup_.EnableWindow(FALSE);
+  export_.EnableWindow(FALSE);
+  import_.EnableWindow(FALSE);
 }
 
 LRESULT DictManagementDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
@@ -184,6 +189,7 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
     if (!api_->restore_user_dict(path)) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
+      Populate();  // 词典内容已变，重载列表反映恢复结果
       MSG_BY_IDS(IDS_STR_ERR_SUCCESS, IDS_STR_HAPPY,
                  MB_OK | MB_ICONINFORMATION);
     }
