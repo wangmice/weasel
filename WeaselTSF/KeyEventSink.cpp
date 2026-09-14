@@ -4,10 +4,6 @@
 #include <KeyEvent.h>
 #include "CandidateList.h"
 
-static weasel::KeyEvent prevKeyEvent;
-static BOOL prevfEaten = FALSE;
-static int keyCountToSimulate = 0;
-
 void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
   // when _IsKeyboardDisabled don't eat the key,
   // when keyboard closable and keyboard closed, don't eat the key
@@ -34,15 +30,18 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
       else if (ke.keycode == ibus::Down)
         ke.keycode = ibus::Up;
     }
-    if (!keyCountToSimulate)
+    // 模拟期间的键不转发服务器，但 *pfEaten 必须有确定值
+    // （下文无条件存入 _prevfEaten，且要上报 TSF）
+    *pfEaten = FALSE;
+    if (!_keyCountToSimulate)
       *pfEaten = (BOOL)m_client.ProcessKeyEvent(ke);
 
     if (ke.keycode == ibus::Caps_Lock) {
-      if (prevKeyEvent.keycode == ibus::Caps_Lock && prevfEaten == TRUE &&
-          (ke.mask & ibus::RELEASE_MASK) && (!keyCountToSimulate)) {
+      if (_prevKeyEvent.keycode == ibus::Caps_Lock && _prevfEaten == TRUE &&
+          (ke.mask & ibus::RELEASE_MASK) && (!_keyCountToSimulate)) {
         if ((GetKeyState(VK_CAPITAL) & 0x01)) {
           if (_committed || (!*pfEaten && _status.composing)) {
-            keyCountToSimulate = 2;
+            _keyCountToSimulate = 2;
             INPUT inputs[2];
             inputs[0].type = INPUT_KEYBOARD;
             inputs[0].ki = {VK_CAPITAL, 0, 0, 0, 0};
@@ -53,12 +52,12 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
         }
         *pfEaten = TRUE;
       }
-      if (keyCountToSimulate)
-        keyCountToSimulate--;
+      if (_keyCountToSimulate)
+        _keyCountToSimulate--;
     }
 
-    prevfEaten = *pfEaten;
-    prevKeyEvent = ke;
+    _prevfEaten = *pfEaten;
+    _prevKeyEvent = ke;
   }
 }
 

@@ -212,6 +212,11 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   DWORD _dwTextEditSinkCookie, _dwTextLayoutSinkCookie;
   BYTE _lpbKeyState[256];
   BOOL _fTestKeyDownPending, _fTestKeyUpPending;
+  // Caps Lock 模拟的跨按键状态。键事件 sink 按 thread manager 各持一份，
+  // 实例化即按线程隔离（原文件级 static 被同进程多实例/多线程共享）
+  weasel::KeyEvent _prevKeyEvent;
+  BOOL _prevfEaten = FALSE;
+  int _keyCountToSimulate = 0;
 
   com_ptr<ITfContext> _pEditSessionContext;
 
