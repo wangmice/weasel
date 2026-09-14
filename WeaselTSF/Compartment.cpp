@@ -4,6 +4,8 @@
 #include "CompartmentUtil.h"
 #include <resource.h>
 #include <functional>
+#include <ios>
+#include "logging.h"
 #include "ResponseParser.h"
 #include "CandidateList.h"
 #include "LanguageBar.h"
@@ -198,15 +200,25 @@ BOOL WeaselTSF::_InitCompartment() {
   _pKeyboardCompartmentSink = new CCompartmentEventSink(callback);
   if (!_pKeyboardCompartmentSink)
     return FALSE;
-  DWORD hr = _pKeyboardCompartmentSink->_Advise(
+  HRESULT hrKeyboard = _pKeyboardCompartmentSink->_Advise(
       (IUnknown*)_pThreadMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE);
 
   _pConvertionCompartmentSink = new CCompartmentEventSink(callback);
   if (!_pConvertionCompartmentSink)
     return FALSE;
-  hr = _pConvertionCompartmentSink->_Advise(
+  HRESULT hrConversion = _pConvertionCompartmentSink->_Advise(
       (IUnknown*)_pThreadMgr, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
-  return SUCCEEDED(hr);
+
+  // Keep both results separately (the first used to be overwritten by the
+  // second). On failure the sink stays around: _Unadvise() is null-safe, so
+  // Deactivate() cleans it up when activation aborts.
+  if (FAILED(hrKeyboard))
+    LOG(ERROR) << "keyboard compartment advise failed: 0x" << std::hex
+               << hrKeyboard;
+  if (FAILED(hrConversion))
+    LOG(ERROR) << "conversion compartment advise failed: 0x" << std::hex
+               << hrConversion;
+  return SUCCEEDED(hrKeyboard) && SUCCEEDED(hrConversion);
 }
 
 void WeaselTSF::_UninitCompartment() {
