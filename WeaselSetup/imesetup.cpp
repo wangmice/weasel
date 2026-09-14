@@ -531,12 +531,12 @@ int install(const std::wstring& profile, bool silent) {
   // DumpFolder
   SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpFolder",
                  dmpPathW.c_str(), REG_SZ, true);
-  // dump type 0
-  SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpType", 0, REG_DWORD,
+  // mini dump：含线程栈与模块信息，足以定位崩溃栈。
+  // 原配置 DumpType=0(custom)+CustomDumpFlags=0 为上游遗留，仅产出
+  // MiniDumpNormal 最简内容；CustomDumpFlags 只在 DumpType=0 时生效，
+  // 改用 DumpType=1 后不再写入
+  SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpType", 1, REG_DWORD,
                  true);
-  // CustomDumpFlags, MiniDumpNormal
-  SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"CustomDumpFlags", 0,
-                 REG_DWORD, true);
   // maximium dump count 10
   SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpCount", 10,
                  REG_DWORD, true);
