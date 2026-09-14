@@ -22,21 +22,20 @@ class CStartCompositionEditSession : public CEditSession {
 };
 
 STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
-  HRESULT hr = E_FAIL;
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
   com_ptr<ITfRange> pRangeComposition;
   if (_pContext->QueryInterface(IID_ITfInsertAtSelection,
                                 (LPVOID*)&pInsertAtSelection) != S_OK)
-    return hr;
+    return E_FAIL;
   if (pInsertAtSelection->InsertTextAtSelection(ec, TF_IAS_QUERYONLY, NULL, 0,
                                                 &pRangeComposition) != S_OK)
-    return hr;
+    return E_FAIL;
 
   com_ptr<ITfContextComposition> pContextComposition;
   com_ptr<ITfComposition> pComposition;
   if (_pContext->QueryInterface(IID_ITfContextComposition,
                                 (LPVOID*)&pContextComposition) != S_OK)
-    return hr;
+    return E_FAIL;
   if ((pContextComposition->StartComposition(
            ec, pRangeComposition, _pTextService, &pComposition) == S_OK) &&
       (pComposition != NULL)) {
@@ -54,9 +53,12 @@ STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
     // end session is pending. Position only after the new composition has
     // actually been created, not from the response handler's stale range.
     _pTextService->_UpdateCompositionWindow(_pContext);
+
+    return S_OK;
   }
 
-  return hr;
+  // composition could not be created
+  return E_FAIL;
 }
 
 void WeaselTSF::_StartComposition(com_ptr<ITfContext> pContext,
