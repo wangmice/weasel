@@ -105,11 +105,17 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
 
   void _UpdateInlinePreeditStatus(WeaselSessionId ipc_id);
 
-  RimeSessionId to_session_id(WeaselSessionId ipc_id) {
-    return m_session_status_map[ipc_id].session_id;
+  // 会话表查询：未知/已失效会话一律返回 0（librime 的无效会话号，
+  // 相应 API 调用安全落空），绝不向表内插入条目
+  RimeSessionId to_session_id(WeaselSessionId ipc_id) const {
+    auto it = m_session_status_map.find(ipc_id);
+    return it != m_session_status_map.end() ? it->second.session_id : 0;
   }
-  SessionStatus& get_session_status(WeaselSessionId ipc_id) {
-    return m_session_status_map[ipc_id];
+  // 查找会话状态；不存在返回 nullptr，调用方必须判空。
+  // new_session_status（AddSession）是会话表唯一的插入点
+  SessionStatus* find_session_status(WeaselSessionId ipc_id) {
+    auto it = m_session_status_map.find(ipc_id);
+    return it != m_session_status_map.end() ? &it->second : nullptr;
   }
   SessionStatus& new_session_status(WeaselSessionId ipc_id) {
     return m_session_status_map[ipc_id] = SessionStatus();
