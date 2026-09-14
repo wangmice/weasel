@@ -39,8 +39,8 @@
 | K6 | P2 | WeaselDeployer/SwitcherSettingsDialog.cpp:161 等 | new[] 配标量 delete（UB） | ✔ | ✅ 已修复（55221cb，批次7） |
 | K7 | P2 | SwitcherSettingsDialog.cpp:20-23; UIStyleSettings.cpp:5-8 | schema list / settings 无对应 destroy | ✔ | ✅ 已修复（6258af1，批次7） |
 | K8 | P2 | SwitcherSettingsDialog.cpp:114-155 | 未初始化 HKEY、无条件 close、INFINITE 等待、无 NUL | ✔ | ✅ 已修复（03ea36a，批次7） |
-| K9 | P2 | WeaselDeployer/DictManagementDialog.cpp:109-123 | CP_ACP 解码 UTF-8 + LB_GETTEXT 缓冲可溢出 | ✔ | 未修复 |
-| K10 | P2 | DictManagementDialog.cpp:13,25 | STA 线程无条件 CoUninitialize 拆主循环计数 | ✔ | 未修复 |
+| K9 | P2 | WeaselDeployer/DictManagementDialog.cpp:109-123 | CP_ACP 解码 UTF-8 + LB_GETTEXT 缓冲可溢出 | ✔ | ✅ 已修复（dd4b6e9+0cd2936，批次16：①编码②缓冲分项提交） |
+| K10 | P2 | DictManagementDialog.cpp:13,25 | STA 线程无条件 CoUninitialize 拆主循环计数 | ✔ | ✅ 已修复（b01eeea，批次16） |
 | K11 | P2 | WeaselSetup/imesetup.cpp:178-464 | WOW64 重定向 4 处提前 return 不恢复；install() 忽略文件拷贝结果 | ✔ | ✅ 已修复（ec3678e，批次8） |
 | K12 | P2 | imesetup.cpp:364-375 | regsvr32 退出码不检查，失败仍报成功 | ✔ | ✅ 已修复（f409c78，批次8） |
 | K13 | P2 | imesetup.cpp:514-517 | 卸载不清 HKCU 配置；RegDeleteKey 有子键即失败 | ✔ | 未修复 |
@@ -52,7 +52,7 @@
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | ✅ 已修复（63d3cae，批次9） |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | ✅ 已修复（2666c70，批次15：注册表 TTL 缓存，IPC 保留有据） |
-| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 🔧 批次13/14 修 TSF 子集（Deployer/Setup/Server 子项见批次16-18） |
+| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | 🔧 批次13/14/16 修 TSF+Deployer 子集（Setup/Server 子项见批次17/18） |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | ✅ 已修复（00f7695+a34af93+78d08c1，批次15：a/b/c 分项提交；compartment 读写部分随 A7） |
 | K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 不修（有据，上游一致/防串扰设计，见 §4 批次12） |
 
@@ -998,4 +998,16 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `78d08c1` perf(WeaselTSF): cache the keyboard-disabled state with compartment sinks — K23c。`_IsKeyboardDisabled` 每键 ~7 次 COM（GetFocus+GetTop+QI+2×GetCompartment/GetValue，另有 4 次 Release）。KEYBOARD_DISABLED/EMPTYCONTEXT 是 context 级 compartment：两个 CCompartmentEventSink（复用既有基建）挂在焦点 top context 上，值变化置脏；`_IsKeyboardDisabled` 先 GetFocus/GetTop（2 次 COM），context 身份不变且未脏则返回缓存。context 变化（文档焦点切换、push/pop 改变 GetTop）按身份比对自动重挂+失效；advise 失败或无焦点路径不缓存，退回逐键全量查询（与原实现一致）。行为不变性：缓存仅在 sink 成功挂上当前查询的同一 context 后启用，其两个 compartment 的任何 SetValue 都会置脏（TSF compartment sink 保证，与现有 OPENCLOSE sink 同机制）；无焦点/无 top context 仍返回 TRUE 不缓存。计数：稳态每键 7 次 COM → 2 次；焦点 context 切换额外 2 次 advise（切换级非每键级）。
 - `2666c70` perf(WeaselTSF): throttle the per-focus registry read, keep the resync IPC — K21。注册表：`ToggleImeOnOpenClose`（仅 WeaselSetup 写入）改为 TTL 10s 限频缓存，外部改动最迟 TTL 后的下一次焦点切换生效，与原逐次读取一致。IPC 考证后**保留**：① Echo 是会话有效性闸门（服务端 OnEcho=FindSession）——省掉后会话失效时服务端对孤儿会话跑 process_key 并把 m_active_session 指向死 id（RimeWithWeasel.cpp:316 无条件赋值），改变服务端可见时序；② ProcessKeyEvent(0)（keycode=0，librime processor 均不吃，服务端 handled=False）的真实作用是借 `_Respond` 取回全量 status 快照（RimeWithWeasel.cpp:788+ 恒写 status.* 行）——tray 中/英切换（作用于服务端 m_active_session）与 global_ascii_mode 跨会话联动（_Respond 内直接改其他会话 option）都可在本客户端零通知时改变本会话状态，焦点切换时须重新同步 _status/语言栏，省掉会让图标陈旧至下一次击键；上游 master 同构（WebFetch 核对）。计数：每次线程焦点切换注册表读 1 次（open+query+close）→ ≤1 次/10s；IPC 2 次往返保留（有据）。
 - `1c3e8ec` perf(WeaselTSF): reuse the response parser across parses — A15。01885fc 后 `_ConsumeResponse` 每键构造 ResponseParser：Initialize 注册 action + ActionLoader 按响应 action 列表逐个注册，每动作=对象+控制块+map 节点 3 次堆分配，典型响应 ~9-15 次/键。改为成员 parser 复用 + `Deserializer::Require` 幂等（已注册直接复用），第二次解析起零分配；目标指针每次解析前重指（各 deserializer 均在 Store 时经 `m_pTarget->p_*` 读目标，无构造期缓存）。**make_shared<Context> 按键新建保留（考证承重）**：CInlinePreeditEditSession 持有旧快照 shared_ptr 副本，异步排队会话若读到复用后的同一分配会看到后续键数据，破坏 01885fc 快照隔离；`weasel::Config` 仅含 bool 无堆分配，local+成功后拷贝的失败语义保留（解析失败 _config/_context 不落地，_status 原地解析为既有行为）。行为不变性：deserializer 无跨解析状态，复用与重建等价；一次性 parser（TestResponseParser 等）表为空不命中幂等分支。计数：每键堆分配 ~9-15 次+Context 1 次 → 0 次+Context 1 次（保留）。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
+
+### 批次 16（2026-09-15）：K9、K10、K22-Deployer 子集（WeaselDeployer）
+
+主题：WeaselDeployer/DictManagementDialog。K22 的 Deployer 侧三项子项本批完成（①进程单实例静默退出、②levers 模块判空、③restore 后列表不刷新）；K22 剩余 Setup/Server 子项归批次 17/18。
+
+- `dd4b6e9` fix(WeaselDeployer): decode user data sync dir as UTF-8 — K9①。OnBackup 的 `get_user_data_sync_dir`（rime 返回 UTF-8）原经 `MultiByteToWideChar(CP_ACP)` 解码，非 ASCII 用户名/目录即乱码致备份目录定位失败；改 `u8tow`（与批次 7 A16 的 0f1574a 同根同修）。验证：u8tow 解码语义已有持久化测试（TestResponseParser test_11：u8tow 还原 / acptow 乱码），本项为调用点替换，构建+推理。
+- `0cd2936` fix(WeaselDeployer): size the list-box text buffer before LB_GETTEXT — K9②。OnBackup 用 `WCHAR dict_name[100]` 收 LB_GETTEXT——LB_GETTEXT 不截断整串拷贝，超长词典名即栈溢出；OnExport/OnImport 的 `WCHAR[MAX_PATH]` 同一缺陷模式。新增 `GetSelectedDictName`（LB_GETTEXTLEN 先查长度 + `std::vector<wchar_t>` 动态缓冲，LB_ERR 返回空串与旧行为一致），三处取词典名统一走它；与 WTL 自带 CString 安全重载（内部同为 GetTextLen+动态缓冲）同型。验证：构建+推理（缓冲处理依赖列表框窗口句柄，无纯逻辑可抽出单测）。
+- `b01eeea` fix(WeaselDeployer): pair CoUninitialize only with a real COM init — K10。`OpenFolderAndSelectItem` 的 `CoInitializeEx(0, COINIT_MULTITHREADED)` 在 STA 主线程（_tWinMain 已 CoInitialize）返回 RPC_E_CHANGED_MODE 且不加计数，原无条件 `CoUninitialize` 每次拆一层主线程 COM 计数，多次备份/导出后主线程 COM 被拆毁。改为仅 SUCCEEDED（S_OK/S_FALSE，真正加了计数）才配对 Uninitialize；RPC_E_CHANGED_MODE 时主线程 STA 已可用，SHOpenFolderAndSelectItems 照常执行。同文件 DoFileDialog 的 `CoInitialize(NULL)` 在 STA 返回 S_FALSE 且计数配对，无需改动。验证：构建+推理（COM 初始化计数配对语义，按 MSDN CoInitializeEx 返回值契约）。
+- `4f580ee` fix(WeaselDeployer): log the single-instance mutex exits — K22①。进程级单实例互斥命中（创建失败/已存在）原先静默 ret=1 退出，无任何痕迹。两处各记一条日志（include/logging.h，WeaselDeployer/stdafx.h 已引入，默认 no_logging 编译为空、开启 glog 生效），措辞与 Configurator.cpp 既有日志一致。保守不弹 MessageBox：部署器会被脚本/计划任务静默调用（/deploy、/sync），弹框会阻塞无人值守流程。验证：构建+推理。
+- `a7b8061` fix(WeaselDeployer): survive a missing rime levers module — K22②。构造函数原先直接解引用 `find_module("levers")->get_api()`，levers 模块缺失（部署损坏）即空指针崩溃。改为判空：缺失时 LOG(ERROR) 并留空 api_，OnInitDialog 检测后以新增字符串资源 IDS_STR_ERR_LEVERS_MISSING（159，zh-CN/zh-TW/en 三语言块）提示重新安装/重新部署并 EndDialog 关闭，不崩；对话框随即关闭，后续 api_ 调用不可达。验证：构建（含 .rc 资源编译，UTF-16 编码经 iconv diff 验证仅增三行）+推理。
+- `e46664b` fix(WeaselDeployer): reload the dict list after a restore — K22③。restore 成功后 `user_dict_list_` 不刷新，列表仍显示旧状态、后续继续操作旧条目。`Populate()` 改为自包含刷新（ResetContent 后重枚举；程序化 `SetCurSel(-1)` 不触发 LBN_SELCHANGE，末尾手动复位 backup/export/import 按钮与初始化状态一致），OnRestore 成功分支调用 Populate。OnInitDialog 首次填充路径控件已 attach，行为不变。验证：构建+推理。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。
