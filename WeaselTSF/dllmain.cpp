@@ -54,7 +54,11 @@ LONG WINAPI _UnhandledExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) {
                       MiniDumpNormal, &dumpInfo, NULL, NULL);
     CloseHandle(hDumpFile);
   }
-  return EXCEPTION_EXECUTE_HANDLER;
+  // Only record the dump for weasel diagnostics; keep the host's crash
+  // handling (WER / the host's own report chain) running. Swallowing the
+  // exception here (EXCEPTION_EXECUTE_HANDLER) silently killed host
+  // processes and suppressed their crash reports.
+  return EXCEPTION_CONTINUE_SEARCH;
 }
 
 BOOL WINAPI DllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID pvReserved) {
