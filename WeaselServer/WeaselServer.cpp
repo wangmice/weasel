@@ -38,10 +38,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   // 防止服务进程开启输入法
   ImmDisableIME(-1);
 
-  WCHAR user_name[20] = {0};
-  DWORD size = _countof(user_name);
-  GetUserName(user_name, &size);
-  if (!_wcsicmp(user_name, L"SYSTEM")) {
+  // 拒绝在 SYSTEM 账户下运行；getUsername 动态长度且失败返回空串，
+  // 超长用户名不再因固定缓冲读取失败而被静默放行
+  if (!_wcsicmp(getUsername().c_str(), L"SYSTEM")) {
     return 1;
   }
 
