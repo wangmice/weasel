@@ -357,6 +357,38 @@ static void test_candidate_abbreviation_surrogate_safe() {
         "B35-5: astral tail kept as a complete pair");
 }
 
+/* B35-6: custom status icon paths pointing nowhere must not wedge the icon
+ * state: LoadIconNecessary used to cache the failed path until the style
+ * changed, leaving a blank icon forever even after the file later appeared.
+ * The failure branch now keeps the previous (resource) icon and leaves the
+ * path uncached so later paints retry. The retry itself is not observable
+ * through the public API (CIcon handles are internal to the panel), so this
+ * drives the failure branch through full layout+paint cycles with the status
+ * icon visible (ascii mode) and asserts the cycle stays healthy. */
+static void test_missing_status_icon_files(UiThread& t) {
+  weasel::UIStyle style;
+  style.font_face = L"Segoe UI";
+  style.font_point = 12;
+  style.current_zhung_icon = L"C:\\nonexistent\\zhung.ico";
+  style.current_ascii_icon = L"C:\\nonexistent\\ascii.ico";
+  style.current_half_icon = L"C:\\nonexistent\\half.ico";
+  style.current_full_icon = L"C:\\nonexistent\\full.ico";
+  t.ui.SetStyle(style);
+
+  weasel::Status status;
+  status.composing = true;
+  status.ascii_mode = true;  // 显示状态图标，DoPaint 走图标加载分支
+  t.ui.Update(make_candidate_ctx(3, 0), status);
+  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 3; },
+                   3000),
+        "B35-6: paint settles with missing custom icon files");
+
+  // 再来一帧（高亮变化触发重绘，验证失败路径可重复执行）
+  t.ui.Update(make_candidate_ctx(3, 1), status);
+  check(wait_until([&] { return t.ui.octx().cinfo.highlighted == 1; }, 3000),
+        "B35-6: repaint after failed icon loads still settles");
+}
+
 /* B23: label_text_format comes from user yaml (style/label_format) and the
  * formatted label itself can exceed the 128-wchar buffer (long custom labels).
  * Both must degrade gracefully: truncation for the overflow case (CRT asserts
@@ -406,6 +438,7 @@ int main() {
   test_layout_failure_is_shielded(t);
   test_mismatched_candidate_vectors(t);
   test_max_candidates_round_info(t);
+  test_missing_status_icon_files(t);
   test_candidate_abbreviation_surrogate_safe();
   test_label_text_format_bounded();
 

@@ -25,16 +25,32 @@
 
 #pragma comment(lib, "Shcore.lib")
 
-template <class t0, class t1, class t2>
-inline void LoadIconNecessary(t0& a, t1& b, t2& c, int d) {
-  if (a == b)
+// 状态图标加载（B35⑥）：路径为空用内置资源图标；路径非空从文件加载，仅
+// 成功才缓存路径。文件暂缺/损坏时保留当前图标继续显示，且不缓存失败结果
+// ——下次绘制自动重试（DoPaint 每次刷新都会走到这里，但重试只是一次落空的
+// LoadImage 文件打开，按用户输入频率计开销可忽略），用户中途补上图标文件
+// 后无需改配置即恢复显示。
+inline void LoadIconNecessary(std::wstring& loaded_path,
+                              const std::wstring& icon_path,
+                              CIcon& icon,
+                              int resource_id) {
+  if (icon_path.empty()) {
+    if (!loaded_path.empty()) {  // 从自定义图标切回内置资源
+      icon.LoadIconW(resource_id, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
+                     LR_DEFAULTCOLOR);
+      loaded_path.clear();
+    }
     return;
-  a = b;
-  if (b.empty())
-    c.LoadIconW(d, STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_DEFAULTCOLOR);
-  else
-    c = (HICON)LoadImage(NULL, b.c_str(), IMAGE_ICON, STATUS_ICON_SIZE,
-                         STATUS_ICON_SIZE, LR_LOADFROMFILE);
+  }
+  if (icon_path == loaded_path)
+    return;  // 已按此路径加载成功
+  HICON loaded =
+      (HICON)LoadImage(NULL, icon_path.c_str(), IMAGE_ICON, STATUS_ICON_SIZE,
+                       STATUS_ICON_SIZE, LR_LOADFROMFILE);
+  if (loaded) {
+    icon = loaded;
+    loaded_path = icon_path;
+  }
 }
 
 static inline void ReconfigRoundInfo(IsToRoundStruct& rd,
