@@ -42,13 +42,18 @@ bool ConvertKeyEvent(UINT vkey,
   }
 
   const int buf_len = 8;
-  static WCHAR buf[buf_len];
-  static BYTE table[256];
+  // 栈上缓冲：static 版本在多线程宿主下会被并发键事件撕裂，
+  // 每键重建的开销相对本就存在的 GetKeyboardState/IPC 可忽略
+  WCHAR buf[buf_len];
+  BYTE table[256];
   // 清除Ctrl、Alt鍵狀態，以令ToUnicodeEx()返回字符
   memcpy(table, keyState, sizeof(table));
   table[VK_CONTROL] = 0;
   table[VK_MENU] = 0;
-  int ret = ToUnicodeEx(vkey, UINT(kinfo), table, buf, buf_len, 0, NULL);
+  // wScanCode 只收 8 位硬件扫描码；KeyInfo 的完整打包值低 16 位是
+  // repeatCount，直接传会破坏扫描码布局（bit15 的 release 标记维持不设，
+  // 与既有行为一致）
+  int ret = ToUnicodeEx(vkey, kinfo.scanCode, table, buf, buf_len, 0, NULL);
   if (ret == 1) {
     result.keycode = UINT(buf[0]);
     return true;

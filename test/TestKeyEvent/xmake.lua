@@ -1,0 +1,5 @@
+target("TestKeyEvent")
+  set_kind("binary")
+  add_files("./*.cpp")
+  add_files("../../WeaselTSF/KeyEvent.cpp")
+  add_rules("subcmd")

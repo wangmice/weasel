@@ -139,6 +139,7 @@ if is_mode("debug") then
   includes("test/TestWeaselUI")
   includes("test/TestBstrUtil")
   includes("test/TestWeaselSetup")
+  includes("test/TestKeyEvent")
 else
   add_cxflags("/GL")
   add_ldflags("/LTCG /INCREMENTAL:NO", {force = true})
