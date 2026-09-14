@@ -108,9 +108,8 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   {
     char dir[MAX_PATH] = {0};
     rime_get_api()->get_user_data_sync_dir(dir, _countof(dir));
-    WCHAR wdir[MAX_PATH] = {0};
-    MultiByteToWideChar(CP_ACP, 0, dir, -1, wdir, _countof(wdir));
-    path = wdir;
+    // rime 返回的同步目录为 UTF-8 编码，CP_ACP 解码必乱（同 A16）
+    path = u8tow(dir);
   }
   if (_waccess_s(path.c_str(), 0) != 0 &&
       !CreateDirectoryW(path.c_str(), NULL) &&
