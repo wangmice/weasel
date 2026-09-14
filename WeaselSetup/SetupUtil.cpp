@@ -23,3 +23,7 @@ bool read_reg_sz(HKEY hKey, const wchar_t* value_name, std::wstring& out) {
   out.assign(value, end);
   return true;
 }
+
+LSTATUS delete_reg_tree(HKEY root, const wchar_t* subkey) {
+  return RegDeleteTreeW(root, subkey);
+}

@@ -1,5 +1,6 @@
 // TestWeaselSetup.cpp : regression tests for WeaselSetup pure helpers
-// (command-line unquoting for K15, bounded registry string reads for A14).
+// (command-line unquoting for K15, bounded registry string reads for A14,
+// recursive registry tree deletion for K13).
 //
 // Registry cases run against a private scratch key under
 // HKCU\Software\Rime\WeaselSetupTest (deleted on exit); no HKLM access.
@@ -107,9 +108,49 @@ static void test_read_reg_sz() {
   RegDeleteTreeW(HKEY_CURRENT_USER, kTestKey);
 }
 
+// K13：卸载清理需整树删除（RegDeleteKey 遇子键即失败），
+// 验证 delete_reg_tree 对嵌套键树语义正确
+static void test_delete_reg_tree() {
+  // 构造 值 + 两层嵌套子键（含子键自身的值）
+  HKEY hKey = open_test_key();
+  check(hKey != NULL, "scratch key created");
+  DWORD dword = 1;
+  set_test_value(hKey, L"Top", &dword, sizeof(dword), REG_DWORD);
+  RegCloseKey(hKey);
+
+  const std::wstring updates = std::wstring(kTestKey) + L"\\Updates";
+  const std::wstring channel = updates + L"\\Channel";
+  HKEY hSub = NULL;
+  check(RegCreateKeyExW(HKEY_CURRENT_USER, updates.c_str(), 0, NULL, 0,
+                        KEY_SET_VALUE, NULL, &hSub,
+                        NULL) == ERROR_SUCCESS,
+        "nested subkey created");
+  set_test_value(hSub, L"CheckForUpdates", &dword, sizeof(dword), REG_DWORD);
+  RegCloseKey(hSub);
+  HKEY hLeaf = NULL;
+  check(RegCreateKeyExW(HKEY_CURRENT_USER, channel.c_str(), 0, NULL, 0,
+                        KEY_SET_VALUE, NULL, &hLeaf,
+                        NULL) == ERROR_SUCCESS,
+        "second-level subkey created");
+  set_test_value(hLeaf, L"Name", L"testing", sizeof(L"testing"), REG_SZ);
+  RegCloseKey(hLeaf);
+
+  check(delete_reg_tree(HKEY_CURRENT_USER, kTestKey) == ERROR_SUCCESS,
+        "key tree with nested subkeys is deleted recursively");
+  HKEY hCheck = NULL;
+  check(RegOpenKeyW(HKEY_CURRENT_USER, kTestKey, &hCheck) ==
+            ERROR_FILE_NOT_FOUND,
+        "no trace of the tree is left behind");
+
+  // 键不存在：报告 ERROR_FILE_NOT_FOUND 而非误报成功
+  check(delete_reg_tree(HKEY_CURRENT_USER, kTestKey) == ERROR_FILE_NOT_FOUND,
+        "deleting a missing tree reports ERROR_FILE_NOT_FOUND");
+}
+
 int main() {
   test_unquote_argument();
   test_read_reg_sz();
+  test_delete_reg_tree();
 
   if (g_failures) {
     printf("%d failure(s)\n", g_failures);

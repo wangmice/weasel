@@ -12,3 +12,8 @@ std::wstring unquote_argument(const std::wstring& arg);
 // 读取 hKey 下的 REG_SZ 值。以返回的数据长度为上界查找字符串结尾，
 // 存量数据未 NUL 终止时截断到缓冲区内，构造 std::wstring 不越读
 bool read_reg_sz(HKEY hKey, const wchar_t* value_name, std::wstring& out);
+
+// 递归删除 root 下 subkey 的整棵键树（含全部子键与值）。
+// RegDeleteKey 遇有子键的键即失败，卸载清理必须整树删除。
+// 键不存在时返回 ERROR_FILE_NOT_FOUND。
+LSTATUS delete_reg_tree(HKEY root, const wchar_t* subkey);

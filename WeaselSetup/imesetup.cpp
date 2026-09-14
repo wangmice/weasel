@@ -8,6 +8,7 @@
 #include <WeaselUtility.h>
 #include "InstallOptionsDlg.h"
 #include "PerUserReg.h"
+#include "SetupUtil.h"
 
 // {A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}
 static const GUID c_clsidTextService = {
@@ -574,9 +575,21 @@ int uninstall(bool silent) {
   retval +=
       uninstall_ime_file(L".dll", profile, silent, &register_text_service);
 
-  // 清除注册信息
-  RegDeleteKey(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY);
-  RegDeleteKey(HKEY_LOCAL_MACHINE, RIME_REG_KEY);
+  // 清除注册信息（RegDeleteKey 遇有子键的键即失败，必须递归整树删除；
+  // 键本就不存在视为已清除，其余失败计入 retval 报卸载失败）
+  for (const wchar_t* key : {WEASEL_REG_KEY, RIME_REG_KEY}) {
+    const LSTATUS deleted = delete_reg_tree(HKEY_LOCAL_MACHINE, key);
+    if (deleted != ERROR_SUCCESS && deleted != ERROR_FILE_NOT_FOUND)
+      ++retval;
+  }
+
+  // NSIS 卸载脚本只清 HKLM 不碰 HKCU（output/install.nsi Uninstall 段），
+  // 用户配置键（Profile/Hant/RimeUserDir/Language 等）在此一并清除；
+  // 用户数据目录的文件留给用户自行处理
+  const LSTATUS user_deleted =
+      delete_reg_tree(per_user_root(), per_user_subkey(KEY).c_str());
+  if (user_deleted != ERROR_SUCCESS && user_deleted != ERROR_FILE_NOT_FOUND)
+    ++retval;
 
   // delete WER register,
   // "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\Windows Error
