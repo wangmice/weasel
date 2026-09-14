@@ -62,7 +62,13 @@ inline static std::wstring DoFileDialog(HWND hwndOwner,
 }
 
 DictManagementDialog::DictManagementDialog() {
-  api_ = (RimeLeversApi*)rime_get_api()->find_module("levers")->get_api();
+  // levers 模块缺失（部署损坏）时 find_module 返回空，不能解引用；
+  // 留空 api_，由 OnInitDialog 提示并关闭
+  RimeModule* levers = rime_get_api()->find_module("levers");
+  api_ = levers ? (RimeLeversApi*)levers->get_api() : nullptr;
+  if (!api_) {
+    LOG(ERROR) << "Rime levers module not found; dict management is unavailable.";
+  }
 }
 
 DictManagementDialog::~DictManagementDialog() {}
@@ -79,6 +85,11 @@ void DictManagementDialog::Populate() {
 }
 
 LRESULT DictManagementDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
+  if (!api_) {
+    MSG_BY_IDS(IDS_STR_ERR_LEVERS_MISSING, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+    EndDialog(IDCANCEL);
+    return FALSE;
+  }
   user_dict_list_.Attach(GetDlgItem(IDC_USER_DICT_LIST));
   backup_.Attach(GetDlgItem(IDC_BACKUP));
   backup_.EnableWindow(FALSE);

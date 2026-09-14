@@ -38,6 +38,7 @@
 #define IDS_STR_DICT_SNAPSHOT           156
 #define IDS_STR_KCSS_DICT_SNAPSHOT      157
 #define IDS_STR_HELP                    158
+#define IDS_STR_ERR_LEVERS_MISSING      159
 #define IDC_SCHEMA_LIST                 1000
 #define IDC_SCHEMA_DESCRIPTION          1001
 #define IDC_GET_SCHEMATA                1002
