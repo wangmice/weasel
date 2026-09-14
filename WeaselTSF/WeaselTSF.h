@@ -248,6 +248,11 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   /* IME status */
   weasel::Status _status;
 
+  // 上次成功写入 INPUTMODE_CONVERSION compartment 的值；稳态（连续击键
+  // 状态不变）据此跳过 SetValue。Deactivate 时失效
+  DWORD _conversionFlags = 0;
+  bool _conversionFlagsValid = false;
+
   /* 已解析、待编辑会话应用的服务器应答；解析发生在按键/UI 回调线程内
    * （应答缓冲在下一次 Transact 前有效），会话可能异步排队、晚于解析 */
   std::wstring _pendingCommit;  // commit 是事件流：应用前按序累积

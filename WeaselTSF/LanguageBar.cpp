@@ -389,16 +389,31 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   if (!_pLangBarButton)
     return;
   DWORD flags = 0;
-  _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
-  if (stat.ascii_mode)
-    flags &= (~TF_CONVERSIONMODE_NATIVE);
-  else
-    flags |= TF_CONVERSIONMODE_NATIVE;
-  if (stat.full_shape)
-    flags |= TF_CONVERSIONMODE_FULLSHAPE;
-  else
-    flags &= (~TF_CONVERSIONMODE_FULLSHAPE);
-  _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
+  HRESULT hr = _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
+  if (FAILED(hr)) {
+    // 读取失败：compartment 当前值未知，不回写。原实现按 flags=0 重建回写，
+    // 会清掉宿主设置的 TF_CONVERSIONMODE_ROMAN/KATAKANA 等无关转换位
+  } else {
+    // hr == S_OK：读到 VT_I4；hr == S_FALSE：VT_EMPTY（从未设置），以 0 为基
+    // 首次初始化，与原实现一致
+    if (stat.ascii_mode)
+      flags &= (~TF_CONVERSIONMODE_NATIVE);
+    else
+      flags |= TF_CONVERSIONMODE_NATIVE;
+    if (stat.full_shape)
+      flags |= TF_CONVERSIONMODE_FULLSHAPE;
+    else
+      flags &= (~TF_CONVERSIONMODE_FULLSHAPE);
+    // 与上次成功写入值相同则跳过写：同值 SetValue 不会触发 OnChange，
+    // 稳态（连打、纯 ASCII 直通）零写。读保留：宿主改写的外部位在下一次
+    // 真需要写时仍能读到并保留
+    if (!(_conversionFlagsValid && flags == _conversionFlags) &&
+        SUCCEEDED(_SetCompartmentDWORD(
+            flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION))) {
+      _conversionFlags = flags;
+      _conversionFlagsValid = true;
+    }
+  }
 
   _pLangBarButton->UpdateWeaselStatus(stat);
 }

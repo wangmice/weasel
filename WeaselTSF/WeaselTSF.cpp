@@ -102,6 +102,10 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 
   _UninitThreadFocusSink();
 
+  // 停用期间 INPUTMODE_CONVERSION 可能被宿主/其他输入源改写，
+  // 上次写入值缓存不再可信
+  _conversionFlagsValid = false;
+
   // While the thread manager is still valid: DestroyAll ends the UIElement,
   // which makes the UIElementMgr drop its reference to the candidate list.
   _cand->DestroyAll();
