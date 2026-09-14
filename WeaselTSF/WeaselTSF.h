@@ -194,6 +194,11 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _UninitCompartment();
   HRESULT _HandleCompartment(REFGUID guidCompartment);
 
+  // K21：ToggleImeOnOpenClose 注册表值仅 WeaselSetup 写入，按 TTL 限频
+  // 重读，免去每次线程焦点切换的注册表访问
+  void _RefreshToggleImeOnOpenClose();
+  ULONGLONG _toggleImeReadTick = 0;
+
   // K23c：_IsKeyboardDisabled 的禁用态缓存。KEYBOARD_DISABLED/
   // EMPTYCONTEXT 是 context 级 compartment，sink 挂在焦点 top context
   // 上，值变化置脏；context 变化（含 push/pop 改变 GetTop）时按身份
