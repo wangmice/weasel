@@ -235,16 +235,23 @@ STDMETHODIMP CLangBarItemButton::UnadviseSink(DWORD dwCookie) {
 }
 
 void CLangBarItemButton::UpdateWeaselStatus(weasel::Status stat) {
+  // 仅状态真变化才通知语言栏：图标内容由 ascii_mode 与 schema 图标路径
+  // 惟一决定，状态位(_status)只经 SetLangbarStatus 变化（自带变化检测），
+  // 无变化时 OnUpdate 只会让系统空跑 GetStatus/GetIcon
+  bool changed = false;
   if (stat.ascii_mode != ascii_mode) {
     ascii_mode = stat.ascii_mode;
+    changed = true;
   }
   if (_current_schema_zhung_icon != _style.current_zhung_icon) {
     _current_schema_zhung_icon = _style.current_zhung_icon;
+    changed = true;
   }
   if (_current_schema_ascii_icon != _style.current_ascii_icon) {
     _current_schema_ascii_icon = _style.current_ascii_icon;
+    changed = true;
   }
-  if (_pLangBarItemSink) {
+  if (changed && _pLangBarItemSink) {
     _pLangBarItemSink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
   }
 }
