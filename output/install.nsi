@@ -153,6 +153,12 @@ skip:
   Abort
 
 uninst:
+  ; Backup per-user config (HKCU Software\Rime\Weasel: Profile/Hant/RimeUserDir/
+  ; Language/Updates) before the old uninstaller clears it, so the upgrade can
+  ; restore it below and the new WeaselSetup /i keeps running silent.
+  ; Export fails harmlessly when the key does not exist.
+  ExecWait 'reg export HKCU\Software\Rime\Weasel "$TEMP\weasel-hkcu-backup.reg" /y'
+
   ; Backup data directory from previous installation, user files may exist
   ReadRegStr $R1 HKLM SOFTWARE\Rime\Weasel "WeaselRoot"
   StrCmp $R1 "" call_uninstaller
@@ -190,6 +196,12 @@ call_uninstaller:
   ; Prompt reboot
   SetRebootFlag true
   Sleep 800
+
+  ; Restore the per-user config backed up above: with Profile present, the new
+  ; WeaselSetup /i stays silent (no options dialog, no completion message box)
+  IfFileExists "$TEMP\weasel-hkcu-backup.reg" 0 +3
+  ExecWait 'reg import "$TEMP\weasel-hkcu-backup.reg"'
+  Delete "$TEMP\weasel-hkcu-backup.reg"
 
 done:
 FunctionEnd
@@ -339,10 +351,13 @@ program_files:
   ; Start WeaselServer
   Exec "$INSTDIR\WeaselServer.exe"
 
-  ; option CheckForUpdates
+  ; option CheckForUpdates: keep the stored preference on upgrades (restored
+  ; in .onInit); ask only when unconfigured; silent installs default to off
+  ReadRegStr $R3 HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates"
+  StrCmp $R3 "" 0 end
   IfSilent DisableAutoCheckUpdate
   MessageBox MB_YESNO|MB_ICONINFORMATION "$(AUTOCHKUPDATE)" IDYES EnableAutoCheckUpdate
-  DisableAutoCheckUpdate:
+DisableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "0"
   GoTo end
   EnableAutoCheckUpdate:
