@@ -107,6 +107,14 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _IsKeyboardDisabled();
   BOOL _IsKeyboardOpen();
   HRESULT _SetKeyboardOpen(BOOL fOpen);
+  // 在 OnChange 通知内对同一 compartment 的 SetValue 会被 TSF 以
+  // E_UNEXPECTED 拒绝（MSDN《ITfCompartment::SetValue》），强制重开须延迟
+  // 到通知返回之后：_RequestKeyboardOpenDeferred 借异步编辑会话做延迟
+  // 载体，会话内执行 _ApplyDeferredKeyboardOpen。自写同步触发的下一次
+  // OnChange 由 _fSuppressOpenCloseSelfWrite 跳过，避免 ascii_mode 被
+  // 强制重开翻转回去
+  void _RequestKeyboardOpenDeferred();
+  void _ApplyDeferredKeyboardOpen();
   HRESULT _GetCompartmentDWORD(DWORD& value, const GUID guid);
   HRESULT _SetCompartmentDWORD(const DWORD& value, const GUID guid);
 
@@ -242,6 +250,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   com_ptr<CCompartmentEventSink> _pKeyboardCompartmentSink;
   com_ptr<CCompartmentEventSink> _pConvertionCompartmentSink;
+
+  // 自写 OPENCLOSE 的抑制标志：_ApplyDeferredKeyboardOpen 置位期间，
+  // _HandleCompartment 跳过该次自写触发的通知（见 Compartments 注释）
+  BOOL _fSuppressOpenCloseSelfWrite = FALSE;
 
   // 禁用态缓存（K23c）：_pDisabledCacheContext 为空表示不缓存
   com_ptr<CCompartmentEventSink> _pKeyboardDisabledSink;

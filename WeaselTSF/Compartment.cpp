@@ -2,6 +2,7 @@
 #include "WeaselTSF.h"
 #include "Compartment.h"
 #include "CompartmentUtil.h"
+#include "EditSession.h"
 #include <resource.h>
 #include <functional>
 #include <ios>
@@ -227,6 +228,61 @@ HRESULT WeaselTSF::_SetKeyboardOpen(BOOL fOpen) {
   return hr;
 }
 
+namespace {
+// 延迟载体：异步编辑会话在 OnChange 通知调用栈退栈后才执行，此时对
+// OPENCLOSE compartment 的 SetValue 不再被 E_UNEXPECTED 拒绝。
+// 会话只做强制重开，不触碰文档，TF_ES_READ 足够
+class CForceKeyboardOpenEditSession : public CEditSession {
+ public:
+  CForceKeyboardOpenEditSession(com_ptr<WeaselTSF> pTextService,
+                                com_ptr<ITfContext> pContext)
+      : CEditSession(pTextService, pContext) {}
+
+  STDMETHODIMP DoEditSession(TfEditCookie ec) {
+    _pTextService->_ApplyDeferredKeyboardOpen();
+    return S_OK;
+  }
+};
+}  // namespace
+
+void WeaselTSF::_RequestKeyboardOpenDeferred() {
+  if (_pThreadMgr == NULL)
+    return;
+
+  // 借力的文档上下文：优先焦点文档 top（Ctrl+Space 即发生于焦点应用），
+  // 其次最近一次键处理的上下文
+  com_ptr<ITfContext> pContext;
+  com_ptr<ITfDocumentMgr> pDocMgrFocus;
+  if ((_pThreadMgr->GetFocus(&pDocMgrFocus) == S_OK) &&
+      (pDocMgrFocus != NULL)) {
+    pDocMgrFocus->GetTop(&pContext);
+  }
+  if (pContext == NULL)
+    pContext = _pEditSessionContext;
+  if (pContext == NULL)
+    return;  // 无可借力的上下文：放弃本次强制重开（与原被拒行为一致）
+
+  com_ptr<CForceKeyboardOpenEditSession> pEditSession;
+  pEditSession.Attach(new CForceKeyboardOpenEditSession(this, pContext));
+  if (pEditSession == NULL)
+    return;
+  HRESULT hrSession = E_FAIL;
+  pContext->RequestEditSession(_tfClientId, pEditSession,
+                               TF_ES_ASYNCDONTCARE | TF_ES_READ, &hrSession);
+}
+
+void WeaselTSF::_ApplyDeferredKeyboardOpen() {
+  // 异步会话可能晚于 Deactivate（TSF 会丢弃已停用客户端的排队会话，
+  // 此处再兜底一次）
+  if (_pThreadMgr == NULL)
+    return;
+  // SetValue 的通知是同步派发的：置位让 _HandleCompartment 跳过这次
+  // 自写触发的 OnChange；值未变化（已开）时不触发通知，复位即可
+  _fSuppressOpenCloseSelfWrite = TRUE;
+  _SetKeyboardOpen(TRUE);
+  _fSuppressOpenCloseSelfWrite = FALSE;
+}
+
 HRESULT WeaselTSF::_GetCompartmentDWORD(DWORD& value, const GUID guid) {
   return GetCompartmentDWORD(_pThreadMgr, _tfClientId, value, guid);
 }
@@ -296,8 +352,16 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       _EnableLanguageBar(isOpen);
       _UpdateLanguageBar(_status);
     } else {
+      // 自写强制重开触发的通知（见 _ApplyDeferredKeyboardOpen）：跳过，
+      // 否则 ascii_mode 会被这次自写翻转回去
+      if (_fSuppressOpenCloseSelfWrite) {
+        _fSuppressOpenCloseSelfWrite = FALSE;
+        return S_OK;
+      }
       _status.ascii_mode = !_status.ascii_mode;
-      _SetKeyboardOpen(true);
+      // 通知内对同一 compartment 的 SetValue 会被 TSF 以 E_UNEXPECTED
+      // 拒绝，强制重开延迟到通知返回之后执行
+      _RequestKeyboardOpenDeferred();
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
       _HandleLangBarMenuSelect(_status.ascii_mode
