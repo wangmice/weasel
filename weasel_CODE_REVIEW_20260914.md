@@ -19,7 +19,7 @@
 | A6 | P3 | bug | WeaselTSF/WeaselTSF.h:239, WeaselTSF.cpp:152 | _gaDisplayAttributeInput 未初始化且初始化失败被忽略 | ✔ | ✅ 已修复（7b2b021，批次13） |
 | A7 | P3 | bug+perf | WeaselTSF/LanguageBar.cpp:403-419 | 每键无条件读写 compartment；读取失败回写会清掉无关转换位 | ✔ | ✅ 已修复（d09c18e，批次15：bug 部分读失败不回写 + perf 部分稳态零写） |
 | A8 | P3 | 死代码 | WeaselTSF/WeaselTSF.cpp:13-20 | error_message（模态框+非线程安全 static）无调用者 | ✔ | ✅ 已修复（37f0da8，批次12） |
-| A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 未修复 |
+| A10 | P3 | bug | WeaselServer/WeaselTrayIcon.cpp:22-38 | 栈上 CIcon 句柄存入 m_tnd.hIcon 后悬垂 | ❌ | 无需修复（❌ 推翻，见 §3.2） |
 | A11 | P3 | bug | WeaselServer/SystemTraySDK.cpp:427-439 | SetIconList(HICON*,UINT) 差一越界（无调用者） | ✔ | ✅ 已修复（49406da，批次18） |
 | A12 | P3 | bug | WeaselServer/SystemTraySDK.cpp:823-832,694-697 | 菜单句柄泄漏 / 子菜单双重销毁 | ✔ | ✅ 已修复（9d16c70，批次18） |
 | A13 | P3 | bug | WeaselSetup/WeaselSetup.cpp:94-111 | /i 流程取消选项对话框仍继续安装；_has_installed 过期 | ✔ | ✅ 已修复（89b3e1a，批次8） |
@@ -66,12 +66,12 @@
 | B4 | P2 | bug | WeaselIPC/ContextUpdater.cpp:55-62 | 守卫 size()<2 却读 vec[2] 越界（旧 V2） | ✅ | ✅ 已修复（6d43edc，批次2） |
 | B5 | P2 | bug | WeaselIPC/Deserializer.h:8-16 | 反序列化异常在输入线程弹模态 MessageBox | ✔ | ✅ 已修复（8083f76，批次9） |
 | B6 | P2 | bug | include/PipeChannel.h:64-67 | TSS 管道句柄退出只 delete 不 CloseHandle | ✔ | ✅ 已修复（3b7f9c9，批次10） |
-| B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | ❌ | 未修复 |
+| B7 | P2 | bug | WeaselUI/DirectWriteResources.cpp:103-106 | font_face 空串时 ws_split[0] 越界（MSVC 空 vector） | ❌ | 无需修复（❌ 推翻，见 §3.2） |
 | B8 | P2 | bug | include/WeaselUtility.h:315-321 等 | HR() 对 S_FALSE 也抛且 UI 路径无局部 catch → 服务整体退出 | ✔ | ✅ 已修复（22cf921+7a67c20，批次3） |
 | B9 | P2 | bug | WeaselUI/VerticalLayout.cpp:215 等 | highlighted 无上限校验直接索引裸数组 | ✔ | ✅ 已修复（35c1b48，批次3） |
 | B10 | P2 | bug | WeaselUI/WeaselPanel.h:158-162 | m_istorepos/m_offsetys 等未初始化即读 | ✔ | ✅ 已修复（2570084，批次3） |
 | B11 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp | 每键 ~7 次 rime 交叉：直通键无早退、get_status×2、get_property 每键 | — | ✅ 已修复（c=ad4e3fa 批次4；a/b=eb5900a 批次5） |
-| B12 | P2 | perf | WeaselUI/WeaselPanel.cpp 等 | 每键整窗重算重绘：布局重建、双 layout、全幅模糊 | — | 未修复 |
+| B12 | P2 | perf | WeaselUI/WeaselPanel.cpp 等 | 每键整窗重算重绘：布局重建、双 layout、全幅模糊 | — | ✅ 已修复（批次20：(a) 模糊缓存 `1575e39`；(b)(c) 裁决不做，见 §4 批次20） |
 | B13 | P2 | perf | include/WeaselIPCData.h:103,166 | notequal/operator== 按值深拷贝候选向量（每键 6 份） | — | ✅ 已修复（a3d94fa，批次5） |
 | B14 | P2 | perf | RimeWithWeasel/RimeWithWeasel.cpp:73-87 | explorer.exe 每键 detached 线程 + Sleep(100) | — | ✅ 已修复（ad4e3fa（含 B11c），批次4） |
 | B15 | P3 | bug | WeaselIPC/WeaselClientImpl.cpp:145-191 | StartSession 失败 body 残留，下次拼双份客户端信息 | ✔ | ✅ 已修复（4d8777f，批次9） |
@@ -1044,3 +1044,28 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - `1fe6fc6` fix(WeaselUI): retry custom status icon loads instead of caching failures — B35⑥。`LoadIconNecessary` 在加载前就缓存路径：文件暂缺/损坏时 LoadImage 失败被缓存到路径变化为止，用户中途补装图标文件也一直不显示（且 CIcon 被 NULL 化成空图标）。修复：仅成功才缓存路径，失败保留当前图标、下次绘制自动重试；调用频率已核对——该函数在 DoPaint 内（状态图标可见时每次绘制刷新走到，随用户输入触发而非动画循环），失败重试是一次落空的文件打开，开销可忽略。模板参数换成具体类型（编译期类型检查），空路径回退内置资源图标的行为保留。验证：TestWeaselUI 新增 test_missing_status_icon_files（四个自定义图标路径全缺失 + ascii 模式显示状态图标，两次布局+绘制 settle）；"文件补上后恢复显示"不可经公共 API 观察（CIcon 状态在 panel 内部），按代码审阅确认 loaded_path 仅在加载成功时赋值。
 - B24 结案（无代码改动）。批次 3 的 `2ee9b36` 把 DoPaint 首行的 `ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED)` 改为首帧一次性，后被 `0da2dea` 回退：panel 对象可复用于重建的 HWND（UI::Create 复用对象重建窗口等路径），沿用"已切换"标志会让新窗口缺 WS_EX_LAYERED，UpdateLayeredWindow 失败且宿主（如 Electron）吞掉 WM_PAINT 时候选框全黑。样式切换必须每帧执行；ModifyStyleEx 内部先比较再写入，稳态每帧只多一次 GetWindowLong。现实现（WeaselPanel.cpp DoPaint 首行）已带完整注释，保留每帧实现，本项按"结案"处理。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过（run_tests.sh）。TestWeaselUI 现 45 项断言（批次 19 新增 23 项）。
+
+### 批次 20（2026-09-15）：B12(a) 落地、插桩移除、read_reg_sz Win11 24H2 加固（收尾会话 1）
+
+主题：最后一个未修复条目 B12 收口 + 环境新发现修复。
+
+- `1575e39` perf(WeaselUI): cache the highlight shadow blur bitmap keyed by paint inputs — B12(a)。模糊位图是键（矩形尺寸/位图边距/圆角/模糊半径/阴影偏移/颜色含 alpha）的纯函数，WeaselPanel 内 FIFO 有界（16）缓存，样式落地时整体清空。计量数据（临时计数器，测完已移除；9 候选竖排全阴影主题）：仅移动高亮帧（等价翻页/选中变化）bitmap 分配 11+→0、全幅盒模糊 11+→0；内容变化帧只分配尺寸变化的矩形（2 次）。附带修复插桩版引入的 teardown 崩溃：缓存条目是 GDI+ 对象，必须在 GdiplusShutdown 之前释放（~WeaselPanel 析构体先 clear 再 shutdown，成员析构晚于析构体）。
+- B12(b)(c) 裁决**不做**：GetTextSizeDW 双 layout 与换行约束/overhang 语义、测量结果供 _TextOut 复用与布局/绘制耦合，均在全部布局共享的像素级排版管线上，回归风险大于收益；textlayout 创建维持 ~98/帧（已计量），若未来成为瓶颈再按本条路径实施。
+- `c510a15` fix(WeaselSetup): grow the read buffer when a REG_SZ value overflows it — 审查后新发现（环境行为差异，编号外）。Windows 11 24H2+（本机 26100）注册表可为 REG_SZ 追加 NUL 终止符且**非确定**（同一 520 字节无 NUL 写入观测到存储 520 或 522 两种结果，跨进程/跨运行翻转），恰好 MAX_PATH 的值会令固定栈缓冲触发 ERROR_MORE_DATA，A14 的 read_reg_sz 整体失败（实测 rc=234 stored=522，TestWeaselSetup 该用例稳定失败）。修复：溢出时按需扩容重查一次，仍以首个 NUL 定界（A14 的不越读保证不变）；TestWeaselSetup 新增必经扩容路径的超长用例（MAX_PATH+40）。验证：修复后连续两次全过，覆盖两种存储行为。
+- 索引行更正：A10、B7 修复列由"未修复"改为"无需修复（❌ 推翻，见 §3.2）"，与验证列一致；B12 行标记已修复（本批）。
+- 验证状态：插桩移除后全量套件 10 目标 PASS（TestWeaselUI 45 断言全绿、exit 0，确认 teardown 崩溃已修）；`c510a15` 仅改动 SetupUtil（只链入 TestWeaselSetup），TestWeaselSetup 重建后两次全过——11 个目标实质全覆盖。全量重跑与 release 构建留待 xmake 项目解析恢复后补做（见下）。
+
+#### 经验记录
+
+1. Win11 24H2 注册表 REG_SZ 追加 NUL 的行为非确定，"存储 == 写入"不是可依赖的不变量：测试断言按内容/语义写，并放一个必然超过缓冲长度的用例强制走 ERROR_MORE_DATA 路径。
+2. MSVC printf 参数求值顺序为右到左：repro 中把 read 结果与 size() 塞进同一 printf 曾打出调用前的旧值，误导排查方向——repro 先落局部变量再输出。
+3. GDI+ 对象的生命周期必须短于 GdiplusShutdown：持有 Gdiplus::Bitmap 的缓存要在析构体内显式先释放；本例由测试 teardown 的 0xC0000005 当场抓出。
+4. 本机 shell 会话中 `xmake -P <临时工程>` 污染了仓库的项目解析（此后仓库 cwd 下裸 `xmake` 仍解析到临时工程；已清 .xmake、Z:/Temp 会话缓存、确认无 XMAKE_* 环境变量，未复原；根因未定位）。规避：仓库构建显式 `-P <仓库路径>`，或 repro 工具改用独立编译（cl 直编/独立 shell），不与仓库 xmake 混用 -P。
+
+#### 收尾状态与下一步
+
+- 已收口：B1-B37 全部条目有终态（已修复 / 不修有据 / 结案 / 推翻无需修复 / 本批 B12）。A 路 A1-A16、K 系列 K1-K24 同（见 §0 索引）。
+- 待办 1：恢复干净的仓库 xmake 调用（新 shell 或定位污染根因后），补全量 debug 11 目标重跑 + release 构建确认。
+- 待办 2：批次 14 附带发现的裁决——`_HandleCompartment` else 分支（ToggleImeOnOpenClose != yes）在 OnChange 通知内同步 `_SetKeyboardOpen(true)`，被 TSF 以 E_UNEXPECTED 拒绝（键盘实际不会重开）；修复需把写延迟出 OnChange（投递消息/会话），或显式裁决不修。WeaselTSF/Compartment.cpp:300 仍为原样。
+- 待办 3：改写 README——说明本仓为 rime/weasel fork、添加 AI 声明（审查/修复由 AI 辅助完成，含范围与批次）、按 §0 索引与批次记录简要总结 bug 修复与性能优化。
+- 待办 4（可选）：make-installer.ps1 打包验证；删除 Z:/Temp/weasel_wrap（repro 源码与脚本，问题已定位无需保留）。
