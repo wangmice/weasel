@@ -147,7 +147,6 @@ skip:
   "UninstallString"
   StrCmp $R0 "" done
 
-  StrCpy $0 "Upgrade"
   IfSilent uninst 0
   MessageBox MB_OKCANCEL|MB_ICONINFORMATION "$(CONFIRMATION)" IDOK uninst
   Abort
@@ -193,8 +192,8 @@ call_uninstaller:
   SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
-  ; Prompt reboot
-  SetRebootFlag true
+
+  ; give the file deletions above a moment to settle before reinstalling
   Sleep 800
 
   ; Restore the per-user config backed up above: with Profile present, the new
@@ -362,11 +361,7 @@ DisableAutoCheckUpdate:
   GoTo end
   EnableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "1"
-  end:
-
-  ; Prompt reboot
-  StrCmp $0 "Upgrade" 0 +2
-  SetRebootFlag true
+end:
 
 SectionEnd
 
@@ -422,8 +417,5 @@ Section "Uninstall"
   SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
-
-  ; Prompt reboot
-  SetRebootFlag true
 
 SectionEnd
