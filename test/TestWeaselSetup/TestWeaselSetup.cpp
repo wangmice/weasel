@@ -9,6 +9,7 @@
 #include <stdio.h>
 
 #include <string>
+#include <vector>
 
 #include "../../WeaselSetup/SetupUtil.h"
 
@@ -81,6 +82,18 @@ static void test_read_reg_sz() {
             out.size() == _countof(full) &&
             out.find_first_not_of(L'A') == std::wstring::npos,
         "non-NUL-terminated full-buffer REG_SZ is truncated in bounds");
+
+  // 超过 MAX_PATH 的未 NUL 终止 REG_SZ：必经 ERROR_MORE_DATA 扩容路径。
+  // Windows 11 24H2 起注册表可为 REG_SZ 追加终止符，实际存储可大于写入
+  // 长度，读取不得依赖写入尺寸
+  const size_t kLong = MAX_PATH + 40;
+  std::vector<WCHAR> longBuf(kLong, L'B');
+  set_test_value(hKey, L"TooLong", longBuf.data(),
+                 (DWORD)(kLong * sizeof(WCHAR)), REG_SZ);
+  check(read_reg_sz(hKey, L"TooLong", out) &&
+            out.size() == kLong &&
+            out.find_first_not_of(L'B') == std::wstring::npos,
+        "over-long non-NUL REG_SZ is read via a grown buffer");
 
   // 内嵌 NUL 后跟残留字节：取首个 NUL 前
   const wchar_t embedded[] = L"ab\0cd\0";

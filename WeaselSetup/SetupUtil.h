@@ -10,7 +10,9 @@
 std::wstring unquote_argument(const std::wstring& arg);
 
 // 读取 hKey 下的 REG_SZ 值。以返回的数据长度为上界查找字符串结尾，
-// 存量数据未 NUL 终止时截断到缓冲区内，构造 std::wstring 不越读
+// 存量数据未 NUL 终止时截断到缓冲区内，构造 std::wstring 不越读。
+// 值超出栈上缓冲时按需扩容重查（Windows 11 24H2 起注册表可为 REG_SZ
+// 追加 NUL 终止符，实际存储可大于写入长度）
 bool read_reg_sz(HKEY hKey, const wchar_t* value_name, std::wstring& out);
 
 // 递归删除 root 下 subkey 的整棵键树（含全部子键与值）。
