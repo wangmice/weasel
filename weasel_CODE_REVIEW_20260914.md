@@ -52,7 +52,7 @@
 | K19 | P2 | Configurator.cpp:141-155 | deploy 后不 join_maintenance_thread 即 EndMaintenance | ✔ | ✅ 已修复（04b7775，批次7） |
 | K20 | P2 | test/TestWeaselIPC/TestWeaselIPC.cpp:143-146 | AddSession 签名不 override，测试服务端会话计数不增长 | ✔ | ✅ 已修复（63d3cae，批次9） |
 | K21 | P3 | WeaselTSF/WeaselTSF.cpp:177-190 | 每次线程焦点切换读注册表 + 2 次 IPC 往返 | — | ✅ 已修复（2666c70，批次15：注册表 TTL 缓存，IPC 保留有据） |
-| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | ✅ 已修复（批次13/14/16/17/18 分模块收口，杂项族全部完成） |
+| K22 | P3 | 多处 | P3 杂项族（详见 A 路报告 §3 表） | ✔ | ✅ 已修复（批次13/14/16/17/18 分模块收口，杂项族全部完成；⑤曾致 Telegram 每键双字符回归，批次22 `204fb4a` 改 vkey 身份判重收口） |
 | K23 | P3 | perf | 每键 compartment/语言栏/图标读盘等性能族 | — | ✅ 已修复（00f7695+a34af93+78d08c1，批次15：a/b/c 分项提交；compartment 读写部分随 A7） |
 | K24 | P3 | WeaselTSF/KeyEventSink.cpp:65-74 | 失焦即清空已输入编码，切回不恢复 | ✔ | 不修（有据，上游一致/防串扰设计，见 §4 批次12） |
 
@@ -1078,3 +1078,8 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 - 待办 4（打包验证 + 清理）：`make-installer.ps1 -Build` 全流程通过（x64+x86 release 重编译、output 清单齐、makensis 成功），产出 `output\archives\weasel-0.17.4.161.d977c0e-installer.exe`（约 10 MB；4 个 7010 警告为 ARM DLL/.gram 可选文件缺失，脚本注释明示可忽略）；`Z:/Temp/weasel_wrap` 已删除。
 - 至此 §0 索引全部条目与四条收尾待办均有终态，本报告收口。
 - 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过。
+
+### 批次 22（2026-09-15）：K22⑤ 回归修复（Telegram 每键双字符）
+
+- 用户 bisect 实测发现批次 14 的 `3514b28`（K22⑤）引入回归：AyuGram（Telegram 桌面分支，Qt）中文模式每按一键上屏两个字符，浏览器/VSCode 正常。根因：K22⑤ 以 (wParam, lParam) 精确相等判 Test/Key 配对，而 TSF 无此契约——TSF-aware 应用（浏览器/VSCode 自调 keystroke manager，参数取自消息结构）恰好字节一致，非 TSF-aware 应用（Qt 系）的键事件由系统 CUAS/IMM32 兼容桥代投递，Test 与 Key 的 lParam 各位可不同，配对判定失败 → OnKeyDown 重复送服务器。批次 14 的"全量状态机推演含上述 5 类序列"漏枚举了"调用方是 CUAS 桥而非应用"这整类调用方。
+- `204fb4a` fix(WeaselTSF): dedupe paired key events by vkey, not exact identity。判重身份改为虚键码——`ConvertKeyEvent` 消费的键身份本就只有 vkey（scanCode/extended 仅在 vkey 内细分），lParam 精确相等是强于组件语义的隐含假设；不同 vkey 即开新周期，K22⑤ 原目标（吞配对回调的残留 pending 不吞后续键）保留。另在 OnSetFocus 复位两侧 pending（焦点切换后配对必然失效）。残余限制收窄为：应用吞掉配对回调且连 key-up 也吞时，同 vkey 下一次按下漏送一次（键身份信息量所限）。验证：release 全量构建 ok（TestKeyEvent 与改动无编译单元交集）；完整分析见 `weasel_TSF_KEYEVENT_REGRESSION_20260915.md`。

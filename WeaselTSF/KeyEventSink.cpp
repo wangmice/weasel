@@ -62,6 +62,9 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
 }
 
 STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
+  // 焦点切换后，任何等待配对回调的 pending 状态都已失效
+  _testKeyDownPending.pending = FALSE;
+  _testKeyUpPending.pending = FALSE;
   if (fForeground)
     m_client.FocusIn();
   else {
@@ -81,10 +84,13 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
  *
  * We use the pending state to omit multiple OnTestKeyDown() calls, and for
  * OnKeyDown() to check if the key has already been sent to the server. The
- * pending state remembers the (wParam, lParam) that armed it: only a
- * repeated test of that same key event is deduplicated, while any event for
- * a different key starts a new cycle, so a stale pending flag (its paired
- * call was swallowed) cannot eat the next key.
+ * pending state is keyed by virtual-key code only: the paired Test/Key
+ * callbacks are not guaranteed to carry identical lParam (for non-TSF apps
+ * the caller is the CUAS IMM32-bridge, which may pass different lParam bits
+ * between the two calls), while the vkey is the whole key identity this
+ * component consumes (see KeyEvent.cpp). Any event for a different key
+ * starts a new cycle, so a stale pending flag (its paired call was
+ * swallowed) cannot eat the next key.
  */
 
 STDMETHODIMP WeaselTSF::OnTestKeyDown(ITfContext* pContext,
@@ -92,17 +98,14 @@ STDMETHODIMP WeaselTSF::OnTestKeyDown(ITfContext* pContext,
                                       LPARAM lParam,
                                       BOOL* pfEaten) {
   _testKeyUpPending.pending = FALSE;
-  if (_testKeyDownPending.pending &&
-      _testKeyDownPending.wParam == wParam &&
-      _testKeyDownPending.lParam == lParam) {
+  if (_testKeyDownPending.pending && _testKeyDownPending.vkey == wParam) {
     *pfEaten = TRUE;
     return S_OK;
   }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
   _testKeyDownPending.pending = *pfEaten;
-  _testKeyDownPending.wParam = wParam;
-  _testKeyDownPending.lParam = lParam;
+  _testKeyDownPending.vkey = static_cast<UINT>(wParam);
   return S_OK;
 }
 
@@ -111,9 +114,8 @@ STDMETHODIMP WeaselTSF::OnKeyDown(ITfContext* pContext,
                                   LPARAM lParam,
                                   BOOL* pfEaten) {
   _testKeyUpPending.pending = FALSE;
-  BOOL fDuplicate = _testKeyDownPending.pending &&
-                    _testKeyDownPending.wParam == wParam &&
-                    _testKeyDownPending.lParam == lParam;
+  BOOL fDuplicate =
+      _testKeyDownPending.pending && _testKeyDownPending.vkey == wParam;
   _testKeyDownPending.pending = FALSE;
   if (fDuplicate) {
     *pfEaten = TRUE;
@@ -129,16 +131,14 @@ STDMETHODIMP WeaselTSF::OnTestKeyUp(ITfContext* pContext,
                                     LPARAM lParam,
                                     BOOL* pfEaten) {
   _testKeyDownPending.pending = FALSE;
-  if (_testKeyUpPending.pending && _testKeyUpPending.wParam == wParam &&
-      _testKeyUpPending.lParam == lParam) {
+  if (_testKeyUpPending.pending && _testKeyUpPending.vkey == wParam) {
     *pfEaten = TRUE;
     return S_OK;
   }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
   _testKeyUpPending.pending = *pfEaten;
-  _testKeyUpPending.wParam = wParam;
-  _testKeyUpPending.lParam = lParam;
+  _testKeyUpPending.vkey = static_cast<UINT>(wParam);
   return S_OK;
 }
 
@@ -147,9 +147,8 @@ STDMETHODIMP WeaselTSF::OnKeyUp(ITfContext* pContext,
                                 LPARAM lParam,
                                 BOOL* pfEaten) {
   _testKeyDownPending.pending = FALSE;
-  BOOL fDuplicate = _testKeyUpPending.pending &&
-                    _testKeyUpPending.wParam == wParam &&
-                    _testKeyUpPending.lParam == lParam;
+  BOOL fDuplicate =
+      _testKeyUpPending.pending && _testKeyUpPending.vkey == wParam;
   _testKeyUpPending.pending = FALSE;
   if (fDuplicate) {
     *pfEaten = TRUE;
