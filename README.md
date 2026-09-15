@@ -1,4 +1,21 @@
-﻿【小狼毫】輸入法
+﻿> 本仓库是 [rime/weasel](https://github.com/rime/weasel) 的 fork。
+>
+> 与上游的差异集中在质量加固：2026-09 对全部自研模块（WeaselTSF / WeaselServer / WeaselSetup / WeaselDeployer / WeaselIPC / WeaselIPCServer / WeaselUI / RimeWithWeasel / include 共享头文件，约数万行）做了一轮深度静态代码审查，随后按 21 个修复批次逐项修复、验证并记录。审查报告：[weasel_CODE_REVIEW_20260906.md](weasel_CODE_REVIEW_20260906.md)、[weasel_CODE_REVIEW_20260914.md](weasel_CODE_REVIEW_20260914.md)（含逐项验证结论与批次修复记录）。
+>
+> AI 声明：上述代码审查、修复实施、测试编写与验证均由 AI 辅助完成。
+>
+> ### 修复概览
+>
+> - 规模：登记 bug 67 项 + 性能项 10 项（含 6 项运行时复现确认）；终态全覆盖——已修复 / 不修有据（与上游一致的设计或协议层不可达）/ 经运行时验证推翻无需修复。
+> - P1 级：UI 跨线程窗口调用与服务消息线程互等死锁（全系统输入冻结）；用户资料同步失败后服务端永久停留在维护态（现存会话全部禁输且不自愈）。
+> - 稳定性：合成期每击键泄漏 ITfRange 的 COM 引用泄漏；托盘快照跨线程读写 `std::wstring` 等数据竞争；反序列化异常在宿主输入线程弹模态框；HR() 异常贯穿 WNDPROC 致服务整体退出；`swprintf_s` 非法参数直接终止进程；多处越界索引 / 未初始化成员 / 空指针解引用收口。
+> - 安装 / 部署：WOW64 重定向在提前返回路径不恢复、注册表清理对真实 TIP 键无效、regsvr32 退出码不检查、卸载不清注册表树与 HKCU 配置等安装器缺陷修复。
+> - 性能（击键热路径）：直通键早退并复用 rime status 快照；候选向量去重比较提速 23.5×；escape/unescape 提速 8.7×；语言栏 / compartment / 图标按变化缓存（稳态每键 OnUpdate 与图标读盘归零、`_IsKeyboardDisabled` 每键 7→2 次 COM）；高亮阴影模糊位图缓存（内容不变帧零分配零模糊）；响应解析器复用（每键堆分配 ~9-15 次→0）。
+> - 测试：测试目标由 5 个增至 11 个，关键修复带负向验证（临时还原缺陷确认测试能捕获）。
+>
+> 以下为上游 README 原文。
+
+【小狼毫】輸入法
 ================
 
 基於 中州韻輸入法引擎／Rime Input Method Engine 等開源技術

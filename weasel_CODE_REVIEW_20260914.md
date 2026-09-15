@@ -1065,7 +1065,16 @@ if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
 #### 收尾状态与下一步
 
 - 已收口：B1-B37 全部条目有终态（已修复 / 不修有据 / 结案 / 推翻无需修复 / 本批 B12）。A 路 A1-A16、K 系列 K1-K24 同（见 §0 索引）。
-- 待办 1：恢复干净的仓库 xmake 调用（新 shell 或定位污染根因后），补全量 debug 11 目标重跑 + release 构建确认。
-- 待办 2：批次 14 附带发现的裁决——`_HandleCompartment` else 分支（ToggleImeOnOpenClose != yes）在 OnChange 通知内同步 `_SetKeyboardOpen(true)`，被 TSF 以 E_UNEXPECTED 拒绝（键盘实际不会重开）；修复需把写延迟出 OnChange（投递消息/会话），或显式裁决不修。WeaselTSF/Compartment.cpp:300 仍为原样。
-- 待办 3：改写 README——说明本仓为 rime/weasel fork、添加 AI 声明（审查/修复由 AI 辅助完成，含范围与批次）、按 §0 索引与批次记录简要总结 bug 修复与性能优化。
-- 待办 4（可选）：make-installer.ps1 打包验证；删除 Z:/Temp/weasel_wrap（repro 源码与脚本，问题已定位无需保留）。
+- 待办 1：恢复干净的仓库 xmake 调用（新 shell 或定位污染根因后），补全量 debug 11 目标重跑 + release 构建确认。 → **已完成（批次 21）**
+- 待办 2：批次 14 附带发现的裁决——`_HandleCompartment` else 分支（ToggleImeOnOpenClose != yes）在 OnChange 通知内同步 `_SetKeyboardOpen(true)`，被 TSF 以 E_UNEXPECTED 拒绝（键盘实际不会重开）；修复需把写延迟出 OnChange（投递消息/会话），或显式裁决不修。WeaselTSF/Compartment.cpp:300 仍为原样。 → **已修复（5d95a13，批次 21）**
+- 待办 3：改写 README——说明本仓为 rime/weasel fork、添加 AI 声明（审查/修复由 AI 辅助完成，含范围与批次）、按 §0 索引与批次记录简要总结 bug 修复与性能优化。 → **已完成（批次 21）**
+- 待办 4（可选）：make-installer.ps1 打包验证；删除 Z:/Temp/weasel_wrap（repro 源码与脚本，问题已定位无需保留）。 → **已完成（批次 21）**
+
+### 批次 21（2026-09-15）：待办 1-4 收尾
+
+- 待办 1（xmake/全量验证）：新 shell 会话中仓库 cwd 下裸 `xmake` 已恢复正常（此前 `-P` 污染不再复现，根因未定位、按会话级污染处理）。全量 debug 构建 + 11 个测试目标重跑 **11/11 全过**；release x64 全量构建 ok；release x86 WeaselSetup 构建 ok；构建后已切回 x64 debug。
+- `5d95a13` fix(WeaselTSF): defer the forced keyboard reopen out of the OnChange notification — 待办 2。默认模式（ToggleImeOnOpenClose != yes）下 OPENCLOSE 切换（Ctrl+Space）被解释为 ascii_mode 翻转并强制重开键盘，但 `_SetKeyboardOpen(true)` 在 compartment 自身 OnChange 通知内执行，TSF 按 MSDN 契约以 E_UNEXPECTED 拒绝：键盘随每次 Ctrl+Space 物理开/关交替，系统 IME 指示隔次显示"关"，语言栏按钮被禁用后再强制启用。修复：借异步编辑会话（TF_ES_ASYNCDONTCARE | TF_ES_READ，纯延迟载体不触碰文档；焦点文档 top context 优先、`_pEditSessionContext` 兜底）把 SetValue 延迟到通知调用栈退栈后；自写的 OnChange 同步派发于 SetValue 内，`_ApplyDeferredKeyboardOpen` 以 `_fSuppressOpenCloseSelfWrite` 标志夹住该次写入，`_HandleCompartment` 见到标志跳过这一次通知——否则强制重开会把 ascii_mode 翻转回去、抵消本次切换。修复后每次 Ctrl+Space 恰好翻转一次 ascii 且键盘恒回到开，即 #1364 的原始设计意图。无可用上下文时放弃重开（退化为原行为）；Deactivate 后 `_pThreadMgr` 判空兜底（TSF 本就会丢弃已停用客户端的排队会话，双保险）。验证：TSF COM 无法控制台复现，release/debug 全量构建 + 11/11 测试 + 状态机推演（单次按、快速双按、已开 no-op、Deactivate 守卫四类序列）。
+- 待办 3（README）：README.md 开头新增 fork 说明块——本仓为 rime/weasel fork 的声明、AI 辅助声明、按 §0 索引与批次记录的修复概览（P1 两项、稳定性、安装/部署、击键热路径性能量化、测试目标 5→11）；上游 README 原文完整保留于分隔线后。
+- 待办 4（打包验证 + 清理）：`make-installer.ps1 -Build` 全流程通过（x64+x86 release 重编译、output 清单齐、makensis 成功），产出 `output\archives\weasel-0.17.4.161.d977c0e-installer.exe`（约 10 MB；4 个 7010 警告为 ARM DLL/.gram 可选文件缺失，脚本注释明示可忽略）；`Z:/Temp/weasel_wrap` 已删除。
+- 至此 §0 索引全部条目与四条收尾待办均有终态，本报告收口。
+- 构建：release/debug 全量 build ok（release 后已切回 debug）；测试目标 11 个全过。
