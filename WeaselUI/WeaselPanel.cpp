@@ -116,6 +116,8 @@ WeaselPanel::WeaselPanel(weasel::UI& ui)
 }
 
 WeaselPanel::~WeaselPanel() {
+  // B12a：缓存的模糊位图是 GDI+ 对象，必须在 GdiplusShutdown 之前释放
+  m_shadowBitmapCache.clear();
   Gdiplus::GdiplusShutdown(_m_gdiplusToken);
   delete m_layout;
   m_layout = NULL;
@@ -634,41 +636,66 @@ void WeaselPanel::_HighlightText(CDCHandle& dc,
     BYTE b = GetBValue(shadowColor);
     BYTE alpha = (BYTE)((shadowColor >> 24) & 255);
     Gdiplus::Color shadow_color = Gdiplus::Color::MakeARGB(alpha, r, g, b);
-    static Gdiplus::Bitmap* pBitmapDropShadow;
-    pBitmapDropShadow = new Gdiplus::Bitmap((INT)rc.Width() + blurMarginX * 2,
-                                            (INT)rc.Height() + blurMarginY * 2,
-                                            PixelFormat32bppPARGB);
 
-    Gdiplus::Graphics g_shadow(pBitmapDropShadow);
-    g_shadow.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-    // dropshadow, draw a roundrectangle to blur
-    if (DPI_SCALE(m_style.shadow_offset_x) != 0 ||
-        DPI_SCALE(m_style.shadow_offset_y) != 0) {
-      GraphicsRoundRectPath shadow_path(rect, radius);
-      Gdiplus::SolidBrush shadow_brush(shadow_color);
-      g_shadow.FillPath(&shadow_brush, &shadow_path);
-    }
-    // round shadow, draw multilines as base round line
-    else {
-      int step = alpha / DPI_SCALE(m_style.shadow_radius) / 2;
-      Gdiplus::Pen pen_shadow(shadow_color, (Gdiplus::REAL)1);
-      for (int i = 0; i < DPI_SCALE(m_style.shadow_radius); i++) {
-        GraphicsRoundRectPath round_path(rect, radius + 1 + i);
-        g_shadow.DrawPath(&pen_shadow, &round_path);
-        shadow_color = Gdiplus::Color::MakeARGB(alpha - i * step, r, g, b);
-        pen_shadow.SetColor(shadow_color);
-        rect.InflateRect(1, 1);
+    // B12a：模糊位图按 (尺寸/边距/圆角/半径/偏移/颜色) 缓存。翻页 / 移动
+    // 高亮 / 悬停重绘时矩形尺寸与画笔参数不变，直接复用上次的模糊结果，
+    // 免去每高亮一次整幅 Bitmap 分配 + 盒模糊
+    ShadowBitmapKey key{rc.Width(),
+                        rc.Height(),
+                        blurMarginX,
+                        blurMarginY,
+                        radius,
+                        DPI_SCALE(m_style.shadow_radius),
+                        DPI_SCALE(m_style.shadow_offset_x),
+                        DPI_SCALE(m_style.shadow_offset_y),
+                        shadowColor};
+    Gdiplus::Bitmap* pBitmapDropShadow = NULL;
+    for (auto& e : m_shadowBitmapCache) {
+      if (!(key < e.first) && !(e.first < key)) {
+        pBitmapDropShadow = e.second.get();
+        break;
       }
     }
-    DoGaussianBlur(pBitmapDropShadow, (float)DPI_SCALE(m_style.shadow_radius),
-                   (float)DPI_SCALE(m_style.shadow_radius));
+    if (pBitmapDropShadow == NULL) {
+      pBitmapDropShadow = new Gdiplus::Bitmap(
+          (INT)rc.Width() + blurMarginX * 2, (INT)rc.Height() + blurMarginY * 2,
+          PixelFormat32bppPARGB);
+
+      Gdiplus::Graphics g_shadow(pBitmapDropShadow);
+      g_shadow.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+      // dropshadow, draw a roundrectangle to blur
+      if (DPI_SCALE(m_style.shadow_offset_x) != 0 ||
+          DPI_SCALE(m_style.shadow_offset_y) != 0) {
+        GraphicsRoundRectPath shadow_path(rect, radius);
+        Gdiplus::SolidBrush shadow_brush(shadow_color);
+        g_shadow.FillPath(&shadow_brush, &shadow_path);
+      }
+      // round shadow, draw multilines as base round line
+      else {
+        int step = alpha / DPI_SCALE(m_style.shadow_radius) / 2;
+        Gdiplus::Pen pen_shadow(shadow_color, (Gdiplus::REAL)1);
+        for (int i = 0; i < DPI_SCALE(m_style.shadow_radius); i++) {
+          GraphicsRoundRectPath round_path(rect, radius + 1 + i);
+          g_shadow.DrawPath(&pen_shadow, &round_path);
+          shadow_color =
+              Gdiplus::Color::MakeARGB(alpha - i * step, r, g, b);
+          pen_shadow.SetColor(shadow_color);
+          rect.InflateRect(1, 1);
+        }
+      }
+      DoGaussianBlur(pBitmapDropShadow,
+                     (float)DPI_SCALE(m_style.shadow_radius),
+                     (float)DPI_SCALE(m_style.shadow_radius));
+
+      // FIFO 有界：超出容量淘汰最旧条目（条目顺序即插入顺序）
+      if (m_shadowBitmapCache.size() >= SHADOW_BITMAP_CACHE_CAP)
+        m_shadowBitmapCache.erase(m_shadowBitmapCache.begin());
+      m_shadowBitmapCache.emplace_back(
+          key, std::unique_ptr<Gdiplus::Bitmap>(pBitmapDropShadow));
+    }
 
     g_back.DrawImage(pBitmapDropShadow, rc.left - blurMarginX,
                      rc.top - blurMarginY);
-
-    // free memory
-    delete pBitmapDropShadow;
-    pBitmapDropShadow = NULL;
   }
 
   // 必须back_color非完全透明才绘制
@@ -1358,8 +1385,12 @@ LRESULT WeaselPanel::OnApplyStyle(UINT uMsg,
   bHandled = TRUE;
   // UIStyle 由跨线程的 ApplyStyle() 在堆上分配，这里消费完即释放
   std::unique_ptr<UIStyle> pStyle(reinterpret_cast<UIStyle*>(lParam));
-  if (pStyle)
-    m_style = *pStyle;  // 现已在 UI 线程，直接落地
+  if (pStyle) {
+    m_style = *pStyle;  // 现已在 UI 线程落地
+    // B12a：配色 / 布局参数变化，旧阴影位图全部作废（键虽能防误用，清空可
+    // 及时回收内存）
+    m_shadowBitmapCache.clear();
+  }
   return 0;
 }
 
@@ -1496,6 +1527,8 @@ void WeaselPanel::ApplyStyle(UIStyle const& style) {
     return;
   }
   m_style = style;
+  // B12a：样式落地，旧阴影位图作废（见 OnApplyStyle 同款注释）
+  m_shadowBitmapCache.clear();
 }
 
 void WeaselPanel::Show() {

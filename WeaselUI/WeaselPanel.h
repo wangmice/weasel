@@ -5,6 +5,8 @@
 #include "Layout.h"
 #include "GdiplusBlur.h"
 
+#include <tuple>
+
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 
@@ -42,6 +44,29 @@ enum class PanelVisibility : WPARAM {
   Hide = 0,
   Show = 1,
   ShowWithTimeout = 2,
+};
+
+// B12a：高亮阴影模糊位图的缓存键——收录参与生成模糊位图像素的全部输入
+// （矩形尺寸、位图边距、圆角、模糊半径、阴影偏移、颜色含 alpha）。同键必出
+// 同图：样式 / DPI / 布局边距变化自然落入不同的键，无需额外的失效逻辑。
+struct ShadowBitmapKey {
+  bool operator<(const ShadowBitmapKey& o) const {
+    return std::tie(width, height, blur_margin_x, blur_margin_y, radius,
+                    shadow_radius, shadow_offset_x, shadow_offset_y,
+                    shadow_color) <
+           std::tie(o.width, o.height, o.blur_margin_x, o.blur_margin_y,
+                    o.radius, o.shadow_radius, o.shadow_offset_x,
+                    o.shadow_offset_y, o.shadow_color);
+  }
+  int width;
+  int height;
+  int blur_margin_x;
+  int blur_margin_y;
+  int radius;
+  int shadow_radius;
+  int shadow_offset_x;
+  int shadow_offset_y;
+  COLORREF shadow_color;
 };
 
 class WeaselPanel
@@ -253,4 +278,13 @@ class WeaselPanel
   // （等待下一次外部刷新），防止持续失败时消息自旋
   static constexpr BYTE MAX_PAINT_RECOVERY = 2;
   BYTE m_paint_recovery_left = MAX_PAINT_RECOVERY;
+
+  // B12a：阴影模糊位图缓存（键见 ShadowBitmapKey）。位图生成 = GDI+ 几何
+  // 绘制 + 确定性盒模糊，是键的纯函数，命中即可直接复用；消费方仅
+  // DrawImage 读取、不改动不持有。FIFO 有界，样式落地时整体清空；只在
+  // UI 线程（DoPaint 路径）访问，无锁。条目是 GDI+ 对象，必须在
+  // GdiplusShutdown 之前释放（见 ~WeaselPanel）。
+  static constexpr size_t SHADOW_BITMAP_CACHE_CAP = 16;
+  std::vector<std::pair<ShadowBitmapKey, std::unique_ptr<Gdiplus::Bitmap>>>
+      m_shadowBitmapCache;
 };
