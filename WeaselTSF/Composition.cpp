@@ -23,10 +23,18 @@ class CStartCompositionEditSession : public CEditSession {
 
 STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
+  com_ptr<ITfRange> pRangeSelection;
   com_ptr<ITfRange> pRangeComposition;
   if (_pContext->QueryInterface(IID_ITfInsertAtSelection,
                                 (LPVOID*)&pInsertAtSelection) != S_OK)
     return E_FAIL;
+  if (pInsertAtSelection->InsertTextAtSelection(ec, TF_IAS_QUERYONLY, NULL, 0,
+                                                &pRangeSelection) != S_OK)
+    return E_FAIL;
+
+  // Typing replaces the selection: delete it and re-query the collapsed
+  // insertion point. A rejected edit keeps the previous behavior.
+  pRangeSelection->SetText(ec, 0, L"", 0);
   if (pInsertAtSelection->InsertTextAtSelection(ec, TF_IAS_QUERYONLY, NULL, 0,
                                                 &pRangeComposition) != S_OK)
     return E_FAIL;
