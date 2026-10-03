@@ -9,9 +9,15 @@
 #define IDR_MENU_POPUP                  105
 #define IDI_FULL_SHAPE                  106
 #define IDI_HALF_SHAPE                  107
+#define IDD_QUICK_WORD                  200
 #define IDS_STR_SYSTEM_VERSION_WARNING_CAPTION 300
 #define IDS_STR_SYSTEM_VERSION_WARNING  301
 #define IDS_STR_UNDER_MAINTENANCE       302
+#define IDS_STR_QUICK_WORD_EMPTY_TEXT   303
+#define IDS_STR_QUICK_WORD_EMPTY_CODE   304
+#define IDS_STR_QUICK_WORD_SAVE_FAILED  305
+#define IDC_QUICK_WORD_TEXT             1001
+#define IDC_QUICK_WORD_CODE             1002
 #define ID_WEASELTRAY_QUIT              40001
 #define ID_WEASELTRAY_DEPLOY            40002
 #define ID_WEASELTRAY_CHECKUPDATE       40003
@@ -32,9 +38,9 @@
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        104
+#define _APS_NEXT_RESOURCE_VALUE        201
 #define _APS_NEXT_COMMAND_VALUE         40003
-#define _APS_NEXT_CONTROL_VALUE         1001
+#define _APS_NEXT_CONTROL_VALUE         1003
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

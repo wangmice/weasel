@@ -29,6 +29,7 @@ class ClientImpl {
   void FocusIn();
   void FocusOut();
   void TrayCommand(UINT menuId);
+  bool OpenQuickWord();
   bool GetResponseData(ResponseHandler const& handler);
   UINT64 ResponseSerial() { return channel.ResponseSerial(); }
 

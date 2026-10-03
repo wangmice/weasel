@@ -540,6 +540,19 @@ void RimeWithWeaselHandler::SetOption(WeaselSessionId ipc_id,
   _UpdateUI(ipc_id ? ipc_id : m_active_session);
 }
 
+bool RimeWithWeaselHandler::AddQuickWord(WeaselSessionId ipc_id,
+                                         const std::wstring& text,
+                                         const std::wstring& code) {
+  if (m_disabled || text.empty() || code.empty())
+    return false;
+  if (!to_session_id(ipc_id))
+    return false;
+
+  // Phase 1 only wires the Weasel shortcut/UI/threading path.  Phase 2 adds
+  // the librime extension that updates the current session's open userdb.
+  return false;
+}
+
 void RimeWithWeaselHandler::OnUpdateUI(std::function<void()> const& cb) {
   _UpdateUICallback = cb;
 }

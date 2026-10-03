@@ -142,6 +142,13 @@ void ClientImpl::TrayCommand(UINT menuId) {
   _SendMessage(WEASEL_IPC_TRAY_COMMAND, menuId, _SessionId());
 }
 
+bool ClientImpl::OpenQuickWord() {
+  if (!_Active())
+    return false;
+
+  return _SendMessage(WEASEL_IPC_OPEN_QUICK_WORD, 0, _SessionId()) != 0;
+}
+
 void ClientImpl::StartSession() {
   if (_Active() && Echo())
     return;
@@ -257,6 +264,10 @@ void Client::FocusIn() {
 
 void Client::FocusOut() {
   m_pImpl->FocusOut();
+}
+
+bool Client::OpenQuickWord() {
+  return m_pImpl->OpenQuickWord();
 }
 
 void Client::StartSession() {

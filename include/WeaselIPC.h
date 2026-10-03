@@ -32,12 +32,16 @@ enum WEASEL_IPC_COMMAND {
   WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE,
   WEASEL_IPC_HIGHLIGHT_CANDIDATE_ON_CURRENT_PAGE,
   WEASEL_IPC_CHANGE_PAGE,
+  WEASEL_IPC_OPEN_QUICK_WORD,
   WEASEL_IPC_LAST_COMMAND
 };
 
 // Posted by WeaselTrayIcon to the server window so that Shell_NotifyIcon runs
 // on the server message thread instead of a pipe worker thread.
 #define WM_WEASEL_SERVICE_NOTIFY (WEASEL_IPC_LAST_COMMAND + 200)
+// Marshal the modal quick-word dialog from a pipe worker to the server UI
+// thread. wParam carries the originating Weasel session id.
+#define WM_WEASEL_QUICK_WORD (WEASEL_IPC_LAST_COMMAND + 201)
 
 namespace weasel {
 struct PipeMessage {
@@ -87,6 +91,11 @@ struct RequestHandler {
   virtual void EndMaintenance() {}
   virtual void SetOption(DWORD session_id, const std::string& opt, bool val) {}
   virtual void UpdateColorTheme(BOOL darkMode) {}
+  // Online user-dictionary insertion hook.  The first Weasel-side phase wires
+  // the shortcut/UI path; librime-backed storage is supplied separately.
+  virtual bool AddQuickWord(DWORD session_id,
+                            const std::wstring& text,
+                            const std::wstring& code) { return false; }
 };
 
 // 處理server端回應之物件
@@ -145,6 +154,8 @@ class Client {
   void FocusOut();
   // 托盤菜單
   void TrayCommand(UINT menuId);
+  // 打开快捷造词窗口
+  bool OpenQuickWord();
   // 读取server返回的数据
   bool GetResponseData(ResponseHandler handler);
   // 本线程最近一次收到的带体应答序号；前进意味着缓冲区中有一份未解析的应答
@@ -168,11 +179,17 @@ class Server {
 
   void SetRequestHandler(RequestHandler* pHandler);
   void AddMenuHandler(UINT uID, CommandHandler handler);
+  // Invoke a RequestHandler operation from the server UI thread under the
+  // same serialization used by pipe workers.
+  bool AddQuickWord(DWORD session_id,
+                    const std::wstring& text,
+                    const std::wstring& code);
   HWND GetHWnd();
 
   // Callback invoked on the server message thread when a tray icon refresh is
   // requested from a pipe worker thread.
   void SetTrayRefreshCallback(std::function<void()> callback);
+  void SetQuickWordCallback(std::function<void(DWORD)> callback);
 
  private:
   ServerImpl* m_pImpl;

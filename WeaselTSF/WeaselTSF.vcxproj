@@ -427,6 +427,9 @@
     <ClCompile Include="CandidateList.cpp" />
     <ClCompile Include="Compartment.cpp" />
     <ClCompile Include="Composition.cpp" />
+	<ClCompile Include="CompartmentUtil.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+	</ClCompile>
     <ClCompile Include="DisplayAttribute.cpp" />
     <ClCompile Include="DisplayAttributeInfo.cpp" />
     <ClCompile Include="DisplayAttributeProvider.cpp" />
@@ -458,6 +461,9 @@
     </ClCompile>
     <ClCompile Include="EditSession.cpp" />
     <ClCompile Include="EnumDisplayAttributeInfo.cpp" />
+	  <ClCompile Include="FindIME.cpp">
+		  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  </ClCompile>
     <ClCompile Include="Globals.cpp" />
     <ClCompile Include="KeyEvent.cpp" />
     <ClCompile Include="KeyEventSink.cpp" />

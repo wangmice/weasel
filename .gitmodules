@@ -1,6 +1,6 @@
 [submodule "librime"]
 	path = librime
-	url = https://github.com/rime/librime.git
+	url = git@github.com:wangmice/librime.git
 [submodule "plum"]
 	path = plum
 	url = https://github.com/rime/plum.git

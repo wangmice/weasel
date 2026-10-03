@@ -62,9 +62,11 @@ class WeaselServerApp {
 
  protected:
   void SetupMenuHandlers();
+  void OpenQuickWordDialog(DWORD session_id);
 
   weasel::Server m_server;
   weasel::UI m_ui;
   WeaselTrayIcon tray_icon;
   std::unique_ptr<RimeWithWeaselHandler> m_handler;
+  bool m_quickWordDialogOpen = false;
 };

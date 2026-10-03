@@ -163,6 +163,19 @@ STDMETHODIMP WeaselTSF::OnPreservedKey(ITfContext* pContext,
                                        REFGUID rguid,
                                        BOOL* pfEaten) {
   *pfEaten = FALSE;
+
+  if (!IsEqualGUID(rguid, GUID_WEASEL_QUICK_WORD))
+    return S_OK;
+
+  // Keep the shortcut local to an active Weasel input context.  If the
+  // service is unavailable, let the application receive the key instead of
+  // swallowing it.
+  if ((_isToOpenClose && !_IsKeyboardOpen()) || _IsKeyboardDisabled())
+    return S_OK;
+  if (!_EnsureServerConnected())
+    return S_OK;
+
+  *pfEaten = m_client.OpenQuickWord() ? TRUE : FALSE;
   return S_OK;
 }
 
@@ -189,26 +202,34 @@ void WeaselTSF::_UninitKeyEventSink() {
 }
 
 BOOL WeaselTSF::_InitPreservedKey() {
+  com_ptr<ITfKeystrokeMgr> pKeystrokeMgr;
+  if (_pThreadMgr->QueryInterface(&pKeystrokeMgr) != S_OK)
+    return TRUE;
+
+  TF_PRESERVEDKEY quickWordKey = {};
+  quickWordKey.uVKey = 'U';
+  quickWordKey.uModifiers = TF_MOD_CONTROL | TF_MOD_SHIFT;
+
+  static constexpr WCHAR kDescription[] = L"Weasel quick word";
+  // A PreserveKey failure is deliberately non-fatal.  Hosts or another TIP
+  // may reserve the same combination; Weasel must still activate normally.
+  pKeystrokeMgr->PreserveKey(_tfClientId, GUID_WEASEL_QUICK_WORD,
+                             &quickWordKey, kDescription,
+                             _countof(kDescription) - 1);
   return TRUE;
-#if 0
-	com_ptr<ITfKeystrokeMgr> pKeystrokeMgr;
-	if (_pThreadMgr->QueryInterface(pKeystrokeMgr.GetAddressOf()) != S_OK)
-	{
-		return FALSE;
-	}
-	TF_PRESERVEDKEY preservedKeyImeMode;
-
-	/* Define SHIFT ONLY for now */
-	preservedKeyImeMode.uVKey = VK_SHIFT;
-	preservedKeyImeMode.uModifiers = TF_MOD_ON_KEYUP;
-
-	auto hr = pKeystrokeMgr->PreserveKey(
-		_tfClientId,
-		GUID_IME_MODE_PRESERVED_KEY,
-		&preservedKeyImeMode, L"", 0);
-	
-	return SUCCEEDED(hr);
-#endif
 }
 
-void WeaselTSF::_UninitPreservedKey() {}
+void WeaselTSF::_UninitPreservedKey() {
+  if (!_pThreadMgr)
+    return;
+
+  com_ptr<ITfKeystrokeMgr> pKeystrokeMgr;
+  if (_pThreadMgr->QueryInterface(&pKeystrokeMgr) != S_OK)
+    return;
+
+  TF_PRESERVEDKEY quickWordKey = {};
+  quickWordKey.uVKey = 'U';
+  quickWordKey.uModifiers = TF_MOD_CONTROL | TF_MOD_SHIFT;
+  pKeystrokeMgr->UnpreserveKey(_tfClientId, GUID_WEASEL_QUICK_WORD,
+                               &quickWordKey);
+}

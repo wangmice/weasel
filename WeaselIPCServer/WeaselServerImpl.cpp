@@ -148,6 +148,18 @@ LRESULT ServerImpl::OnServiceNotifyMessage(UINT uMsg,
   return 0;
 }
 
+LRESULT ServerImpl::OnQuickWordMessage(UINT uMsg,
+                                       WPARAM wParam,
+                                       LPARAM lParam,
+                                       BOOL& bHandled) {
+  // The named-pipe request has already completed.  The modal dialog is
+  // created only here, on the server message thread, and never while a pipe
+  // worker owns g_api_mutex.
+  if (m_quickWordCallback)
+    m_quickWordCallback(static_cast<DWORD>(wParam));
+  return 0;
+}
+
 DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
                             DWORD wParam,
                             DWORD lParam) {
@@ -404,6 +416,20 @@ DWORD ServerImpl::OnChangePage(WEASEL_IPC_COMMAND uMsg,
   return 0;
 }
 
+DWORD ServerImpl::OnOpenQuickWord(WEASEL_IPC_COMMAND uMsg,
+                                  DWORD wParam,
+                                  DWORD lParam) {
+  if (!m_pRequestHandler || !m_pRequestHandler->FindSession(lParam))
+    return 0;
+
+  // Never show a modal window from a named-pipe worker.  Returning from this
+  // method releases g_api_mutex and lets the TSF caller continue immediately.
+  return ::PostMessage(m_hWnd, WM_WEASEL_QUICK_WORD,
+                       static_cast<WPARAM>(lParam), 0)
+             ? 1
+             : 0;
+}
+
 #define MAP_PIPE_MSG_HANDLE(__msg, __wParam, __lParam) \
   {                                                    \
     auto lParam = __lParam;                            \
@@ -443,6 +469,7 @@ void ServerImpl::HandlePipeMessage(PipeMessage pipe_msg, _Resp resp) {
                   OnHighlightCandidateOnCurrentPage);
   PIPE_MSG_HANDLE(WEASEL_IPC_CHANGE_PAGE, OnChangePage);
   PIPE_MSG_HANDLE(WEASEL_IPC_TRAY_COMMAND, OnCommand);
+  PIPE_MSG_HANDLE(WEASEL_IPC_OPEN_QUICK_WORD, OnOpenQuickWord);
   END_MAP_PIPE_MSG_HANDLE(result);
 
   resp(result);
@@ -562,8 +589,26 @@ void Server::AddMenuHandler(UINT uID, CommandHandler handler) {
   m_pImpl->AddMenuHandler(uID, handler);
 }
 
+bool ServerImpl::AddQuickWord(DWORD session_id,
+                              const std::wstring& text,
+                              const std::wstring& code) {
+  std::lock_guard guard(g_api_mutex);
+  return m_pRequestHandler &&
+         m_pRequestHandler->AddQuickWord(session_id, text, code);
+}
+
+bool Server::AddQuickWord(DWORD session_id,
+                          const std::wstring& text,
+                          const std::wstring& code) {
+  return m_pImpl->AddQuickWord(session_id, text, code);
+}
+
 void Server::SetTrayRefreshCallback(std::function<void()> callback) {
   m_pImpl->SetTrayRefreshCallback(callback);
+}
+
+void Server::SetQuickWordCallback(std::function<void(DWORD)> callback) {
+  m_pImpl->SetQuickWordCallback(callback);
 }
 
 HWND Server::GetHWnd() {
