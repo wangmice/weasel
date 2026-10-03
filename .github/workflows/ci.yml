@@ -116,11 +116,11 @@ jobs:
           copy .\winsparkle\Release\WinSparkle.dll .\output\Win32\
           copy .\winsparkle\Release\WinSparkle.lib .\lib\
 
-      - name: Get Rime files
+      - name: Build bundled librime fork
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          .\get-rime.ps1 -use dev
+          .\build.bat rime
 
       - name: Build data
         shell: pwsh

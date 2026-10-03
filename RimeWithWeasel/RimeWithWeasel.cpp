@@ -11,6 +11,7 @@
 #include <vector>
 #include <regex>
 #include <rime_api.h>
+#include <rime_user_dictionary_api.h>
 
 #define TRANSPARENT_COLOR 0x00000000
 #define ARGB2ABGR(value)                                 \
@@ -545,12 +546,26 @@ bool RimeWithWeaselHandler::AddQuickWord(WeaselSessionId ipc_id,
                                          const std::wstring& code) {
   if (m_disabled || text.empty() || code.empty())
     return false;
-  if (!to_session_id(ipc_id))
+
+  const RimeSessionId session_id = to_session_id(ipc_id);
+  if (!session_id || !RIME_API_AVAILABLE(rime_api, find_module))
     return false;
 
-  // Phase 1 only wires the Weasel shortcut/UI/threading path.  Phase 2 adds
-  // the librime extension that updates the current session's open userdb.
-  return false;
+  RimeModule* module = rime_api->find_module("user_dictionary_api");
+  if (!module || !RIME_PROVIDED(module, get_api))
+    return false;
+
+  auto* api = reinterpret_cast<RimeUserDictionaryApi*>(module->get_api());
+  if (!RIME_PROVIDED(api, add_user_entry))
+    return false;
+
+  const std::string text_utf8 = wtou8(text);
+  const std::string code_utf8 = wtou8(code);
+  if (!api->add_user_entry(session_id, text_utf8.c_str(), code_utf8.c_str()))
+    return false;
+
+  _UpdateUI(ipc_id);
+  return true;
 }
 
 void RimeWithWeaselHandler::OnUpdateUI(std::function<void()> const& cb) {
