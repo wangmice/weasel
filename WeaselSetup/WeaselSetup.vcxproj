@@ -142,6 +142,12 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="WeaselSetup.cpp" />
+	<ClCompile Include="PerUserReg.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+	</ClCompile>
+	<ClCompile Include="SetupUtil.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+	</ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="InstallOptionsDlg.h" />

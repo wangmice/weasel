@@ -203,19 +203,38 @@ void WeaselTSF::_UninitKeyEventSink() {
 
 BOOL WeaselTSF::_InitPreservedKey() {
   com_ptr<ITfKeystrokeMgr> pKeystrokeMgr;
-  if (_pThreadMgr->QueryInterface(&pKeystrokeMgr) != S_OK)
-    return TRUE;
+  HRESULT hr = _pThreadMgr->QueryInterface(&pKeystrokeMgr);
+  if (FAILED(hr)) {
+    wchar_t buf[128] = {};
+    swprintf_s(buf,
+               L"Weasel quick-word: QueryInterface(ITfKeystrokeMgr) failed: "
+               L"0x%08X\n",
+               static_cast<unsigned>(hr));
+    OutputDebugStringW(buf);
+    return FALSE;
+  }
 
   TF_PRESERVEDKEY quickWordKey = {};
   quickWordKey.uVKey = 'U';
   quickWordKey.uModifiers = TF_MOD_CONTROL | TF_MOD_SHIFT;
 
   static constexpr WCHAR kDescription[] = L"Weasel quick word";
-  // A PreserveKey failure is deliberately non-fatal.  Hosts or another TIP
-  // may reserve the same combination; Weasel must still activate normally.
-  pKeystrokeMgr->PreserveKey(_tfClientId, GUID_WEASEL_QUICK_WORD,
-                             &quickWordKey, kDescription,
-                             _countof(kDescription) - 1);
+
+  hr = pKeystrokeMgr->PreserveKey(_tfClientId, GUID_WEASEL_QUICK_WORD,
+                                  &quickWordKey, kDescription,
+                                  _countof(kDescription) - 1);
+
+  if (FAILED(hr)) {
+    wchar_t buf[128] = {};
+    swprintf_s(buf, L"Weasel quick-word: PreserveKey failed: 0x%08X\n",
+               static_cast<unsigned>(hr));
+    OutputDebugStringW(buf);
+
+    // 不让 quick-word 注册失败阻止整个 TIP 激活
+    return TRUE;
+  }
+
+  OutputDebugStringW(L"Weasel quick-word: PreserveKey succeeded\n");
   return TRUE;
 }
 
@@ -230,6 +249,6 @@ void WeaselTSF::_UninitPreservedKey() {
   TF_PRESERVEDKEY quickWordKey = {};
   quickWordKey.uVKey = 'U';
   quickWordKey.uModifiers = TF_MOD_CONTROL | TF_MOD_SHIFT;
-  pKeystrokeMgr->UnpreserveKey(_tfClientId, GUID_WEASEL_QUICK_WORD,
-                               &quickWordKey);
+
+  pKeystrokeMgr->UnpreserveKey(GUID_WEASEL_QUICK_WORD, &quickWordKey);
 }
