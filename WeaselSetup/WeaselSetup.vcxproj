@@ -134,15 +134,25 @@
       <EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness>
     </Manifest>
   </ItemDefinitionGroup>
-  <ItemGroup>
-    <ClCompile Include="imesetup.cpp" />
-    <ClCompile Include="InstallOptionsDlg.cpp" />
-    <ClCompile Include="stdafx.cpp">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
-    </ClCompile>
-    <ClCompile Include="WeaselSetup.cpp" />
-  </ItemGroup>
+<ItemGroup>
+  <ClCompile Include="imesetup.cpp" />
+  <ClCompile Include="InstallOptionsDlg.cpp" />
+
+  <ClCompile Include="PerUserReg.cpp">
+    <PrecompiledHeader>NotUsing</PrecompiledHeader>
+  </ClCompile>
+
+  <ClCompile Include="SetupUtil.cpp">
+    <PrecompiledHeader>NotUsing</PrecompiledHeader>
+  </ClCompile>
+
+  <ClCompile Include="stdafx.cpp">
+    <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
+    <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
+  </ClCompile>
+
+  <ClCompile Include="WeaselSetup.cpp" />
+</ItemGroup>
   <ItemGroup>
     <ClInclude Include="InstallOptionsDlg.h" />
     <ClInclude Include="resource.h" />

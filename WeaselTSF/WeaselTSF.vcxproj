@@ -430,6 +430,13 @@
     <ClCompile Include="DisplayAttribute.cpp" />
     <ClCompile Include="DisplayAttributeInfo.cpp" />
     <ClCompile Include="DisplayAttributeProvider.cpp" />
+<ClCompile Include="CompartmentUtil.cpp">
+  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+</ClCompile>
+
+<ClCompile Include="FindIME.cpp">
+  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+</ClCompile>
     <ClCompile Include="dllmain.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
       </PrecompiledHeader>

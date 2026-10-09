@@ -335,6 +335,11 @@ void CCandidateList::StartUI() {
                               bool* const next, bool* const scroll_next) {
       _tsf->HandleUICallback(sel, hov, next, scroll_next);
     });
+
+    // BeginUIElement's pbShow is an in/out parameter.
+  // Do not reuse the host's result from the previous UIElement lifetime.
+  _pbShow = TRUE;
+  
   if (FAILED(pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid)))
     return;
   _uiStarted = true;
