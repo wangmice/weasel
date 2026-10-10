@@ -1,203 +1,362 @@
-#include "stdafx.h"
 #include "WeaselPanel.h"
-
-#include <utility>
-#include <ShellScalingApi.h>
-#include <VersionHelpers.hpp>
-#include <WeaselIPCData.h>
-#include <algorithm>
-
-#include "VerticalLayout.h"
-#include "HorizontalLayout.h"
 #include "FullScreenLayout.h"
+#include "HorizontalLayout.h"
 #include "VHorizontalLayout.h"
-
-// for IDI_ZH, IDI_EN
+#include "VerticalLayout.h"
+#include <algorithm>
+#include <limits>
+#include <memory>
 #include <resource.h>
+#include <windowsx.h>
+#include <wrl/client.h>
+
+using namespace weasel;
+
+#define DPI_SCALE(t) (int)(t * m_pD2D->m_dpiScaleLayout)
 #define COLORTRANSPARENT(color) ((color & 0xff000000) == 0)
 #define COLORNOTTRANSPARENT(color) ((color & 0xff000000) != 0)
 #define TRANS_COLOR 0x00000000
-#define GDPCOLOR_FROM_COLORREF(color)                                \
-  Gdiplus::Color::MakeARGB(((color >> 24) & 0xff), GetRValue(color), \
-                           GetGValue(color), GetBValue(color))
 #define HALF_ALPHA_COLOR(color) \
   ((((color & 0xff000000) >> 25) & 0xff) << 24) | (color & 0x00ffffff)
 
-#pragma comment(lib, "Shcore.lib")
-
-// 状态图标加载（B35⑥）：路径为空用内置资源图标；路径非空从文件加载，仅
-// 成功才缓存路径。文件暂缺/损坏时保留当前图标继续显示，且不缓存失败结果
-// ——下次绘制自动重试（DoPaint 每次刷新都会走到这里，但重试只是一次落空的
-// LoadImage 文件打开，按用户输入频率计开销可忽略），用户中途补上图标文件
-// 后无需改配置即恢复显示。
-inline void LoadIconNecessary(std::wstring& loaded_path,
-                              const std::wstring& icon_path,
-                              CIcon& icon,
-                              int resource_id) {
-  if (icon_path.empty()) {
-    if (!loaded_path.empty()) {  // 从自定义图标切回内置资源
-      icon.LoadIconW(resource_id, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
-                     LR_DEFAULTCOLOR);
-      loaded_path.clear();
+namespace {
+class ThreadDpiAwarenessScope {
+ public:
+  ThreadDpiAwarenessScope() {
+    using SetThreadDpiAwarenessContextFunc =
+        DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT);
+    const auto pSetThreadDpiAwarenessContext =
+        reinterpret_cast<SetThreadDpiAwarenessContextFunc>(GetProcAddress(
+            GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext"));
+    if (pSetThreadDpiAwarenessContext) {
+      old_context_ = pSetThreadDpiAwarenessContext(
+          DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+      setter_ = pSetThreadDpiAwarenessContext;
     }
+  }
+
+  ~ThreadDpiAwarenessScope() {
+    if (setter_) {
+      setter_(old_context_);
+    }
+  }
+
+ private:
+  DPI_AWARENESS_CONTEXT old_context_ = nullptr;
+  DPI_AWARENESS_CONTEXT(WINAPI* setter_)(DPI_AWARENESS_CONTEXT) = nullptr;
+};
+
+wstring FormatCandidateLabel(const wstring& label, const wchar_t* format) {
+  return FormatLabelText(format, label);
+}
+}  // namespace
+
+// Preserve the last valid icon on transient load failure and retry next paint.
+// Nonempty loaded_path denotes an owned file icon; built-ins are LR_SHARED.
+void LoadIconIfNeed(wstring& loaded_path,
+                    const wstring& icon_path,
+                    HICON& icon,
+                    UINT id) {
+  if (loaded_path == icon_path)
     return;
-  }
-  if (icon_path == loaded_path)
-    return;  // 已按此路径加载成功
-  HICON loaded =
-      (HICON)LoadImage(NULL, icon_path.c_str(), IMAGE_ICON, STATUS_ICON_SIZE,
-                       STATUS_ICON_SIZE, LR_LOADFROMFILE);
-  if (loaded) {
-    icon = loaded;
-    loaded_path = icon_path;
-  }
+  wstring path(icon_path);
+  const int size = GetSystemMetrics(SM_CXICON);
+  HICON loaded = icon_path.empty()
+      ? (HICON)LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(id),
+                        IMAGE_ICON, size, size, LR_SHARED)
+      : (HICON)LoadImage(nullptr, icon_path.c_str(), IMAGE_ICON, size, size,
+                        LR_LOADFROMFILE);
+  if (!loaded)
+    return;
+  if (!loaded_path.empty() && icon)
+    DestroyIcon(icon);
+  icon = loaded;
+  loaded_path.swap(path);
 }
 
-static inline void ReconfigRoundInfo(IsToRoundStruct& rd,
-                                     const int& i,
-                                     const int& m_candidateCount) {
-  if (i == 0 && m_candidateCount > 1) {
-    std::swap(rd.IsTopLeftNeedToRound, rd.IsBottomLeftNeedToRound);
-    std::swap(rd.IsTopRightNeedToRound, rd.IsBottomRightNeedToRound);
-  }
-  if (i == m_candidateCount - 1) {
-    std::swap(rd.IsTopLeftNeedToRound, rd.IsBottomLeftNeedToRound);
-    std::swap(rd.IsTopRightNeedToRound, rd.IsBottomRightNeedToRound);
-  }
-}
-
-// 跨线程投递的界面状态快照：发送方堆分配，UI 线程的消息处理函数消费后释放。
-// ctx_/status_/style_ 的写入只允许发生在 UI 线程，绘制线程才能安全读取。
 struct WeaselUIUpdate {
   Context ctx;
   Status status;
 };
 
-WeaselPanel::WeaselPanel(weasel::UI& ui)
-    : m_layout(NULL),
+WeaselPanel::WeaselPanel(UI& ui)
+    : m_hWnd(nullptr),
       m_ctx(ui.ctx()),
       m_octx(ui.octx()),
+      m_layout(nullptr),
+      m_pD2D(nullptr),
       m_status(ui.status()),
       m_in_server(ui.InServer()),
       m_style(ui.style()),
+      m_uiCallback(ui.uiCallback()),
       m_ostyle(ui.ostyle()),
       m_candidateCount(0),
       m_lastCandidateCount(0),
-      m_current_zhung_icon(),
-      m_inputPos(CRect()),
-      m_sticky(false),
-      dpi(96),
-      hide_candidates(false),
-      pDWR(ui.pdwr()),
-      _UICallback(ui.uiCallback()),
-      _m_gdiplusToken(0) {
-  m_iconDisabled.LoadIconW(IDI_RELOAD, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
-                           LR_DEFAULTCOLOR);
-  m_iconEnabled.LoadIconW(IDI_ZH, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
-                          LR_DEFAULTCOLOR);
-  m_iconAlpha.LoadIconW(IDI_EN, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
-                        LR_DEFAULTCOLOR);
-  m_iconFull.LoadIconW(IDI_FULL_SHAPE, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
-                       LR_DEFAULTCOLOR);
-  m_iconHalf.LoadIconW(IDI_HALF_SHAPE, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
-                       LR_DEFAULTCOLOR);
-  // for gdi+ drawings, initialization
-  GdiplusStartup(&_m_gdiplusToken, &_m_gdiplusStartupInput, NULL);
-
-  HMONITOR hMonitor = MonitorFromRect(m_inputPos, MONITOR_DEFAULTTONEAREST);
-  UINT dpiX = 96, dpiY = 96;
-  if (hMonitor) {
-    GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
-    m_hMonitor = hMonitor;
-  }
-  dpi = dpiX;
-  _InitFontRes();
-  m_ostyle = m_style;
+      hide_candidates(false) {
+  // Prepare shared graphics resources early to reduce first paint latency.
+  m_pD2D = std::make_shared<D2D>(m_style);
+  auto hInstance = GetModuleHandle(nullptr);
+  m_iconAlpha = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_EN), IMAGE_ICON,
+                                 STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
+  m_iconEnabled =
+      (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_ZH), IMAGE_ICON,
+                       STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
+  m_iconFull =
+      (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_FULL_SHAPE), IMAGE_ICON,
+                       STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
+  m_iconHalf =
+      (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_HALF_SHAPE), IMAGE_ICON,
+                       STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
+  m_iconDisabled =
+      (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_RELOAD), IMAGE_ICON,
+                       STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
 }
 
-WeaselPanel::~WeaselPanel() {
-  // B12a：缓存的模糊位图是 GDI+ 对象，必须在 GdiplusShutdown 之前释放
-  m_shadowBitmapCache.clear();
-  Gdiplus::GdiplusShutdown(_m_gdiplusToken);
-  delete m_layout;
-  m_layout = NULL;
-  // pDWR.reset();
+BOOL WeaselPanel::IsWindow() const {
+  return ::IsWindow(m_hWnd);
+}
+
+HWND WeaselPanel::hwnd() const {
+  return m_hWnd;
+}
+
+void WeaselPanel::_ClearTimers() {
+  if (!m_hWnd)
+    return;
+  if (m_clickTimer) {
+    ::KillTimer(m_hWnd, AUTOREV_TIMER);
+    m_clickTimer = 0;
+  }
+  if (m_autoHideTimer) {
+    ::KillTimer(m_hWnd, AUTOHIDE_TIMER);
+    m_autoHideTimer = 0;
+  }
+  m_autohide_counting = false;
+}
+
+bool WeaselPanel::_IsUiThread() const {
+  return !IsWindow() ||
+         GetWindowThreadProcessId(m_hWnd, nullptr) == GetCurrentThreadId();
+}
+
+void WeaselPanel::ApplyUpdate(const Context& ctx, const Status& status) {
+  if (!_IsUiThread()) {
+    auto update = std::make_unique<WeaselUIUpdate>(WeaselUIUpdate{ctx, status});
+    if (::PostMessage(m_hWnd, WM_WEASEL_UPDATE, 0,
+                      reinterpret_cast<LPARAM>(update.get())))
+      update.release();
+    return;
+  }
+  _ApplyUpdate(ctx, status);
+}
+
+void WeaselPanel::_ApplyUpdate(const Context& ctx, const Status& status) {
+  _CancelAutoHide();
+  if (m_ctx == ctx && m_status == status)
+    return;
+  m_ctx = ctx;
+  m_status = status;
+  if (m_style.candidate_abbreviate_length > 0) {
+    for (auto& c : m_ctx.cinfo.candies)
+      c.str = AbbreviateText(c.str, (size_t)m_style.candidate_abbreviate_length);
+  }
+  Refresh();
+}
+
+void WeaselPanel::ApplyStyle(const UIStyle& style) {
+  if (!_IsUiThread()) {
+    auto snapshot = std::make_unique<UIStyle>(style);
+    if (::PostMessage(m_hWnd, WM_WEASEL_SETSTYLE, 0,
+                      reinterpret_cast<LPARAM>(snapshot.get())))
+      snapshot.release();
+    return;
+  }
+  m_style = style;
+}
+
+void WeaselPanel::ShowWithTimeout(size_t millisec) {
+  _SetVisibility(PanelVisibility::ShowWithTimeout, millisec);
+}
+
+bool WeaselPanel::IsCountingDown() const {
+  return m_autohide_counting.load();
+}
+
+void WeaselPanel::ShowWindow(int nCmdShow) {
+  _SetVisibility(nCmdShow == SW_HIDE ? PanelVisibility::Hide
+                                   : PanelVisibility::Show);
+}
+
+void WeaselPanel::_SetVisibility(PanelVisibility cmd, size_t millisec) {
+  if (!IsWindow())
+    return;
+  if (!_IsUiThread()) {
+    ::PostMessage(m_hWnd, WM_WEASEL_SHOW, static_cast<WPARAM>(cmd),
+                  static_cast<LPARAM>(millisec));
+    return;
+  }
+  _ApplyVisibility(cmd, millisec);
+}
+
+void WeaselPanel::_ApplyVisibility(PanelVisibility cmd, size_t millisec) {
+  if (cmd != PanelVisibility::Hide && cmd != PanelVisibility::Show &&
+      cmd != PanelVisibility::ShowWithTimeout)
+    return;
+  ::KillTimer(m_hWnd, AUTOHIDE_TIMER);
+  m_autoHideTimer = 0;
+  m_autohide_counting = false;
+  if (cmd != PanelVisibility::Hide && m_pD2D && !m_pD2D->swapChain) {
+    try {
+      m_pD2D->AttachWindow(m_hWnd);
+      m_pD2D->InitDirectWriteResources();
+      m_fullscreen_font_active = false;
+    } catch (...) {
+      _RequestPaintRecovery();
+    }
+  }
+  ::ShowWindow(m_hWnd, cmd == PanelVisibility::Hide ? SW_HIDE : SW_SHOWNA);
+  m_shown = cmd != PanelVisibility::Hide;
+  if (cmd == PanelVisibility::ShowWithTimeout) {
+    const auto timeout = static_cast<UINT>(
+        (std::min)(millisec, static_cast<size_t>(USER_TIMER_MAXIMUM)));
+    m_autoHideTimer = ::SetTimer(m_hWnd, AUTOHIDE_TIMER, timeout, nullptr);
+    m_autohide_counting = m_autoHideTimer != 0;
+  }
+}
+
+void WeaselPanel::_CancelAutoHide() {
+  if (m_autohide_counting)
+    _ApplyVisibility(PanelVisibility::Hide, 0);
+}
+
+void WeaselPanel::DestroyWindow() {
+  // clear timers before releasing window resources
+  _ClearTimers();
+
+  if (m_pD2D) {
+    m_pD2D->ReleaseWindowResources();
+    // mark D2D as detached from any window
+    m_pD2D->m_hWnd = nullptr;
+  }
+  ::DestroyWindow(m_hWnd);
+  m_hWnd = nullptr;
+}
+
+void WeaselPanel::ReleaseAllResources() {
+  // ensure timers are killed before releasing window/device resources
+  _ClearTimers();
+
+  if (m_pD2D) {
+    m_pD2D->ReleaseWindowResources();
+    // Other panels may still be using the shared devices; release only ours.
+    m_pD2D.reset();
+  }
+}
+
+void WeaselPanel::MoveTo(RECT rc) {
+  if (!_IsUiThread()) {
+    auto snapshot = std::make_unique<RECT>(rc);
+    if (::PostMessage(m_hWnd, WM_WEASEL_MOVETO, 0,
+                      reinterpret_cast<LPARAM>(snapshot.get())))
+      snapshot.release();
+    return;
+  }
+  if (!m_hWnd || !m_layout || !m_layout_ready)
+    return;
+  m_redraw_by_monitor_change = false;
+  bool should_reset_sticky =
+      (m_ctx.empty() || (abs(rc.left - m_inputPos.left) > 50) ||
+       (abs(rc.top - m_inputPos.top) > 50));
+  if (should_reset_sticky && m_sticky) {
+    m_sticky = false;
+    m_inputPos = rc;
+    m_inputPos.bottom += 6;
+    _Reposition(true);
+    RedrawWindow();
+    return;
+  }
+  if (m_style.ascii_tip_follow_cursor && m_ctx.empty() &&
+      (!m_status.composing) && m_layout->ShouldDisplayStatusIcon()) {
+    POINT p;
+    ::GetCursorPos(&p);
+    RECT irc{p.x - STATUS_ICON_SIZE, p.y - STATUS_ICON_SIZE, p.x, p.y};
+    m_inputPos = irc;
+    _Reposition(true);
+    RedrawWindow();
+  } else if (!(rc.left == m_inputPos.left && rc.bottom != m_inputPos.bottom &&
+               abs(rc.bottom - m_inputPos.bottom) < 6) ||
+             m_layout->ShouldDisplayStatusIcon()) {
+    m_inputPos = rc;
+    m_inputPos.bottom += 6;
+    bool m_istorepos_buf = m_istorepos;
+    _Reposition(true);
+    if (m_redraw_by_monitor_change) {
+      Refresh();
+      return;
+    }
+    if (m_istorepos != m_istorepos_buf || !m_ctx.aux.empty() ||
+        m_layout->ShouldDisplayStatusIcon()) {
+      RedrawWindow();
+    }
+  }
 }
 
 void WeaselPanel::_ResizeWindow() {
-  CDCHandle dc = GetDC();
-  CSize m_size = m_layout->GetContentSize();
-  SetWindowPos(NULL, 0, 0, m_size.cx, m_size.cy,
+  CSize& size = m_layout->GetContentSize();
+  SetWindowPos(m_hWnd, 0, 0, 0, size.cx, size.cy,
                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOREDRAW);
-  ReleaseDC(dc);
+  m_pD2D->OnResize(size.cx, size.cy);
 }
 
 void WeaselPanel::_CreateLayout() {
-  if (m_layout != NULL)
-    delete m_layout;
-
-  Layout* layout = NULL;
-  if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT) {
-    layout = new VHorizontalLayout(m_style, m_ctx, m_status, pDWR);
+  _ScopeFullscreenFont(IS_FULLSCREENLAYOUT(m_style));
+  the<Layout> layout;
+  if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
+      m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN) {
+    layout =
+        std::make_unique<VHorizontalLayout>(m_style, m_ctx, m_status, m_pD2D);
   } else {
     if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL ||
         m_style.layout_type == UIStyle::LAYOUT_VERTICAL_FULLSCREEN) {
-      layout = new VerticalLayout(m_style, m_ctx, m_status, pDWR);
+      layout =
+          std::make_unique<VerticalLayout>(m_style, m_ctx, m_status, m_pD2D);
     } else if (m_style.layout_type == UIStyle::LAYOUT_HORIZONTAL ||
                m_style.layout_type == UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN) {
-      layout = new HorizontalLayout(m_style, m_ctx, m_status, pDWR);
-    }
-
-    if (IS_FULLSCREENLAYOUT(m_style)) {
-      layout = new FullScreenLayout(m_style, m_ctx, m_status, m_inputPos,
-                                    layout, pDWR);
+      layout =
+          std::make_unique<HorizontalLayout>(m_style, m_ctx, m_status, m_pD2D);
     }
   }
-  _ScopeFullscreenFont(IS_FULLSCREENLAYOUT(m_style));
-  m_layout = layout;
+  if (IS_FULLSCREENLAYOUT(m_style)) {
+    layout = std::make_unique<FullScreenLayout>(
+        m_style, m_ctx, m_status, m_inputPos, std::move(layout), m_pD2D);
+  }
+  m_layout = std::move(layout);
 }
 
-// 全屏布局的自适应字号以"借用"共享 pDWR 的方式工作：布局期间改写其文本
-// 格式，绘制（含该布局存活期内的任何重绘）使用同一批格式，保持与已算好的
-// 矩形一致。布局对象被替换为普通布局时在此恢复快照，防止缩放后的字号逃逸
-// 出全屏生命周期、被普通候选窗沿用。
 void WeaselPanel::_ScopeFullscreenFont(bool fullscreen) {
   if (fullscreen == m_fullscreen_font_active)
     return;
   if (fullscreen) {
-    m_fullscreen_font_snapshot.text = pDWR->pTextFormat;
-    m_fullscreen_font_snapshot.preedit = pDWR->pPreeditTextFormat;
-    m_fullscreen_font_snapshot.label = pDWR->pLabelTextFormat;
-    m_fullscreen_font_snapshot.comment = pDWR->pCommentTextFormat;
-    m_fullscreen_font_active = true;
+    m_fullscreen_font_snapshot = {m_pD2D->pTextFormat, m_pD2D->pPreeditFormat,
+                                 m_pD2D->pLabelFormat, m_pD2D->pCommentFormat};
   } else {
-    pDWR->pTextFormat = m_fullscreen_font_snapshot.text;
-    pDWR->pPreeditTextFormat = m_fullscreen_font_snapshot.preedit;
-    pDWR->pLabelTextFormat = m_fullscreen_font_snapshot.label;
-    pDWR->pCommentTextFormat = m_fullscreen_font_snapshot.comment;
-    m_fullscreen_font_active = false;
+    m_pD2D->pTextFormat = m_fullscreen_font_snapshot.text;
+    m_pD2D->pPreeditFormat = m_fullscreen_font_snapshot.preedit;
+    m_pD2D->pLabelFormat = m_fullscreen_font_snapshot.label;
+    m_pD2D->pCommentFormat = m_fullscreen_font_snapshot.comment;
+    m_fullscreen_font_snapshot = {};
   }
+  m_fullscreen_font_active = fullscreen;
 }
 
-// 更新界面
-void WeaselPanel::Refresh() {
-  // 跨线程调用时（典型为 IPC 工作线程经 m_ui->Update() 进入），把工作 marshal
-  // 回 UI 线程执行。Direct2D 的 render target 不是线程安全的，必须串行访问。
-  if (!_IsUiThread()) {
-    PostMessage(WM_WEASEL_REFRESH);
-    return;
-  }
+void WeaselPanel::_UpdateHideCandidates() {
   bool should_show_icon =
       (m_status.ascii_mode || !m_status.composing || !m_ctx.aux.empty());
-  m_candidateCount = min(m_ctx.cinfo.candies.size(), MAX_CANDIDATES_COUNT);
-  // highlighted 来自 IPC 反序列化 / 宿主写入，全链路无上游校验；统一在此
-  // 越界归零（无候选时 0 仍指向容量内的固定槽位），布局 / 绘制 / 命中测试
-  // 对 _candidateRects、m_offsetys 等定长数组的索引即可保证在界内
-  if (m_ctx.cinfo.highlighted < 0 ||
-      m_ctx.cinfo.highlighted >= (int)m_candidateCount)
+  m_candidateCount = static_cast<int>((std::min)(
+      m_ctx.cinfo.candies.size(), static_cast<size_t>(MAX_CANDIDATES_COUNT)));
+  if (m_ctx.cinfo.highlighted < 0 || m_ctx.cinfo.highlighted >= m_candidateCount)
     m_ctx.cinfo.highlighted = 0;
-  // When the candidate window changes from having content to having no content,
-  // reset the sticky state
+  // When candidate list vanishes, release sticky top/bottom placement state.
   if (m_lastCandidateCount > 0 && m_candidateCount == 0) {
     m_sticky = false;
   }
@@ -214,1388 +373,627 @@ void WeaselPanel::Refresh() {
   bool margin_negative =
       (DPI_SCALE(m_style.margin_x) < 0 || DPI_SCALE(m_style.margin_y) < 0);
   // when to hide_cadidates?
-  // 1. margin_negative, and not in show tips mode( ascii switching / half-full
-  // switching / simp-trad switching / error tips), and not in schema menu
+  // 1. margin_negative, and not in show tips mode( ascii switching /
+  // half-full switching / simp-trad switching / error tips), and not in
+  // schema menu
   // 2. inline preedit without candidates
   bool inline_no_candidates =
       (m_style.inline_preedit && m_candidateCount == 0) && !show_tips;
   hide_candidates = inline_no_candidates ||
                     (margin_negative && !show_tips && !show_schema_menu);
+}
 
-  // only RedrawWindow if no need to hide candidates window, or
-  // inline_no_candidates
-  if (!hide_candidates || inline_no_candidates) {
-    CDCHandle dc = GetDC();
-    // 布局阶段的 DWrite 调用（GetTextSizeDW 等经 HR 抛出）不允许穿出消息
-    // 处理：唯一进程级 catch 在 server main，异常到达即整个输入服务退出。
-    // 失败帧丢弃，交给 _RequestPaintRecovery 重建资源后重画
-    try {
-      _InitFontRes();
-      _CreateLayout();
-      m_layout->DoLayout(dc, pDWR);
-      _ResizeWindow();
-      _RepositionWindow();
-      if (m_ctx != m_octx) {
-        m_octx = m_ctx;
-        RedrawWindow();
-      }
-    } catch (...) {
-      DEBUG << "WeaselPanel::Refresh: layout failed, frame skipped";
-      _RequestPaintRecovery();
+void WeaselPanel::Refresh() {
+  if (!_IsUiThread()) {
+    ::PostMessage(m_hWnd, WM_WEASEL_REFRESH, 0, 0);
+    return;
+  }
+  _CancelAutoHide();
+  _Refresh();
+}
+
+void WeaselPanel::_Refresh() {
+  if (!m_hWnd)
+    return;
+  m_layout_ready = false;
+  try {
+    if (!m_pD2D)
+      m_pD2D = std::make_shared<D2D>(m_style);
+    if (m_pD2D->direct3dDevice &&
+        FAILED(m_pD2D->direct3dDevice->GetDeviceRemovedReason())) {
+      DeviceResources::Get().Reset();
+      m_pD2D->ReleaseWindowResources();
     }
-    ReleaseDC(dc);
-  }
-}
-
-void WeaselPanel::_InitFontRes(bool forced) {
-  HMONITOR hMonitor = MonitorFromRect(m_inputPos, MONITOR_DEFAULTTONEAREST);
-  UINT dpiX = 96, dpiY = 96;
-  if (hMonitor)
-    GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
-  // prepare d2d1 resources
-  // if style changed, or dpi changed, or pDWR NULL, re-initialize directwrite
-  // resources
-  if (forced || (pDWR == NULL) || (m_ostyle != m_style) || (dpiX != dpi)) {
-    pDWR.reset();
-    pDWR = std::make_shared<DirectWriteResources>(m_style, dpiX);
-    pDWR->pRenderTarget->SetTextAntialiasMode(
-        (D2D1_TEXT_ANTIALIAS_MODE)m_style.antialias_mode);
-    // 全新 pDWR 即原始字号，此前的全屏字号快照作废；仍处于全屏布局时由
-    // 随后的 _CreateLayout 重新快照
-    m_fullscreen_font_active = false;
-  }
-  m_ostyle = m_style;
-  dpi = dpiX;
-  dpiScaleLayout = (float)dpi / 96.0f;
-}
-
-static HBITMAP CopyDCToBitmap(HDC hDC, LPRECT lpRect) {
-  if (!hDC || !lpRect || IsRectEmpty(lpRect))
-    return NULL;
-  HDC hMemDC = NULL;
-  HBITMAP hBitmap = NULL, hOldBitmap = NULL;
-  int nX, nY, nX2, nY2;
-  int nWidth, nHeight;
-
-  nX = lpRect->left;
-  nY = lpRect->top;
-  nX2 = lpRect->right;
-  nY2 = lpRect->bottom;
-  nWidth = nX2 - nX;
-  nHeight = nY2 - nY;
-
-  hMemDC = CreateCompatibleDC(hDC);
-  if (!hMemDC)
-    return NULL;
-
-  hBitmap = CreateCompatibleBitmap(hDC, nWidth, nHeight);
-  if (!hBitmap) {
-    DeleteDC(hMemDC);
-    return NULL;
-  }
-
-  hOldBitmap = (HBITMAP)SelectObject(hMemDC, hBitmap);
-  if (!hOldBitmap) {
-    DeleteObject(hBitmap);
-    DeleteDC(hMemDC);
-    return NULL;
-  }
-
-  if (!BitBlt(hMemDC, 0, 0, nWidth, nHeight, hDC, nX, nY, SRCCOPY)) {
-    // restore and cleanup
-    SelectObject(hMemDC, hOldBitmap);
-    DeleteObject(hBitmap);
-    DeleteDC(hMemDC);
-    return NULL;
-  }
-
-  SelectObject(hMemDC, hOldBitmap);
-  DeleteDC(hMemDC);
-  return hBitmap;
-}
-
-void WeaselPanel::_CaptureRect(CRect& rect) {
-  HDC ScreenDC = ::GetDC(NULL);
-  CRect rc;
-  GetWindowRect(&rc);
-  POINT WindowPosAtScreen = {rc.left, rc.top};
-  CRect captureRect = rect;
-  captureRect.OffsetRect(WindowPosAtScreen);
-  // create bitmap first (avoid holding clipboard while capturing)
-  HBITMAP bmp = CopyDCToBitmap(ScreenDC, LPRECT(captureRect));
-  if (!bmp) {
-    ::ReleaseDC(NULL, ScreenDC);
-    return;
-  }
-
-  // capture input window to clipboard
-  if (!OpenClipboard()) {
-    DEBUG << "_CaptureRect: OpenClipord ailed";
-    DeleteObject(bmp);
-    ::ReleaseDC(NULL, ScreenDC);
-    return;
-  }
-  EmptyClipboard();
-  if (!SetClipboardData(CF_BITMAP, bmp)) {
-    DEBUG << "_CaptureRect: SetClipboardData failed";
-    DeleteObject(bmp);
-  }
-  CloseClipboard();
-  ::ReleaseDC(NULL, ScreenDC);
-}
-
-LRESULT WeaselPanel::OnMouseActivate(UINT uMsg,
-                                     WPARAM wParam,
-                                     LPARAM lParam,
-                                     BOOL& bHandled) {
-  bHandled = true;
-  return MA_NOACTIVATE;
-}
-
-LRESULT WeaselPanel::OnMouseWheel(UINT uMsg,
-                                  WPARAM wParam,
-                                  LPARAM lParam,
-                                  BOOL& bHandled) {
-  int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-  if (_UICallback && delta != 0) {
-    bool nextpage = delta < 0;
-    _UICallback(NULL, NULL, NULL, &nextpage);
-  }
-  bHandled = true;
-  return 0;
-}
-
-LRESULT WeaselPanel::OnLeftClickedUp(UINT uMsg,
-                                     WPARAM wParam,
-                                     LPARAM lParam,
-                                     BOOL& bHandled) {
-  if (hide_candidates) {
-    bHandled = true;
-    return 0;
-  }
-  CPoint point;
-  point.x = GET_X_LPARAM(lParam);
-  point.y = GET_Y_LPARAM(lParam);
-
-  ::KillTimer(m_hWnd, AUTOREV_TIMER);
-  bar_scale_ = 1.0;
-  ptimer = 0;
-  {
-    // select by click
-    CRect rect = m_layout->GetCandidateRect((int)m_ctx.cinfo.highlighted);
-    if (m_istorepos)
-      rect.OffsetRect(0, m_offsetys[m_ctx.cinfo.highlighted]);
-    rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                     DPI_SCALE(m_style.hilite_padding_y));
-    if (rect.PtInRect(point)) {
-      size_t i = m_ctx.cinfo.highlighted;
-      if (_UICallback) {
-        m_mouse_entry = false;
-        _UICallback(&i, NULL, NULL, NULL);
-        if (!m_status.composing)
-          DestroyWindow();
-      }
+    const float old_scale = m_pD2D->m_dpiScaleLayout;
+    m_pD2D->AttachWindow(m_hWnd);
+    if (m_ostyle != m_style || !m_pD2D->pTextFormat ||
+        old_scale != m_pD2D->m_dpiScaleLayout) {
+      m_pD2D->InitDirectWriteResources();
+      m_fullscreen_font_active = false;
+      m_fullscreen_font_snapshot = {};
+    }
+    m_ostyle = m_style;
+    _UpdateHideCandidates();
+    _CreateLayout();
+    if (!m_layout)
+      HR(E_INVALIDARG);
+    m_layout->DoLayout();
+    _ResizeWindow();
+    if (m_preview_mode) {
+      if (!m_preview_positioned && !m_preview_detached)
+        RepositionPreview();
     } else {
-      RedrawWindow();
+      _Reposition();
     }
-  }
-  bHandled = true;
-  return 0;
-}
-
-LRESULT WeaselPanel::OnLeftClickedDown(UINT uMsg,
-                                       WPARAM wParam,
-                                       LPARAM lParam,
-                                       BOOL& bHandled) {
-  if (hide_candidates) {
-    bHandled = true;
-    return 0;
-  }
-  CPoint point;
-  point.x = GET_X_LPARAM(lParam);
-  point.y = GET_Y_LPARAM(lParam);
-
-  // capture
-  if (m_style.click_to_capture) {
-    CRect recth = m_layout->GetCandidateRect((int)m_ctx.cinfo.highlighted);
-    if (m_istorepos)
-      recth.OffsetRect(0, m_offsetys[m_ctx.cinfo.highlighted]);
-    recth.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                      DPI_SCALE(m_style.hilite_padding_y));
-    // capture widow
-    if (recth.PtInRect(point))
-      _CaptureRect(recth);
-    else {
-      // if shadow_color transparent, decrease the capture rectangle size
-      if (COLORTRANSPARENT(m_style.shadow_color) &&
-          DPI_SCALE(m_style.shadow_radius) != 0) {
-        CRect crc(rcw);
-        int shadow_gap = (DPI_SCALE(m_style.shadow_offset_x) == 0 &&
-                          DPI_SCALE(m_style.shadow_offset_y) == 0)
-                             ? 2 * DPI_SCALE(m_style.shadow_radius)
-                             : DPI_SCALE(m_style.shadow_radius) +
-                                   DPI_SCALE(m_style.shadow_radius) / 2;
-        int ofx = DPI_SCALE(m_style.hilite_padding_x) +
-                              abs(DPI_SCALE(m_style.shadow_offset_x)) +
-                              shadow_gap >
-                          abs(DPI_SCALE(m_style.margin_x))
-                      ? DPI_SCALE(m_style.hilite_padding_x) +
-                            abs(DPI_SCALE(m_style.shadow_offset_x)) +
-                            shadow_gap - abs(DPI_SCALE(m_style.margin_x))
-                      : 0;
-        int ofy = DPI_SCALE(m_style.hilite_padding_y) +
-                              abs(DPI_SCALE(m_style.shadow_offset_y)) +
-                              shadow_gap >
-                          abs(DPI_SCALE(m_style.margin_y))
-                      ? DPI_SCALE(m_style.hilite_padding_y) +
-                            abs(DPI_SCALE(m_style.shadow_offset_y)) +
-                            shadow_gap - abs(DPI_SCALE(m_style.margin_y))
-                      : 0;
-        crc.DeflateRect(m_layout->offsetX - ofx, m_layout->offsetY - ofy);
-        _CaptureRect(crc);
-      } else {
-        _CaptureRect(rcw);
-      }
-    }
-  }
-  {
-    if (!m_style.inline_preedit && m_candidateCount != 0 &&
-        COLORNOTTRANSPARENT(m_style.prevpage_color) &&
-        COLORNOTTRANSPARENT(m_style.nextpage_color)) {
-      // click prepage
-      if (m_ctx.cinfo.currentPage != 0) {
-        CRect prc = m_layout->GetPrepageRect();
-        if (m_istorepos)
-          prc.OffsetRect(0, m_offsety_preedit);
-        if (prc.PtInRect(point)) {
-          bool nextPage = false;
-          if (_UICallback)
-            _UICallback(NULL, NULL, &nextPage, NULL);
-          bHandled = true;
-          return 0;
-        }
-      }
-      // click nextpage
-      if (!m_ctx.cinfo.is_last_page) {
-        CRect prc = m_layout->GetNextpageRect();
-        if (m_istorepos)
-          prc.OffsetRect(0, m_offsety_preedit);
-        if (prc.PtInRect(point)) {
-          bool nextPage = true;
-          if (_UICallback)
-            _UICallback(NULL, NULL, &nextPage, NULL);
-          bHandled = true;
-          return 0;
-        }
-      }
-    }
-    // select by click relative actions
-    for (size_t i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
-      CRect rect = m_layout->GetCandidateRect((int)i);
-      if (m_istorepos)
-        rect.OffsetRect(0, m_offsetys[i]);
-      rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                       DPI_SCALE(m_style.hilite_padding_y));
-      if (rect.PtInRect(point)) {
-        bar_scale_ = 0.8f;
-        // modify highlighted
-        if (i != m_ctx.cinfo.highlighted) {
-          if (_UICallback)
-            _UICallback(NULL, &i, NULL, NULL);
-        } else {
-          RedrawWindow();
-        }
-        ptimer = UINT_PTR(this);
-        ::SetTimer(m_hWnd, AUTOREV_TIMER, 1000, &WeaselPanel::OnTimer);
-        bHandled = true;
-        return 0;
-      }
-    }
-  }
-  bHandled = true;
-  return 0;
-}
-
-UINT_PTR WeaselPanel::ptimer = 0;
-VOID CALLBACK WeaselPanel::OnTimer(_In_ HWND hwnd,
-                                   _In_ UINT uMsg,
-                                   _In_ UINT_PTR idEvent,
-                                   _In_ DWORD dwTime) {
-  ::KillTimer(hwnd, idEvent);
-  WeaselPanel* self = (WeaselPanel*)ptimer;
-  ptimer = 0;
-  if (self) {
-    self->bar_scale_ = 1.0;
-    self->RedrawWindow();
+    m_layout_ready = true;
+    RedrawWindow();
+  } catch (...) {
+    DEBUG << "WeaselPanel::Refresh: layout failed, frame skipped";
+    _RequestPaintRecovery();
   }
 }
 
-LRESULT WeaselPanel::OnMouseMove(UINT uMsg,
-                                 WPARAM wParam,
-                                 LPARAM lParam,
-                                 BOOL& bHandled) {
-  if (m_style.hover_type == UIStyle::NONE)
-    return 0;
-  if (m_mouse_entry == false) {
-    TRACKMOUSEEVENT tme;
-    tme.cbSize = sizeof(TRACKMOUSEEVENT);
-    tme.dwFlags = TME_LEAVE;
-    tme.dwHoverTime = 20;  // unit: ms
-    tme.hwndTrack = m_hWnd;
-    TrackMouseEvent(&tme);
-  }
-  bHandled = true;
-  m_mouse_entry = true;
-  CPoint point;
-  point.x = GET_X_LPARAM(lParam);
-  point.y = GET_Y_LPARAM(lParam);
-
-  // Ignore if mouse screen position not changed
-  CPoint ptScreen = point;
-  ClientToScreen(&ptScreen);
-  if (ptScreen == m_lastMousePos || m_lastMousePos.x == -1) {
-    if (m_lastMousePos.x == -1)
-      m_lastMousePos = ptScreen;
-    return 0;
-  }
-  m_lastMousePos = ptScreen;
-
-  for (size_t i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
-    CRect rect = m_layout->GetCandidateRect((int)i);
-    if (m_istorepos)
-      rect.OffsetRect(0, m_offsetys[i]);
-    rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                     DPI_SCALE(m_style.hilite_padding_y));
-    if (rect.PtInRect(point)) {
-      if (i != m_ctx.cinfo.highlighted) {
-        if (m_style.hover_type == UIStyle::HoverType::HILITE) {
-          if (_UICallback)
-            _UICallback(NULL, &i, NULL, NULL);
-        } else if (m_hoverIndex != i) {
-          m_hoverIndex = static_cast<int>(i);
-          InvalidateRect(&rcw, true);
-        }
-      } else if (m_style.hover_type == UIStyle::HoverType::SEMI_HILITE &&
-                 m_hoverIndex != -1) {
-        m_hoverIndex = -1;
-        InvalidateRect(&rcw, true);
-      }
+void WeaselPanel::_RequestPaintRecovery() {
+  m_octx = Context();
+  m_layout_ready = false;
+  try {
+    if (m_pD2D) {
+      DeviceResources::Get().Reset();
+      m_pD2D->ReleaseWindowResources();
+      m_fullscreen_font_active = false;
+      m_fullscreen_font_snapshot = {};
+      m_pD2D->AttachWindow(m_hWnd);
+      m_pD2D->InitDirectWriteResources();
     }
+  } catch (...) {
+    // Persistent failures wait for another external refresh after the budget.
   }
-  return 0;
+  if (m_paint_recovery_left && IsWindow()) {
+    --m_paint_recovery_left;
+    ::PostMessage(m_hWnd, WM_WEASEL_REFRESH, 1, 0);
+  }
 }
 
-LRESULT WeaselPanel::OnMouseLeave(UINT uMsg,
-                                  WPARAM wParam,
-                                  LPARAM lParam,
-                                  BOOL& bHandled) {
+void WeaselPanel::RedrawWindow() {
+  if (!_IsUiThread()) {
+    ::PostMessage(m_hWnd, WM_WEASEL_REDRAW, 0, 0);
+    return;
+  }
+  // Some hosts (including MobaXterm) discard WM_PAINT. Render immediately on
+  // the UI thread, using the composition swap chain rather than layered GDI.
+  DoPaint();
+}
+
+void WeaselPanel::RepositionPreview() {
+  if (!_IsUiThread()) {
+    ::PostMessage(m_hWnd, WM_WEASEL_PREVIEW, 0, 0);
+    return;
+  }
+  if (!m_hWnd || !m_preview_mode || m_preview_detached || !m_parent ||
+      !m_layout)
+    return;
+  RECT parent_rect{};
+  if (!GetWindowRect(m_parent, &parent_rect))
+    return;
+  const int width = m_layout->GetContentSize().cx;
+  const int height = m_layout->GetContentSize().cy;
+  const int x =
+      parent_rect.left + (parent_rect.right - parent_rect.left - width) / 2;
+  const int y = parent_rect.top - height;
+  SetWindowPos(m_hWnd, HWND_TOP, x, y, 0, 0,
+               SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+  m_preview_positioned = true;
+}
+
+BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
+  if (m_hWnd)
+    return !!m_hWnd;
+  m_parent = parent;
+  m_preview_mode = preview_mode;
+  m_preview_positioned = false;
+  m_preview_detached = false;
   m_hoverIndex = -1;
-  InvalidateRect(&rcw, true);
-  m_mouse_entry = false;
-  return 0;
+  POINT cursor_pos = {0, 0};
+  if (::GetCursorPos(&cursor_pos)) {
+    m_lastCursorPos = CPoint(cursor_pos.x, cursor_pos.y);
+  } else {
+    m_lastCursorPos = CPoint(-1, -1);
+  }
+  HINSTANCE hInstance = GetModuleHandle(nullptr);
+  WNDCLASS wc = {};
+  wc.lpfnWndProc = WeaselPanel::WindowProc;
+  wc.hInstance = hInstance;
+  wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+  wc.lpszClassName = L"WeaselPanel";
+  ATOM atom = RegisterClass(&wc);
+  if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    return FALSE;
+  }
+  ThreadDpiAwarenessScope dpi_scope;
+  const DWORD ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+                         (m_preview_mode ? 0 : WS_EX_TOPMOST) |
+                         WS_EX_NOREDIRECTIONBITMAP;
+  m_hWnd = CreateWindowEx(
+      ex_style, L"WeaselPanel", L"WeaselPanel", WS_POPUP | WS_CLIPSIBLINGS,
+      CW_USEDEFAULT, CW_USEDEFAULT, 10, 10, parent, nullptr, hInstance, this);
+  if (m_hWnd) {
+    m_fullscreen_font_active = false;
+    m_fullscreen_font_snapshot = {};
+    m_layout_ready = false;
+    m_paint_recovery_left = MAX_PAINT_RECOVERY;
+    if (!m_pD2D) {
+      DEBUG << "m_style.font_face: " << m_style.font_face;
+      m_pD2D = std::make_shared<D2D>(m_style);
+    }
+    m_pD2D->AttachWindow(m_hWnd);
+    if (!m_style.font_face.empty())
+      m_pD2D->InitDirectWriteResources();
+    m_ostyle = m_style;
+  }
+  return !!m_hWnd;
 }
 
-void WeaselPanel::_HighlightText(CDCHandle& dc,
-                                 const CRect& rc,
-                                 const COLORREF& color,
-                                 const COLORREF& shadowColor,
-                                 const int& radius,
-                                 const BackType& type = BackType::TEXT,
-                                 const IsToRoundStruct& rd = IsToRoundStruct(),
-                                 const COLORREF& bordercolor = TRANS_COLOR) {
-  // Graphics obj with SmoothingMode
-  Gdiplus::Graphics g_back(dc);
-  g_back.SetSmoothingMode(Gdiplus::SmoothingMode::SmoothingModeHighQuality);
-
-  // blur buffer
-  int blurMarginX = m_layout->offsetX;
-  int blurMarginY = m_layout->offsetY;
-
-  GraphicsRoundRectPath* hiliteBackPath;
-  if (rd.Hemispherical && type != BackType::BACKGROUND &&
-      NOT_FULLSCREENLAYOUT(m_style))
-    hiliteBackPath = new GraphicsRoundRectPath(
-        rc,
-        DPI_SCALE(m_style.round_corner_ex) -
-            (DPI_SCALE(m_style.border) % 2 ? DPI_SCALE(m_style.border) / 2 : 0),
-        rd.IsTopLeftNeedToRound, rd.IsTopRightNeedToRound,
-        rd.IsBottomRightNeedToRound, rd.IsBottomLeftNeedToRound);
-  else  // background or current candidate background not out of window
-        // background
-    hiliteBackPath = new GraphicsRoundRectPath(rc, radius);
-
-  // 必须shadow_color都是非完全透明色才做绘制, 全屏状态不绘制阴影保证响应速度
-  if (DPI_SCALE(m_style.shadow_radius) && COLORNOTTRANSPARENT(shadowColor) &&
-      NOT_FULLSCREENLAYOUT(m_style)) {
-    CRect rect(blurMarginX + DPI_SCALE(m_style.shadow_offset_x),
-               blurMarginY + DPI_SCALE(m_style.shadow_offset_y),
-               rc.Width() + blurMarginX + DPI_SCALE(m_style.shadow_offset_x),
-               rc.Height() + blurMarginY + DPI_SCALE(m_style.shadow_offset_y));
-    BYTE r = GetRValue(shadowColor);
-    BYTE g = GetGValue(shadowColor);
-    BYTE b = GetBValue(shadowColor);
-    BYTE alpha = (BYTE)((shadowColor >> 24) & 255);
-    Gdiplus::Color shadow_color = Gdiplus::Color::MakeARGB(alpha, r, g, b);
-
-    // B12a：模糊位图按 (尺寸/边距/圆角/半径/偏移/颜色) 缓存。翻页 / 移动
-    // 高亮 / 悬停重绘时矩形尺寸与画笔参数不变，直接复用上次的模糊结果，
-    // 免去每高亮一次整幅 Bitmap 分配 + 盒模糊
-    ShadowBitmapKey key{rc.Width(),
-                        rc.Height(),
-                        blurMarginX,
-                        blurMarginY,
-                        radius,
-                        DPI_SCALE(m_style.shadow_radius),
-                        DPI_SCALE(m_style.shadow_offset_x),
-                        DPI_SCALE(m_style.shadow_offset_y),
-                        shadowColor};
-    Gdiplus::Bitmap* pBitmapDropShadow = NULL;
-    for (auto& e : m_shadowBitmapCache) {
-      if (!(key < e.first) && !(e.first < key)) {
-        pBitmapDropShadow = e.second.get();
-        break;
-      }
+void WeaselPanel::_UpdateOffsetY(CRect& arc, CRect& prc) {
+  if (m_istorepos) {
+    std::vector<CRect> rects(m_candidateCount);
+    std::vector<int> btmys(m_candidateCount);
+    for (int i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
+      rects[i] = m_layout->GetCandidateRect(i);
+      btmys[i] = rects[i].bottom;
     }
-    if (pBitmapDropShadow == NULL) {
-      pBitmapDropShadow = new Gdiplus::Bitmap(
-          (INT)rc.Width() + blurMarginX * 2, (INT)rc.Height() + blurMarginY * 2,
-          PixelFormat32bppPARGB);
-
-      Gdiplus::Graphics g_shadow(pBitmapDropShadow);
-      g_shadow.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-      // dropshadow, draw a roundrectangle to blur
-      if (DPI_SCALE(m_style.shadow_offset_x) != 0 ||
-          DPI_SCALE(m_style.shadow_offset_y) != 0) {
-        GraphicsRoundRectPath shadow_path(rect, radius);
-        Gdiplus::SolidBrush shadow_brush(shadow_color);
-        g_shadow.FillPath(&shadow_brush, &shadow_path);
-      }
-      // round shadow, draw multilines as base round line
-      else {
-        int step = alpha / DPI_SCALE(m_style.shadow_radius) / 2;
-        Gdiplus::Pen pen_shadow(shadow_color, (Gdiplus::REAL)1);
-        for (int i = 0; i < DPI_SCALE(m_style.shadow_radius); i++) {
-          GraphicsRoundRectPath round_path(rect, radius + 1 + i);
-          g_shadow.DrawPath(&pen_shadow, &round_path);
-          shadow_color =
-              Gdiplus::Color::MakeARGB(alpha - i * step, r, g, b);
-          pen_shadow.SetColor(shadow_color);
-          rect.InflateRect(1, 1);
-        }
-      }
-      DoGaussianBlur(pBitmapDropShadow,
-                     (float)DPI_SCALE(m_style.shadow_radius),
-                     (float)DPI_SCALE(m_style.shadow_radius));
-
-      // FIFO 有界：超出容量淘汰最旧条目（条目顺序即插入顺序）
-      if (m_shadowBitmapCache.size() >= SHADOW_BITMAP_CACHE_CAP)
-        m_shadowBitmapCache.erase(m_shadowBitmapCache.begin());
-      m_shadowBitmapCache.emplace_back(
-          key, std::unique_ptr<Gdiplus::Bitmap>(pBitmapDropShadow));
+    m_offsety_preedit = m_candidateCount && !m_layout->IsInlinePreedit() &&
+                                !m_ctx.preedit.str.empty()
+                            ? rects.back().bottom - prc.bottom
+                            : 0;
+    m_offsety_aux = m_candidateCount && !m_ctx.aux.str.empty()
+                        ? rects.back().bottom - arc.bottom
+                        : 0;
+    int base_gap =
+        !m_ctx.aux.str.empty()
+            ? arc.Height() + DPI_SCALE(m_style.spacing)
+            : (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty()
+                   ? prc.Height() + DPI_SCALE(m_style.spacing)
+                   : 0);
+    for (int i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
+      m_offsetys[i] = i == 0 ? btmys.back() - base_gap - rects[i].bottom
+                             : rects[i - 1].top + m_offsetys[i - 1] -
+                                   DPI_SCALE(m_style.candidate_spacing) -
+                                   rects[i].bottom;
     }
-
-    g_back.DrawImage(pBitmapDropShadow, rc.left - blurMarginX,
-                     rc.top - blurMarginY);
   }
-
-  // 必须back_color非完全透明才绘制
-  if (COLORNOTTRANSPARENT(color)) {
-    Gdiplus::Color back_color = GDPCOLOR_FROM_COLORREF(color);
-    Gdiplus::SolidBrush back_brush(back_color);
-    g_back.FillPath(&back_brush, hiliteBackPath);
-  }
-  // draw border, for bordercolor not transparent and border valid
-  if (COLORNOTTRANSPARENT(bordercolor) && DPI_SCALE(m_style.border) > 0) {
-    Gdiplus::Color border_color = GDPCOLOR_FROM_COLORREF(bordercolor);
-    Gdiplus::Pen gPenBorder(border_color,
-                            (Gdiplus::REAL)DPI_SCALE(m_style.border));
-    // candidate window border
-    if (type == BackType::BACKGROUND) {
-      GraphicsRoundRectPath bgPath(rc, DPI_SCALE(m_style.round_corner_ex));
-      g_back.DrawPath(&gPenBorder, &bgPath);
-    } else if (type !=
-               BackType::TEXT)  // hilited_candidate_border / candidate_border
-      g_back.DrawPath(&gPenBorder, hiliteBackPath);
-  }
-  // free memory
-  delete hiliteBackPath;
-  hiliteBackPath = NULL;
 }
 
-// draw preedit text, text only
-bool WeaselPanel::_DrawPreedit(const Text& text,
-                               CDCHandle dc,
-                               const CRect& rc) {
+void WeaselPanel::DoPaint() {
+  try {
+    _DoPaint();
+  } catch (...) {
+    // End an interrupted drawing session, but never present the failed frame.
+    if (m_pD2D && m_pD2D->dc)
+      m_pD2D->dc->EndDraw();
+    DEBUG << "WeaselPanel::DoPaint: paint failed, frame skipped";
+    _RequestPaintRecovery();
+  }
+}
+
+void WeaselPanel::_DoPaint() {
+  if (!m_layout_ready || !m_pD2D || !m_layout)
+    return;
+  if (!m_pD2D->dc || !m_pD2D->swapChain || !m_pD2D->bitmap ||
+      !m_pD2D->visual || !m_pD2D->target || !m_pD2D->m_pBrush) {
+    _RequestPaintRecovery();
+    return;
+  }
+  if (!m_pD2D->m_pWriteFactory)
+    return;
+  auto hr = m_pD2D->direct3dDevice
+                ? m_pD2D->direct3dDevice->GetDeviceRemovedReason()
+                : DXGI_ERROR_DEVICE_REMOVED;
+  if (FAILED(hr)) {
+    _RequestPaintRecovery();
+    return;
+  }
+  m_pD2D->dc->BeginDraw();
+  m_pD2D->dc->Clear(D2D1::ColorF({0.0f, 0.0f, 0.0f, 0.0f}));
+  if (!hide_candidates) {
+    const bool should_draw_background =
+        ((!m_ctx.empty() && !m_style.inline_preedit) ||
+         (m_style.inline_preedit && (m_candidateCount || !m_ctx.aux.empty())));
+    if (should_draw_background) {
+      CRect& rc = m_layout->GetContentRect();
+      IsToRoundStruct roundInfo;
+      _HighlightRect(rc, DPI_SCALE(m_style.round_corner_ex),
+                     DPI_SCALE(m_style.border), m_style.back_color,
+                     m_style.shadow_color, m_style.border_color, roundInfo);
+    }
+    CRect& prc = m_layout->GetPreeditRect();
+    CRect& arc = m_layout->GetAuxiliaryRect();
+    // if vertical auto reverse triggered
+    _UpdateOffsetY(arc, prc);
+    if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.empty()) {
+      _DrawPreedit(m_ctx.preedit, true);
+    }
+    if (!m_ctx.aux.empty()) {
+      _DrawPreedit(m_ctx.aux, false);
+    }
+    if (m_candidateCount) {
+      _DrawCandidates();
+    }
+    if (m_layout->ShouldDisplayStatusIcon()) {
+      ComPtr<ID2D1Bitmap1> pBitmap;
+#define LOADICON(x, icon, id) LoadIconIfNeed(m_##x, m_style.##x, icon, id)
+      LOADICON(current_ascii_icon, m_iconAlpha, IDI_EN);
+      LOADICON(current_zhung_icon, m_iconEnabled, IDI_ZH);
+      LOADICON(current_full_icon, m_iconFull, IDI_FULL_SHAPE);
+      LOADICON(current_half_icon, m_iconHalf, IDI_HALF_SHAPE);
+#undef LOADICON
+
+      HICON& ico =
+          m_status.disabled ? m_iconDisabled
+          : m_status.ascii_mode
+              ? m_iconAlpha
+              : (m_status.type == SCHEMA
+                     ? m_iconEnabled
+                     : (m_status.full_shape ? m_iconFull : m_iconHalf));
+      HRESULT hrIcon = m_pD2D->GetBmpFromIcon(ico, pBitmap);
+      // Draw the bitmap
+      if (SUCCEEDED(hrIcon) && pBitmap) {
+        auto iconRect = m_layout->GetStatusIconRect();
+        if (m_istorepos)
+          iconRect.OffsetRect(0, !m_ctx.aux.empty() ? m_offsety_aux
+                                                     : m_offsety_preedit);
+        D2D1_RECT_F iconRectf = D2D1::RectF(iconRect.left, iconRect.top,
+                                            iconRect.right, iconRect.bottom);
+        m_pD2D->dc->DrawBitmap(pBitmap.Get(), iconRectf);
+      }
+    }
+  }
+
+  const auto hrEnd = m_pD2D->dc->EndDraw();
+  if (FAILED(hrEnd)) {
+    DEBUG << "EndDraw failed: " << HRESULTToString(hrEnd);
+    _RequestPaintRecovery();
+    return;
+  }
+  const auto hrPresent = m_pD2D->swapChain->Present(1, 0);
+  if (FAILED(hrPresent)) {
+    DEBUG << "Present failed: " << HRESULTToString(hrPresent);
+    _RequestPaintRecovery();
+    return;
+  }
+  m_octx = m_ctx;
+  m_paint_recovery_left = MAX_PAINT_RECOVERY;
+}
+
+bool WeaselPanel::_DrawPreedit(const Text& text, bool isPreedit) {
   bool drawn = false;
-  std::wstring const& t = text.str;
-  IDWriteTextFormat1* txtFormat = pDWR->pPreeditTextFormat.Get();
+  wstring const& t = text.str;
+  PtTextFormat& pTextFormat = m_pD2D->pPreeditFormat;
 
   if (!t.empty()) {
-    weasel::TextRange range = m_layout->GetPreeditRange();
-
-    if (range.start < range.end) {
-      std::wstring before_str = t.substr(0, range.start);
-      std::wstring hilited_str = t.substr(range.start, range.end);
-      std::wstring after_str = t.substr(range.end);
-      CSize beforeSz = m_layout->GetBeforeSize();
-      CSize hilitedSz = m_layout->GetHilitedSize();
-      CSize afterSz = m_layout->GetAfterSize();
-
-      int x = rc.left;
-      int y = rc.top;
-
-      if (range.start > 0) {
-        // zzz
-        std::wstring str_before(t.substr(0, range.start));
-        CRect rc_before;
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          rc_before = CRect(rc.left, y, rc.right, y + beforeSz.cy);
-        else
-          rc_before = CRect(x, rc.top, rc.left + beforeSz.cx, rc.bottom);
-        _TextOut(rc_before, str_before.c_str(), str_before.length(),
-                 m_style.text_color, txtFormat);
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          y += beforeSz.cy + DPI_SCALE(m_style.hilite_spacing);
-        else
-          x += beforeSz.cx + DPI_SCALE(m_style.hilite_spacing);
+    TextRange range{};
+    for (const auto& attr : text.attributes) {
+      if (attr.type == HIGHLIGHTED) {
+        range = attr.range;
       }
-      {
+    }
+    if (range.start >= 0 && range.start < range.end &&
+        static_cast<size_t>(range.end) <= t.size()) {
+      auto before_str = t.substr(0, range.start);
+      auto hilited_str = t.substr(range.start, range.end - range.start);
+      auto after_str = t.substr(range.end);
+
+      // Use precomputed rectangles - make copies when we need to modify them
+      CRect rc_before = isPreedit ? m_layout->GetPreeditBeforeRect()
+                                  : m_layout->GetAuxBeforeRect();
+      CRect rc_hi = isPreedit ? m_layout->GetPreeditHiliteRect()
+                              : m_layout->GetAuxHiliteRect();
+      CRect rc_after = isPreedit ? m_layout->GetPreeditAfterRect()
+                                 : m_layout->GetAuxAfterRect();
+
+      // Apply m_istorepos offset if needed
+      if (m_istorepos) {
+        int offsetY = isPreedit ? m_offsety_preedit : m_offsety_aux;
+        rc_before.OffsetRect(0, offsetY);
+        rc_hi.OffsetRect(0, offsetY);
+        rc_after.OffsetRect(0, offsetY);
+      }
+
+      // Use DPI_SCALE macro for consistency with other code
+      auto padx = DPI_SCALE(m_style.hilite_padding_x);
+      auto pady = DPI_SCALE(m_style.hilite_padding_y);
+
+      if (range.start > 0 && !rc_before.IsRectNull()) {
+        _TextOut(rc_before, before_str, before_str.length(), m_style.text_color,
+                 pTextFormat);
+      }
+      if (!rc_hi.IsRectNull()) {
         // zzz[yyy]
-        std::wstring str_highlight(
-            t.substr(range.start, (size_t)range.end - range.start));
-        CRect rc_hi;
-
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          rc_hi = CRect(rc.left, y, rc.right, y + hilitedSz.cy);
-        else
-          rc_hi = CRect(x, rc.top, x + hilitedSz.cx, rc.bottom);
-        _TextOut(rc_hi, str_highlight.c_str(), str_highlight.length(),
-                 m_style.hilited_text_color, txtFormat);
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          y += rc_hi.Height() + DPI_SCALE(m_style.hilite_spacing);
-        else
-          x += rc_hi.Width() + DPI_SCALE(m_style.hilite_spacing);
+        CRect rc_hib = rc_hi;
+        rc_hib.InflateRect(padx, pady);
+        const IsToRoundStruct& roundInfo = m_layout->GetTextRoundInfo();
+        _HighlightRect(rc_hib, DPI_SCALE(m_style.round_corner),
+                       DPI_SCALE(m_style.border), m_style.hilited_back_color,
+                       m_style.hilited_shadow_color, 0, roundInfo);
+        _TextOut(rc_hi, hilited_str, hilited_str.length(),
+                 m_style.hilited_text_color, pTextFormat);
       }
-      if (range.end < static_cast<int>(t.length())) {
+      if (range.end < static_cast<int>(t.length()) && !rc_after.IsRectNull()) {
         // zzz[yyy]xxx
-        std::wstring str_after(t.substr(range.end));
-        CRect rc_after;
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          rc_after = CRect(rc.left, y, rc.right, y + afterSz.cy);
-        else
-          rc_after = CRect(x, rc.top, x + afterSz.cx, rc.bottom);
-        _TextOut(rc_after, str_after.c_str(), str_after.length(),
-                 m_style.text_color, txtFormat);
+        _TextOut(rc_after, after_str, after_str.length(), m_style.text_color,
+                 pTextFormat);
       }
     } else {
-      CRect rcText(rc.left, rc.top, rc.right, rc.bottom);
-      _TextOut(rcText, t.c_str(), t.length(), m_style.text_color, txtFormat);
+      // No highlighted text, use the base rectangle from layout
+      CRect rcText =
+          isPreedit ? m_layout->GetPreeditRect() : m_layout->GetAuxiliaryRect();
+
+      // Apply m_istorepos offset if needed
+      if (m_istorepos) {
+        int offsetY = isPreedit ? m_offsety_preedit : m_offsety_aux;
+        rcText.OffsetRect(0, offsetY);
+      }
+
+      _TextOut(rcText, t.c_str(), t.length(), m_style.text_color, pTextFormat);
     }
-    // draw pager mark if not inline_preedit if necessary
     if (m_candidateCount && !m_style.inline_preedit &&
         COLORNOTTRANSPARENT(m_style.prevpage_color) &&
         COLORNOTTRANSPARENT(m_style.nextpage_color)) {
       const std::wstring pre = L"<";
       const std::wstring next = L">";
       CRect prc = m_layout->GetPrepageRect();
+      if (m_istorepos)
+        prc.OffsetRect(0, m_offsety_preedit);
       // clickable color / disabled color
       int color =
           m_ctx.cinfo.currentPage ? m_style.prevpage_color : m_style.text_color;
-      if (m_istorepos)
-        prc.OffsetRect(0, m_offsety_preedit);
-      _TextOut(prc, pre.c_str(), pre.length(), color, txtFormat);
+      _TextOut(prc, pre.c_str(), pre.length(), color, pTextFormat);
 
       CRect nrc = m_layout->GetNextpageRect();
+      if (m_istorepos)
+        nrc.OffsetRect(0, m_offsety_preedit);
       // clickable color / disabled color
       color = m_ctx.cinfo.is_last_page ? m_style.text_color
                                        : m_style.nextpage_color;
-      if (m_istorepos)
-        nrc.OffsetRect(0, m_offsety_preedit);
-      _TextOut(nrc, next.c_str(), next.length(), color, txtFormat);
+      _TextOut(nrc, next.c_str(), next.length(), color, pTextFormat);
     }
     drawn = true;
   }
   return drawn;
 }
 
-// draw hilited back color, back only
-bool WeaselPanel::_DrawPreeditBack(const Text& text,
-                                   CDCHandle dc,
-                                   const CRect& rc) {
+CRect WeaselPanel::_GetInflatedCandRect(int i) {
+  CRect rc;
+  if (!m_layout || i < 0 || i >= m_candidateCount ||
+      i >= MAX_CANDIDATES_COUNT) {
+    rc.SetRectEmpty();
+    return rc;
+  }
+  rc = m_layout->GetCandidateRect(i);
+  if (m_istorepos)
+    rc.OffsetRect(0, m_offsetys[i]);
+  const auto padx = DPI_SCALE(m_style.hilite_padding_x);
+  const auto pady = DPI_SCALE(m_style.hilite_padding_y);
+  rc.InflateRect(padx, pady);
+  return rc;
+}
+
+bool WeaselPanel::_DrawCandidates() {
   bool drawn = false;
-  std::wstring const& t = text.str;
-  IDWriteTextFormat1* txtFormat = pDWR->pPreeditTextFormat.Get();
-
-  if (!t.empty()) {
-    weasel::TextRange range = m_layout->GetPreeditRange();
-
-    if (range.start < range.end) {
-      CSize beforeSz = m_layout->GetBeforeSize();
-      CSize hilitedSz = m_layout->GetHilitedSize();
-
-      int x = rc.left;
-      int y = rc.top;
-
-      if (range.start > 0) {
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          y += beforeSz.cy + DPI_SCALE(m_style.hilite_spacing);
-        else
-          x += beforeSz.cx + DPI_SCALE(m_style.hilite_spacing);
-      }
-      {
-        CRect rc_hi;
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          rc_hi = CRect(rc.left, y, rc.right, y + hilitedSz.cy);
-        else
-          rc_hi = CRect(x, rc.top, x + hilitedSz.cx, rc.bottom);
-        // if preedit rect size smaller than icon, fill the gap to
-        // STATUS_ICON_SIZE
-        if (m_layout->ShouldDisplayStatusIcon()) {
-          if ((m_style.layout_type == UIStyle::LAYOUT_HORIZONTAL ||
-               m_style.layout_type == UIStyle::LAYOUT_VERTICAL) &&
-              hilitedSz.cy < STATUS_ICON_SIZE)
-            rc_hi.InflateRect(0, (STATUS_ICON_SIZE - hilitedSz.cy) / 2);
-          if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT &&
-              hilitedSz.cx < STATUS_ICON_SIZE)
-            rc_hi.InflateRect((STATUS_ICON_SIZE - hilitedSz.cx) / 2, 0);
-        }
-
-        rc_hi.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                          DPI_SCALE(m_style.hilite_padding_y));
-        IsToRoundStruct rd = m_layout->GetTextRoundInfo();
-        if (m_istorepos) {
-          std::swap(rd.IsTopLeftNeedToRound, rd.IsBottomLeftNeedToRound);
-          std::swap(rd.IsTopRightNeedToRound, rd.IsBottomRightNeedToRound);
-        }
-        _HighlightText(dc, rc_hi, m_style.hilited_back_color,
-                       m_style.hilited_shadow_color,
-                       DPI_SCALE(m_style.round_corner), BackType::TEXT, rd);
-      }
-    }
+  if (m_candidateCount <= 0)
+    return false;
+  const int highlighted = (m_ctx.cinfo.highlighted >= 0 &&
+                           m_ctx.cinfo.highlighted < m_candidateCount)
+                              ? m_ctx.cinfo.highlighted
+                              : -1;
+  const vector<Text>& candidates(m_ctx.cinfo.candies);
+  const vector<Text>& comments(m_ctx.cinfo.comments);
+  const vector<Text>& labels(m_ctx.cinfo.labels);
+  PtTextFormat& txtFormat = m_pD2D->pTextFormat;
+  PtTextFormat& labeltxtFormat = m_pD2D->pLabelFormat;
+  PtTextFormat& commenttxtFormat = m_pD2D->pCommentFormat;
+  auto padx = DPI_SCALE(m_style.hilite_padding_x);
+  auto pady = DPI_SCALE(m_style.hilite_padding_y);
+  const auto hilitefunc = [&](int i, uint32_t back_color, uint32_t shadow_color,
+                              uint32_t border_color, uint32_t border = 0) {
+    auto rect = _GetInflatedCandRect(i);
+    const IsToRoundStruct& roundInfo = m_layout->GetRoundInfo(i);
+    _HighlightRect(rect, DPI_SCALE(m_style.round_corner), DPI_SCALE(border),
+                   back_color, shadow_color, border_color, roundInfo);
+  };
+  for (auto i = 0; i < m_candidateCount; i++) {
+    if (i == m_hoverIndex)
+      continue;
+    bool hilited = (i == highlighted);
+    int shadow_color = hilited ? m_style.hilited_candidate_shadow_color
+                               : m_style.candidate_shadow_color;
+    if (COLORNOTTRANSPARENT(shadow_color))
+      hilitefunc(i, 0, shadow_color, 0);
     drawn = true;
   }
-  return drawn;
-}
-
-bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
-  bool drawn = false;
-  const std::vector<Text>& candidates(m_ctx.cinfo.candies);
-  const std::vector<Text>& comments(m_ctx.cinfo.comments);
-  const std::vector<Text>& labels(m_ctx.cinfo.labels);
-  // prevent all text format nullptr
-  if (pDWR->pTextFormat.Get() == nullptr &&
-      pDWR->pLabelTextFormat.Get() == nullptr &&
-      pDWR->pCommentTextFormat.Get() == nullptr) {
-    _InitFontRes(true);
+  if (m_hoverIndex >= 0 && m_hoverIndex < m_candidateCount) {
+    hilitefunc(m_hoverIndex,
+               HALF_ALPHA_COLOR(m_style.hilited_candidate_back_color),
+               HALF_ALPHA_COLOR(m_style.hilited_candidate_shadow_color),
+               HALF_ALPHA_COLOR(m_style.hilited_candidate_border_color));
   }
-  ComPtr<IDWriteTextFormat1> txtFormat = pDWR->pTextFormat;
-  ComPtr<IDWriteTextFormat1> labeltxtFormat = pDWR->pLabelTextFormat;
-  ComPtr<IDWriteTextFormat1> commenttxtFormat = pDWR->pCommentTextFormat;
-  BackType bkType = BackType::CAND;
-
-  CRect rect;
-  // draw back color and shadow color, with gdi+
-  if (back) {
-    // if candidate_shadow_color not transparent, draw candidate shadow first
-    if (COLORNOTTRANSPARENT(m_style.candidate_shadow_color)) {
-      for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
-        if (i == m_ctx.cinfo.highlighted || i == m_hoverIndex)
-          continue;  // draw non hilited candidates only
-        rect = m_layout->GetCandidateRect((int)i);
-        IsToRoundStruct rd = m_layout->GetRoundInfo(i);
-        if (m_istorepos) {
-          rect.OffsetRect(0, m_offsetys[i]);
-          ReconfigRoundInfo(rd, i, m_candidateCount);
-        }
-        rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                         DPI_SCALE(m_style.hilite_padding_y));
-        _HighlightText(dc, rect, 0x00000000, m_style.candidate_shadow_color,
-                       DPI_SCALE(m_style.round_corner), bkType, rd);
-        drawn = true;
+  // draw highlighted background and text
+  const auto drawText = [&](int i, const vector<Text>& texts, int color,
+                            PtTextFormat& textFormat, CRect rc) {
+    if (i < 0 || i >= (int)texts.size())
+      return;
+    const auto& text = texts[i].str;
+    if (COLORTRANSPARENT(color) || rc.IsRectNull() || text.empty() ||
+        !textFormat.Get())
+      return;
+    if (m_istorepos)
+      rc.OffsetRect(0, m_offsetys[i]);
+    _TextOut(rc, text, text.length(), color, textFormat);
+  };
+  for (auto i = 0; i < m_candidateCount; i++) {
+    bool hilited = (i == highlighted);
+    int label_text_color =
+        hilited ? m_style.hilited_label_text_color : m_style.label_text_color;
+    int candidate_text_color = hilited ? m_style.hilited_candidate_text_color
+                                       : m_style.candidate_text_color;
+    int comment_text_color = hilited ? m_style.hilited_comment_text_color
+                                     : m_style.comment_text_color;
+    int back_color = hilited ? m_style.hilited_candidate_back_color
+                             : m_style.candidate_back_color;
+    int border_color = hilited ? m_style.hilited_candidate_border_color
+                               : m_style.candidate_border_color;
+    hilitefunc(i, back_color, 0, border_color, m_style.border);
+    if (i >= 0 && i < (int)labels.size()) {
+      auto rc = m_layout->GetCandidateLabelRect(i);
+      auto label = FormatCandidateLabel(labels[i].str,
+                                        m_style.label_text_format.c_str());
+      if (!COLORTRANSPARENT(label_text_color) && !rc.IsRectNull() &&
+          !label.empty() && labeltxtFormat.Get()) {
+        if (m_istorepos)
+          rc.OffsetRect(0, m_offsetys[i]);
+        _TextOut(rc, label, label.length(), label_text_color, labeltxtFormat);
       }
     }
-    // draw non highlighted candidates, without shadow
-    if ((COLORNOTTRANSPARENT(m_style.candidate_back_color) ||
-         COLORNOTTRANSPARENT(m_style.candidate_border_color))) {
-      for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
-        if (i == m_ctx.cinfo.highlighted || i == m_hoverIndex)
-          continue;
-        rect = m_layout->GetCandidateRect((int)i);
-        IsToRoundStruct rd = m_layout->GetRoundInfo(i);
-        if (m_istorepos) {
-          rect.OffsetRect(0, m_offsetys[i]);
-          ReconfigRoundInfo(rd, i, m_candidateCount);
-        }
-        rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                         DPI_SCALE(m_style.hilite_padding_y));
-        _HighlightText(dc, rect, m_style.candidate_back_color, 0x00000000,
-                       DPI_SCALE(m_style.round_corner), bkType, rd,
-                       m_style.candidate_border_color);
-        drawn = true;
-      }
-    }
-    // draw semi-hilite background and shadow
-    if (m_hoverIndex >= 0) {
-      rect = m_layout->GetCandidateRect(m_hoverIndex);
-      IsToRoundStruct rd = m_layout->GetRoundInfo(m_hoverIndex);
-      if (m_istorepos) {
-        rect.OffsetRect(0, m_offsetys[m_hoverIndex]);
-        ReconfigRoundInfo(rd, m_hoverIndex, m_candidateCount);
-      }
-      rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                       DPI_SCALE(m_style.hilite_padding_y));
-      _HighlightText(dc, rect,
-                     HALF_ALPHA_COLOR(m_style.hilited_candidate_back_color),
-                     HALF_ALPHA_COLOR(m_style.hilited_candidate_shadow_color),
-                     DPI_SCALE(m_style.round_corner), bkType, rd,
-                     HALF_ALPHA_COLOR(m_style.hilited_candidate_border_color));
-    }
-    // draw highlighted background and shadow
-    {
-      rect = m_layout->GetHighlightRect();
-      bool markSt = bar_scale_ == 1.0 || (!m_style.mark_text.empty());
-      IsToRoundStruct rd = m_layout->GetRoundInfo(m_ctx.cinfo.highlighted);
-      if (m_istorepos) {
-        rect.OffsetRect(0, m_offsetys[m_ctx.cinfo.highlighted]);
-        ReconfigRoundInfo(rd, m_ctx.cinfo.highlighted, m_candidateCount);
-      }
-      rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                       DPI_SCALE(m_style.hilite_padding_y));
-      _HighlightText(dc, rect, m_style.hilited_candidate_back_color,
-                     markSt ? m_style.hilited_candidate_shadow_color : 0,
-                     DPI_SCALE(m_style.round_corner), bkType, rd,
-                     m_style.hilited_candidate_border_color);
-      if (m_style.mark_text.empty() &&
-          COLORNOTTRANSPARENT(m_style.hilited_mark_color)) {
-        int height =
-            min(rect.Height() - DPI_SCALE(m_style.hilite_padding_y) * 2,
-                rect.Height() - DPI_SCALE(m_style.round_corner) * 2);
-        int width = min(rect.Width() - DPI_SCALE(m_style.hilite_padding_x) * 2,
-                        rect.Width() - DPI_SCALE(m_style.round_corner) * 2);
-        width = min(width, static_cast<int>(rect.Width() * 0.618));
-        height = min(height, static_cast<int>(rect.Height() * 0.618));
-        if (bar_scale_ != 1.0f) {
-          width = static_cast<int>(width * bar_scale_);
-          height = static_cast<int>(height * bar_scale_);
-        }
-        Gdiplus::Graphics g_back(dc);
-        g_back.SetSmoothingMode(
-            Gdiplus::SmoothingMode::SmoothingModeHighQuality);
-        Gdiplus::Color mark_color =
-            GDPCOLOR_FROM_COLORREF(m_style.hilited_mark_color);
-        Gdiplus::SolidBrush mk_brush(mark_color);
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT) {
-          int x = rect.left + (rect.Width() - width) / 2;
-          CRect mkrc{x, rect.top, x + width, rect.top + m_layout->mark_height};
-          GraphicsRoundRectPath mk_path(mkrc, mkrc.Height() / 2);
-          g_back.FillPath(&mk_brush, &mk_path);
-        } else {
-          int y = rect.top + (rect.Height() - height) / 2;
-          CRect mkrc{rect.left, y, rect.left + m_layout->mark_width,
-                     y + height};
-          GraphicsRoundRectPath mk_path(mkrc, mkrc.Width() / 2);
-          g_back.FillPath(&mk_brush, &mk_path);
-        }
-      }
-      drawn = true;
-    }
+    drawText(i, candidates, candidate_text_color, txtFormat,
+             m_layout->GetCandidateTextRect(i));
+    drawText(i, comments, comment_text_color, commenttxtFormat,
+             m_layout->GetCandidateCommentRect(i));
+    drawn = true;
   }
-  // draw text with direct write
-  else {
-    // begin draw candidate texts
-    int label_text_color, candidate_text_color, comment_text_color;
-    for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
-      if (i == m_ctx.cinfo.highlighted || i == m_hoverIndex) {
-        label_text_color = m_style.hilited_label_text_color;
-        candidate_text_color = m_style.hilited_candidate_text_color;
-        comment_text_color = m_style.hilited_comment_text_color;
-      } else {
-        label_text_color = m_style.label_text_color;
-        candidate_text_color = m_style.candidate_text_color;
-        comment_text_color = m_style.comment_text_color;
-      }
-      // Draw label
-      std::wstring label = m_layout->GetLabelText(
-          labels, (int)i, m_style.label_text_format.c_str());
-      if (!label.empty()) {
-        rect = m_layout->GetCandidateLabelRect((int)i);
-        if (m_istorepos)
-          rect.OffsetRect(0, m_offsetys[i]);
-        _TextOut(rect, label.c_str(), label.length(), label_text_color,
-                 labeltxtFormat.Get());
-      }
-      // Draw text
-      const std::wstring& text = Layout::TextAt(candidates, i).str;
-      if (!text.empty()) {
-        rect = m_layout->GetCandidateTextRect((int)i);
-        if (m_istorepos)
-          rect.OffsetRect(0, m_offsetys[i]);
-        _TextOut(rect, text.c_str(), text.length(), candidate_text_color,
-                 txtFormat.Get());
-      }
-      // Draw comment
-      // comments 可能短于 candies：越界按空注释处理（见 Layout::TextAt）
-      const std::wstring& comment = Layout::TextAt(comments, i).str;
-      if (!comment.empty() && COLORNOTTRANSPARENT(comment_text_color)) {
-        rect = m_layout->GetCandidateCommentRect((int)i);
-        if (m_istorepos)
-          rect.OffsetRect(0, m_offsetys[i]);
-        _TextOut(rect, comment.c_str(), comment.length(), comment_text_color,
-                 commenttxtFormat.Get());
-      }
-      drawn = true;
-    }
-    // draw highlight mark
-    {
-      if (!m_style.mark_text.empty() &&
-          COLORNOTTRANSPARENT(m_style.hilited_mark_color)) {
-        CRect rc = m_layout->GetHighlightRect();
-        if (m_istorepos)
-          rc.OffsetRect(0, m_offsetys[m_ctx.cinfo.highlighted]);
-        rc.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
-                       DPI_SCALE(m_style.hilite_padding_y));
-        int vgap = m_layout->mark_height
-                       ? (rc.Height() - m_layout->mark_height) / 2
-                       : 0;
-        int hgap =
-            m_layout->mark_width ? (rc.Width() - m_layout->mark_width) / 2 : 0;
-        CRect hlRc;
-        if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT)
-          hlRc = CRect(rc.left + hgap,
-                       rc.top + DPI_SCALE(m_style.hilite_padding_y),
-                       rc.left + hgap + m_layout->mark_width,
-                       rc.top + DPI_SCALE(m_style.hilite_padding_y) +
-                           m_layout->mark_height);
-        else
-          hlRc = CRect(rc.left + DPI_SCALE(m_style.hilite_padding_x),
-                       rc.top + vgap,
-                       rc.left + DPI_SCALE(m_style.hilite_padding_x) +
-                           m_layout->mark_width,
-                       rc.bottom - vgap);
-        _TextOut(hlRc, m_style.mark_text.c_str(), m_style.mark_text.length(),
-                 m_style.hilited_mark_color, pDWR->pTextFormat.Get());
-      }
-    }
-  }
-  return drawn;
-}
-
-// draw client area
-void WeaselPanel::DoPaint(CDCHandle dc) {
-  // 每帧校正扩展样式：移除 WS_EX_TRANSPARENT，确保 WS_EX_LAYERED 存在
-  // （UpdateLayeredWindow 仅对分层窗口生效）。不可只做一次：panel 对象可能
-  // 挂到新建的 HWND 上（UI::Create 复用对象重建窗口等路径），若沿用旧标志
-  // 跳过切换，新窗口无 WS_EX_LAYERED，ULW 失败且宿主（如 Electron）吞掉
-  // WM_PAINT，屏幕上只剩未初始化的黑色重定向表面（候选框全黑）。
-  // ModifyStyleEx 内部先比较再写入，样式一致时本帧只多一次 GetWindowLong。
-  ModifyStyleEx(WS_EX_TRANSPARENT, WS_EX_LAYERED);
-  GetClientRect(&rcw);
-  // prepare memDC
-  CDCHandle hdc = ::GetDC(m_hWnd);
-  CDCHandle memDC = ::CreateCompatibleDC(hdc);
-  HBITMAP memBitmap = ::CreateCompatibleBitmap(hdc, rcw.Width(), rcw.Height());
-  ::SelectObject(memDC, memBitmap);
-  ReleaseDC(hdc);
-  bool drawn = false;
-  // 本帧是否送上分层窗口：绘制异常时丢弃本帧（保留上一画面），恢复后重画
-  bool frame_ok = true;
-  if (!hide_candidates) {
-    // DWrite 资源缺失（上次恢复失败的遗留）：先尝试重建，仍失败则丢弃本帧，
-    // 等待下一次外部刷新（不自动重试，避免持续失败时自旋）
-    if (pDWR == NULL) {
-      try {
-        _InitFontRes(true);
-      } catch (...) {
-      }
-    }
-    if (pDWR != NULL) {
-      // 绘制阶段的异常（HR 抛出的 ComException、越界等）不允许穿出
-      // WNDPROC：唯一进程级 catch 在 server main，到达即整个输入服务退出。
-      // 丢弃本帧并请求恢复
-      try {
-        CRect auxrc = m_layout->GetAuxiliaryRect();
-        CRect preeditrc = m_layout->GetPreeditRect();
-        if (m_istorepos) {
-          CRect* rects = new CRect[m_candidateCount];
-          int* btmys = new int[m_candidateCount];
-          for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT;
-               ++i) {
-            rects[i] = m_layout->GetCandidateRect(i);
-            btmys[i] = rects[i].bottom;
-          }
-          if (m_candidateCount) {
-            if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
-              m_offsety_preedit =
-                  rects[m_candidateCount - 1].bottom - preeditrc.bottom;
-            if (!m_ctx.aux.str.empty())
-              m_offsety_aux = rects[m_candidateCount - 1].bottom - auxrc.bottom;
-          } else {
-            m_offsety_preedit = 0;
-            m_offsety_aux = 0;
-          }
-          int base_gap = 0;
-          if (!m_ctx.aux.str.empty())
-            base_gap = auxrc.Height() + m_style.spacing;
-          else if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
-            base_gap = preeditrc.Height() + m_style.spacing;
-
-          for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT;
-               ++i) {
-            if (i == 0)
-              m_offsetys[i] =
-                  btmys[m_candidateCount - i - 1] - base_gap - rects[i].bottom;
-            else
-              m_offsetys[i] = (rects[i - 1].top + m_offsetys[i - 1] -
-                               DPI_SCALE(m_style.candidate_spacing)) -
-                              rects[i].bottom;
-          }
-          delete[] rects;
-          delete[] btmys;
-        }
-        // background and candidates back, hilite back drawing start
-        if ((!m_ctx.empty() && !m_style.inline_preedit) ||
-            (m_style.inline_preedit &&
-             (m_candidateCount || !m_ctx.aux.empty()))) {
-          CRect backrc = m_layout->GetContentRect();
-          _HighlightText(memDC, backrc, m_style.back_color, m_style.shadow_color,
-                         DPI_SCALE(m_style.round_corner_ex), BackType::BACKGROUND,
-                         IsToRoundStruct(), m_style.border_color);
-        }
-        if (!m_ctx.aux.str.empty()) {
-          if (m_istorepos)
-            auxrc.OffsetRect(0, m_offsety_aux);
-          drawn |= _DrawPreeditBack(m_ctx.aux, memDC, auxrc);
-        }
-        if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty()) {
-          if (m_istorepos)
-            preeditrc.OffsetRect(0, m_offsety_preedit);
-          drawn |= _DrawPreeditBack(m_ctx.preedit, memDC, preeditrc);
-        }
-        if (m_candidateCount)
-          drawn |= _DrawCandidates(memDC, true);
-        // background and candidates back, hilite back drawing end
-
-        // begin  texts drawing, if pRenderTarget failed, force to reinit
-        // directwrite resources
-        if (FAILED(pDWR->pRenderTarget->BindDC(memDC, &rcw))) {
-          _InitFontRes(true);
-          pDWR->pRenderTarget->BindDC(memDC, &rcw);
-        }
-        pDWR->pRenderTarget->BeginDraw();
-        // draw auxiliary string
-        if (!m_ctx.aux.str.empty())
-          drawn |= _DrawPreedit(m_ctx.aux, memDC, auxrc);
-        // draw preedit string
-        if (!m_layout->IsInlinePreedit() && !m_ctx.preedit.str.empty())
-          drawn |= _DrawPreedit(m_ctx.preedit, memDC, preeditrc);
-        // draw candidates string
-        if (m_candidateCount)
-          drawn |= _DrawCandidates(memDC);
-        if (FAILED(pDWR->pRenderTarget->EndDraw())) {
-          // EndDraw 失败（设备丢失等）：文本未落到本帧，直接作废——不把
-          // 无文字帧送上分层窗口（保留上一画面），走统一恢复路径（清
-          // m_octx + 重建资源 + 有限次投递重刷），确保之后发生真正的重绘
-          _RequestPaintRecovery();
-          frame_ok = false;
-        } else {
-          // 完整绘成一帧：复位自动恢复预算
-          m_paint_recovery_left = MAX_PAINT_RECOVERY;
-        }
-        // end texts drawing
-
-        // status icon (I guess Metro IME stole my idea :)
-        if (m_layout->ShouldDisplayStatusIcon()) {
-          // decide if custom schema zhung icon to show
-          LoadIconNecessary(m_current_zhung_icon, m_style.current_zhung_icon,
-                            m_iconEnabled, IDI_ZH);
-          LoadIconNecessary(m_current_ascii_icon, m_style.current_ascii_icon,
-                            m_iconAlpha, IDI_EN);
-          LoadIconNecessary(m_current_half_icon, m_style.current_half_icon,
-                            m_iconHalf, IDI_HALF_SHAPE);
-          LoadIconNecessary(m_current_full_icon, m_style.current_full_icon,
-                            m_iconFull, IDI_FULL_SHAPE);
-          CRect iconRect(m_layout->GetStatusIconRect());
-          if (m_istorepos && !m_ctx.aux.str.empty())
-            iconRect.OffsetRect(0, m_offsety_aux);
-          else if (m_istorepos && !m_layout->IsInlinePreedit() &&
-                   !m_ctx.preedit.str.empty())
-            iconRect.OffsetRect(0, m_offsety_preedit);
-
-          CIcon& icon(
-              m_status.disabled ? m_iconDisabled
-              : m_status.ascii_mode
-                  ? m_iconAlpha
-                  : (m_status.type == SCHEMA
-                         ? m_iconEnabled
-                         : (m_status.full_shape ? m_iconFull : m_iconHalf)));
-          memDC.DrawIconEx(iconRect.left, iconRect.top, icon, 0, 0);
-          drawn = true;
-        }
-        /* Nothing drawn, hide candidate window */
-        if (!drawn)
-          ShowWindow(SW_HIDE);
-      } catch (...) {
-        DEBUG << "WeaselPanel::DoPaint: paint failed, frame skipped";
-        _RequestPaintRecovery();
-        frame_ok = false;
-      }
+  // draw highlight mark
+  if (COLORNOTTRANSPARENT(m_style.hilited_mark_color) && highlighted >= 0) {
+    CRect rc = _GetInflatedCandRect(highlighted);
+    if (!m_style.mark_text.empty()) {
+      int vgap =
+          m_layout->mark_height ? (rc.Height() - m_layout->mark_height) / 2 : 0;
+      int hgap =
+          m_layout->mark_width ? (rc.Width() - m_layout->mark_width) / 2 : 0;
+      CRect hlRc;
+      if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
+          m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN)
+        hlRc = CRect(rc.left + hgap, rc.top + pady,
+                     rc.left + hgap + m_layout->mark_width,
+                     rc.top + pady + m_layout->mark_height);
+      else
+        hlRc = CRect(rc.left + padx, rc.top + vgap,
+                     rc.left + padx + m_layout->mark_width, rc.bottom - vgap);
+      _TextOut(hlRc, m_style.mark_text.c_str(), m_style.mark_text.length(),
+               m_style.hilited_mark_color, txtFormat);
     } else {
-      frame_ok = false;
+      int height = MIN(rc.Height() - pady * 2,
+                       rc.Height() - DPI_SCALE(m_style.round_corner) * 2);
+      int width = MIN(rc.Width() - padx * 2,
+                      rc.Width() - DPI_SCALE(m_style.round_corner) * 2);
+      width = MIN(width, static_cast<int>(rc.Width() * 0.618));
+      height = MIN(height, static_cast<int>(rc.Height() * 0.618));
+      if (m_bar_scale != 1.0f) {
+        width = static_cast<int>(width * m_bar_scale);
+        height = static_cast<int>(height * m_bar_scale);
+      }
+
+      CRect mkrc;
+      int mark_radius;
+      if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
+          m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN) {
+        int x = rc.left + (rc.Width() - width) / 2;
+        mkrc = CRect(x, rc.top, x + width, rc.top + m_layout->mark_height);
+        mark_radius = mkrc.Height() / 2;
+      } else {
+        int y = rc.top + (rc.Height() - height) / 2;
+        mkrc = CRect(rc.left, y, rc.left + m_layout->mark_width, y + height);
+        mark_radius = mkrc.Width() / 2;
+      }
+      IsToRoundStruct roundInfo;
+      _HighlightRect(mkrc, mark_radius, 0, m_style.hilited_mark_color, 0, 0,
+                     roundInfo);
     }
   }
-  if (frame_ok)
-    _LayerUpdate(rcw, memDC);
-
-  // clean objs
-  ::DeleteDC(memDC);
-  ::DeleteObject(memBitmap);
+  return drawn;
 }
 
-// 见 WeaselPanel.h：绘制 / 布局失败后的恢复
-void WeaselPanel::_RequestPaintRecovery() {
-  // 屏幕内容视为过期：下一次 Refresh 必然真正重绘
-  m_octx = Context();
-  // 重建 DWrite 资源；重建自身失败不外抛，交给后续刷新重试
-  try {
-    _InitFontRes(true);
-  } catch (...) {
-  }
-  // 经消息队列回到 UI 线程完整重算，避免在 DoPaint 内递归重绘；
-  // 预算耗尽后停止，待下一次外部刷新（按键等）再触发
-  if (m_paint_recovery_left > 0) {
-    --m_paint_recovery_left;
-    PostMessage(WM_WEASEL_REFRESH);
-  }
-}
-
-// 由于某些软件并不依赖 WM_PAINT 消息来重绘，在消息循环中直接忽略掉了 WM_PAINT
-// 消息， 导致 DoPaint() 永远不会被调用，这里手动调用 DoPaint() 强制重绘
-void WeaselPanel::RedrawWindow() {
-  // 跨线程调用时 marshal 回 UI 线程，避免与正在进行的 BeginDraw/EndDraw 并发。
-  if (!_IsUiThread()) {
-    PostMessage(WM_WEASEL_REDRAW);
+void WeaselPanel::_TextOut(CRect& rc,
+                           const wstring& text,
+                           size_t cch,
+                           uint32_t color,
+                           PtTextFormat& pTextFormat) {
+  if (!pTextFormat.Get() || !m_pD2D || !m_pD2D->m_pWriteFactory ||
+      !m_pD2D->dc || !m_pD2D->m_pBrush)
     return;
+  m_pD2D->SetBrushColor(color);
+
+  ComPtr<IDWriteTextLayout> pTextLayout;
+  HRESULT hr = m_pD2D->m_pWriteFactory->CreateTextLayout(
+      text.c_str(), static_cast<UINT32>((std::min)({cch, text.size(),
+        static_cast<size_t>((std::numeric_limits<UINT32>::max)())})),
+      pTextFormat.Get(), rc.Width(), rc.Height(),
+      reinterpret_cast<IDWriteTextLayout**>(pTextLayout.GetAddressOf()));
+  HR(hr);
+  if (!pTextLayout)
+    HR(E_POINTER);
+  if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
+      m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN) {
+    DWRITE_FLOW_DIRECTION flow = m_style.vertical_text_left_to_right
+                                     ? DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT
+                                     : DWRITE_FLOW_DIRECTION_RIGHT_TO_LEFT;
+    pTextLayout->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+    pTextLayout->SetFlowDirection(flow);
+  } else {
+    pTextLayout->SetReadingDirection(DWRITE_READING_DIRECTION_LEFT_TO_RIGHT);
+    pTextLayout->SetFlowDirection(DWRITE_FLOW_DIRECTION_TOP_TO_BOTTOM);
   }
-  HDC hdc = GetDC();
-  DoPaint(hdc);
-  ReleaseDC(hdc);
+  float offsetx = (float)rc.left;
+  float offsety = (float)rc.top;
+
+  DWRITE_OVERHANG_METRICS omt{};
+  HR(pTextLayout->GetOverhangMetrics(&omt));
+  if (m_style.layout_type != UIStyle::LAYOUT_VERTICAL_TEXT &&
+      m_style.layout_type != UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN &&
+      omt.left > 0)
+    offsetx += omt.left;
+  if ((m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
+       m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN) &&
+      omt.top > 0)
+    offsety += omt.top;
+
+  m_pD2D->DrawTextLayout(pTextLayout, offsetx, offsety, color);
+  // draw rectangle for debug
+  // m_pD2D->dc->DrawRectangle(
+  //     D2D1::RectF((float)rc.left, (float)rc.top, (float)rc.right,
+  //                 (float)rc.bottom),
+  //     m_pD2D->m_pBrush.Get(), 1.0f); // 1.0f is the border width
 }
 
-void WeaselPanel::_LayerUpdate(const CRect& rc, CDCHandle dc) {
-  HDC ScreenDC = ::GetDC(NULL);
-  CRect rect;
-  GetWindowRect(&rect);
-  POINT WindowPosAtScreen = {rect.left, rect.top};
-  POINT PointOriginal = {0, 0};
-  SIZE sz = {rc.Width(), rc.Height()};
-
-  BLENDFUNCTION bf = {AC_SRC_OVER, 0, 0XFF, AC_SRC_ALPHA};
-  UpdateLayeredWindow(m_hWnd, ScreenDC, &WindowPosAtScreen, &sz, dc,
-                      &PointOriginal, RGB(0, 0, 0), &bf, ULW_ALPHA);
-  ReleaseDC(ScreenDC);
-}
-
-LRESULT WeaselPanel::OnCreate(UINT uMsg,
-                              WPARAM wParam,
-                              LPARAM lParam,
-                              BOOL& bHandled) {
-  m_mouse_entry = false;
-  m_hoverIndex = -1;
-  Refresh();
-  return TRUE;
-}
-
-LRESULT WeaselPanel::OnDestroy(UINT uMsg,
-                               WPARAM wParam,
-                               LPARAM lParam,
-                               BOOL& bHandled) {
-  m_hoverIndex = -1;
-  m_lastMousePos = {-1, -1};
-  m_sticky = false;
-  delete m_layout;
-  m_layout = NULL;
-  return 0;
-}
-
-LRESULT WeaselPanel::OnDpiChanged(UINT uMsg,
-                                  WPARAM wParam,
-                                  LPARAM lParam,
-                                  BOOL& bHandled) {
-  Refresh();
-  return LRESULT();
-}
-
-bool WeaselPanel::_IsUiThread() const {
-  // 窗口尚未创建（构造期）或已销毁时，按“同线程”处理，让调用方直接执行，
-  // 避免在没有 HWND 的情况下 PostMessage。
-  if (!IsWindow())
-    return true;
-  DWORD dwPid = 0;
-  DWORD dwTid = GetWindowThreadProcessId(m_hWnd, &dwPid);
-  return dwTid == GetCurrentThreadId();
-}
-
-LRESULT WeaselPanel::OnRefreshPanel(UINT uMsg,
-                                    WPARAM wParam,
-                                    LPARAM lParam,
-                                    BOOL& bHandled) {
-  bHandled = TRUE;
-  Refresh();  // 现已在 UI 线程，直接执行
-  return 0;
-}
-
-LRESULT WeaselPanel::OnRedrawWindow(UINT uMsg,
-                                    WPARAM wParam,
-                                    LPARAM lParam,
-                                    BOOL& bHandled) {
-  bHandled = TRUE;
-  RedrawWindow();  // 现已在 UI 线程，直接执行
-  return 0;
-}
-
-LRESULT WeaselPanel::OnMoveTo(UINT uMsg,
-                              WPARAM wParam,
-                              LPARAM lParam,
-                              BOOL& bHandled) {
-  bHandled = TRUE;
-  // RECT 由跨线程的 MoveTo() 在堆上分配，这里消费完即释放
-  std::unique_ptr<RECT> pRc(reinterpret_cast<RECT*>(wParam));
-  if (pRc)
-    MoveTo(*pRc);  // 现已在 UI 线程，MoveTo 内部不会再触发 marshal
-  return 0;
-}
-
-LRESULT WeaselPanel::OnApplyUpdate(UINT uMsg,
-                                   WPARAM wParam,
-                                   LPARAM lParam,
-                                   BOOL& bHandled) {
-  bHandled = TRUE;
-  // 快照由跨线程的 ApplyUpdate() 在堆上分配，这里消费完即释放
-  std::unique_ptr<WeaselUIUpdate> pUpdate(
-      reinterpret_cast<WeaselUIUpdate*>(lParam));
-  if (pUpdate)
-    _ApplyUpdate(pUpdate->ctx, pUpdate->status);
-  return 0;
-}
-
-LRESULT WeaselPanel::OnApplyStyle(UINT uMsg,
-                                  WPARAM wParam,
-                                  LPARAM lParam,
-                                  BOOL& bHandled) {
-  bHandled = TRUE;
-  // UIStyle 由跨线程的 ApplyStyle() 在堆上分配，这里消费完即释放
-  std::unique_ptr<UIStyle> pStyle(reinterpret_cast<UIStyle*>(lParam));
-  if (pStyle) {
-    m_style = *pStyle;  // 现已在 UI 线程落地
-    // B12a：配色 / 布局参数变化，旧阴影位图全部作废（键虽能防误用，清空可
-    // 及时回收内存）
-    m_shadowBitmapCache.clear();
+void WeaselPanel::_HighlightRect(const RECT& rect,
+                                 float radius,
+                                 uint32_t border,
+                                 uint32_t back_color,
+                                 uint32_t shadow_color,
+                                 uint32_t border_color,
+                                 const IsToRoundStruct& roundInfo) {
+  if (roundInfo.Hemispherical)
+    radius = DPI_SCALE(m_style.round_corner_ex) - DPI_SCALE(border) / 2.0f;
+  // draw shadow
+  if (COLORNOTTRANSPARENT(shadow_color) && DPI_SCALE(m_style.shadow_radius))
+    HR(m_pD2D->FillGeometry(rect, shadow_color, radius, roundInfo, true));
+  // draw back color
+  if (COLORNOTTRANSPARENT(back_color))
+    HR(m_pD2D->FillGeometry(rect, back_color, radius, roundInfo));
+  // draw border
+  if (COLORNOTTRANSPARENT(border_color) && border) {
+    float hb = -(float)border / 2;
+    ComPtr<ID2D1PathGeometry> pGeometry;
+    HR(m_pD2D->CreateRoundedRectanglePath(rect, radius + hb, roundInfo,
+                                          pGeometry));
+    m_pD2D->SetBrushColor(border_color);
+    m_pD2D->dc->DrawGeometry(pGeometry.Get(), m_pD2D->m_pBrush.Get(), border);
   }
-  return 0;
 }
 
-LRESULT WeaselPanel::OnShowCommand(UINT uMsg,
-                                   WPARAM wParam,
-                                   LPARAM lParam,
-                                   BOOL& bHandled) {
-  bHandled = TRUE;
-  // wParam 携带 PanelVisibility 命令，lParam 携带 ShowWithTimeout 的超时值
-  _ApplyVisibility(static_cast<PanelVisibility>(wParam),
-                   static_cast<UINT>(lParam));
-  return 0;
-}
-
-LRESULT WeaselPanel::OnAutoHideTimer(UINT uMsg,
-                                     WPARAM wParam,
-                                     LPARAM lParam,
-                                     BOOL& bHandled) {
-  if (wParam != AUTOHIDE_TIMER) {
-    bHandled = FALSE;  // 其余定时器交由默认处理
-    return 0;
-  }
-  bHandled = TRUE;
-  // 自动隐藏倒计时到期：隐藏提示窗（_ApplyVisibility 一并停表清标志）
-  _ApplyVisibility(PanelVisibility::Hide, 0);
-  return 0;
-}
-
-void WeaselPanel::MoveTo(RECT const& rc) {
-  if (!m_layout)
-    return;  // avoid handling nullptr in _RepositionWindow
-  // 跨线程调用时（IPC 工作线程经 m_ui->UpdateInputPosition() 进入）marshal 回 UI 线程，
-  // 内部会触发 Refresh()/RedrawWindow()，同样需要避免与正在进行的绘制并发。
-  // RECT 用堆拷贝传递，由 OnMoveTo 负责释放。
-  if (!_IsUiThread()) {
-    RECT* pRc = new RECT(rc);
-    if (!PostMessage(WM_WEASEL_MOVETO, reinterpret_cast<WPARAM>(pRc))) {
-      // 投递失败（窗口即将销毁或队列满）：释放快照避免泄漏，
-      // 位置会随下一次 MoveTo 重试（与 ApplyUpdate/ApplyStyle 一致）
-      delete pRc;
-    }
+void WeaselPanel::_Reposition(bool adj) {
+  if (!m_layout || !m_hWnd)
     return;
-  }
-  m_redraw_by_monitor_change = false;
-  // The conditions for resetting the sticky state:
-  // 1. When the input session ends (ctx.empty() is true)
-  // 2. When the input position changes significantly (the position change
-  // exceeds the threshold)
-  // 3. When the content of the candidate window is empty
-  bool should_reset_sticky =
-      (m_ctx.empty() || (abs(rc.left - m_inputPos.left) > 50) ||
-       (abs(rc.bottom - m_inputPos.bottom) > 50));
-  if (should_reset_sticky && m_sticky) {
-    m_sticky = false;
-    // Force reposition the window
-    m_inputPos = rc;
-    m_inputPos.OffsetRect(0, 6);
-    _RepositionWindow(true);
-    RedrawWindow();
-    return;
-  }
-  // if ascii_tip_follow_cursor set, move tip icon to mouse cursor
-  if (m_style.ascii_tip_follow_cursor && m_ctx.empty() &&
-      (!m_status.composing) && m_layout->ShouldDisplayStatusIcon()) {
-    // ascii icon follow cursor
-    POINT p;
-    ::GetCursorPos(&p);
-    RECT irc{p.x - STATUS_ICON_SIZE, p.y - STATUS_ICON_SIZE, p.x, p.y};
-    m_inputPos = irc;
-    _RepositionWindow(true);
-    RedrawWindow();
-  } else if (!(rc.left == m_inputPos.left && rc.bottom != m_inputPos.bottom &&
-               abs(rc.bottom - m_inputPos.bottom) < 6) ||
-             m_layout->ShouldDisplayStatusIcon()) {
-    // in some apps like word 2021, with inline_preedit set,
-    // bottom of rc would flicker 1 px or 2, make the candidate flickering
-    m_inputPos = rc;
-    m_inputPos.OffsetRect(0, 6);
-    // buffer current m_istorepos status
-    bool m_istorepos_buf = m_istorepos;
-    // with parameter to avoid vertical flicker
-    _RepositionWindow(true);
-    // m_istorepos status changed by _RepositionWindow, or tips to show,
-    // redrawing is required
-    if (m_istorepos != m_istorepos_buf || !m_ctx.aux.empty() ||
-        m_layout->ShouldDisplayStatusIcon() || m_redraw_by_monitor_change)
-      RedrawWindow();
-  }
-}
-
-void WeaselPanel::ApplyUpdate(Context const& ctx, Status const& status) {
-  // 跨线程调用时（IPC 工作线程经 UI::Update() 进入）把快照 marshal 回 UI 线程：
-  // ctx_/status_ 的写入必须与绘制串行，否则绘制线程可能读到被改写一半的状态。
-  if (!_IsUiThread()) {
-    WeaselUIUpdate* pUpdate = new WeaselUIUpdate{ctx, status};
-    if (!PostMessage(WM_WEASEL_UPDATE, 0,
-                     reinterpret_cast<LPARAM>(pUpdate))) {
-      // 投递失败（窗口即将销毁或队列满）：丢弃本次更新，避免泄漏。
-      // 后续按键会带来新的更新，界面不会停留在坏状态。
-      delete pUpdate;
-    }
-    return;
-  }
-  _ApplyUpdate(ctx, status);
-}
-
-void WeaselPanel::_ApplyUpdate(Context const& ctx, Status const& status) {
-  // 现已在 UI 线程：先结束可能进行中的自动隐藏倒计时（原 UIImpl::Update
-  // 开头的 Hide + KillTimer 前置逻辑），再判断内容是否变化
-  _CancelAutoHide();
-  if (m_ctx == ctx && m_status == status)
-    return;
-  m_ctx = ctx;
-  m_status = status;
-  if (m_style.candidate_abbreviate_length > 0) {
-    // 缩写截断保证代理对完整（emoji 等增补平面字符，见 WeaselUtility.h）
-    for (auto& c : m_ctx.cinfo.candies) {
-      c.str = AbbreviateText(c.str,
-                             (size_t)m_style.candidate_abbreviate_length);
-    }
-  }
-  Refresh();
-}
-
-void WeaselPanel::ApplyStyle(UIStyle const& style) {
-  // 跨线程调用时（IPC 工作线程经 UI::SetStyle() 进入）marshal 回 UI 线程落地。
-  // 只赋值不重绘：与原先直接写 ui.style() 的行为一致，重绘由随后的
-  // ApplyUpdate/Refresh 触发。
-  if (!_IsUiThread()) {
-    UIStyle* pStyle = new UIStyle(style);
-    if (!PostMessage(WM_WEASEL_SETSTYLE, 0, reinterpret_cast<LPARAM>(pStyle))) {
-      delete pStyle;
-    }
-    return;
-  }
-  m_style = style;
-  // B12a：样式落地，旧阴影位图作废（见 OnApplyStyle 同款注释）
-  m_shadowBitmapCache.clear();
-}
-
-void WeaselPanel::Show() {
-  _SetVisibility(PanelVisibility::Show, 0);
-}
-
-void WeaselPanel::Hide() {
-  _SetVisibility(PanelVisibility::Hide, 0);
-}
-
-void WeaselPanel::ShowWithTimeout(UINT millisec) {
-  DLOG(INFO) << "ShowWithTimeout: " << millisec;
-  _SetVisibility(PanelVisibility::ShowWithTimeout, millisec);
-}
-
-void WeaselPanel::_SetVisibility(PanelVisibility cmd, UINT millisec) {
-  // 窗口未创建或已销毁：与旧 UIImpl 的守卫一致，直接跳过
-  if (!IsWindow())
-    return;
-  if (!_IsUiThread()) {
-    // 跨线程调用（IPC 工作线程）：ShowWindow/SetTimer 作用于他线程窗口会
-    // 触发同步 send，若窗口线程正阻塞在 g_api_mutex 上即互等死锁，必须
-    // marshal 回 UI 线程执行。命令与超时值直接由消息参数携带，投递失败
-    // 也没有需要回收的资源。
-    PostMessage(WM_WEASEL_SHOW, static_cast<WPARAM>(cmd),
-                static_cast<LPARAM>(millisec));
-    return;
-  }
-  _ApplyVisibility(cmd, millisec);
-}
-
-void WeaselPanel::_ApplyVisibility(PanelVisibility cmd, UINT millisec) {
-  // 仅允许在 UI 线程执行（同线程直调或经 WM_WEASEL_SHOW marshal 后）
-  switch (cmd) {
-    case PanelVisibility::Show:
-      ShowWindow(SW_SHOWNA);
-      m_shown = true;
-      KillTimer(AUTOHIDE_TIMER);
-      m_autohide_counting = false;
-      break;
-    case PanelVisibility::Hide:
-      ShowWindow(SW_HIDE);
-      m_shown = false;
-      KillTimer(AUTOHIDE_TIMER);
-      m_autohide_counting = false;
-      break;
-    case PanelVisibility::ShowWithTimeout:
-      ShowWindow(SW_SHOWNA);
-      m_shown = true;
-      // 同 id 的 SetTimer 会替换旧定时器，倒计时重新起算
-      SetTimer(AUTOHIDE_TIMER, millisec, NULL);
-      m_autohide_counting = true;
-      break;
-  }
-}
-
-void WeaselPanel::_CancelAutoHide() {
-  // 自动隐藏倒计时进行中：立即停表并隐藏提示窗。原 UIImpl::Update/Refresh
-  // 的前置逻辑，收敛到 UI 线程执行以保证与状态落地之间的顺序。
-  if (m_autohide_counting)
-    _ApplyVisibility(PanelVisibility::Hide, 0);
-}
-
-void WeaselPanel::_RepositionWindow(const bool& adj) {
   RECT rcWorkArea;
   memset(&rcWorkArea, 0, sizeof(rcWorkArea));
-  HMONITOR hMonitor = MonitorFromRect(m_inputPos, MONITOR_DEFAULTTONEAREST);
+  HMONITOR hMonitor = MonitorFromRect(&m_inputPos, MONITOR_DEFAULTTONEAREST);
   if (hMonitor) {
     MONITORINFO info;
     info.cbSize = sizeof(MONITORINFO);
@@ -1607,11 +1005,10 @@ void WeaselPanel::_RepositionWindow(const bool& adj) {
       m_redraw_by_monitor_change = true;
     }
   }
-  RECT rcWindow;
-  GetWindowRect(&rcWindow);
-  int width = (rcWindow.right - rcWindow.left);
-  int height = (rcWindow.bottom - rcWindow.top);
-  // keep panel visible
+  CRect rcWindow;
+  GetWindowRect(m_hWnd, &rcWindow);
+  int width = rcWindow.Width();
+  int height = rcWindow.Height();
   rcWorkArea.right -= width;
   rcWorkArea.bottom -= height;
   int x = m_inputPos.left;
@@ -1627,7 +1024,6 @@ void WeaselPanel::_RepositionWindow(const bool& adj) {
                ? m_layout->offsetY
                : (m_layout->offsetY / 2);
   }
-  // for vertical text layout, flow right to left, make window left side
   if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT &&
       !m_style.vertical_text_left_to_right) {
     x += m_layout->offsetX - width;
@@ -1637,14 +1033,13 @@ void WeaselPanel::_RepositionWindow(const bool& adj) {
   if (adj)
     m_istorepos = false;
   if (x > rcWorkArea.right)
-    x = rcWorkArea.right;  // over workarea right
+    x = rcWorkArea.right;
   if (x < rcWorkArea.left)
-    x = rcWorkArea.left;  // over workarea left
-  // show panel above the input focus if we're around the bottom
+    x = rcWorkArea.left;
   if (y > rcWorkArea.bottom || m_sticky) {
     if (!m_sticky)
       m_sticky = true;
-    y = m_inputPos.top - height - 6;  // over workarea bottom
+    y = m_inputPos.top - height - 6;
     if (DPI_SCALE(m_style.shadow_radius) &&
         DPI_SCALE(m_style.shadow_offset_y) > 0)
       y -= DPI_SCALE(m_style.shadow_offset_y);
@@ -1657,56 +1052,414 @@ void WeaselPanel::_RepositionWindow(const bool& adj) {
                : (m_layout->offsetY / 2);
   }
   if (y < rcWorkArea.top)
-    y = rcWorkArea.top;  // over workarea top
-  // memorize adjusted position (to avoid window bouncing on height change)
+    y = rcWorkArea.top;
   m_inputPos.bottom = y;
-  SetWindowPos(HWND_TOPMOST, x, y, 0, 0,
+  SetWindowPos(m_hWnd, HWND_TOPMOST, x, y, 0, 0,
                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
 }
 
-void WeaselPanel::_TextOut(const CRect& rc,
-                           const std::wstring& psz,
-                           const size_t& cch,
-                           const int& inColor,
-                           IDWriteTextFormat1* const pTextFormat) {
-  if (pTextFormat == NULL)
-    return;
-  float r = (float)(GetRValue(inColor)) / 255.0f;
-  float g = (float)(GetGValue(inColor)) / 255.0f;
-  float b = (float)(GetBValue(inColor)) / 255.0f;
-  float alpha = (float)((inColor >> 24) & 255) / 255.0f;
-  HRESULT hr = S_OK;
-  if (pDWR->pBrush == NULL) {
-    HR(pDWR->CreateBrush(D2D1::ColorF(r, g, b, alpha)));
-  } else
-    pDWR->SetBrushColor(D2D1::ColorF(r, g, b, alpha));
-
-  HR(pDWR->CreateTextLayout(psz.c_str(), (int)cch, pTextFormat,
-                            (float)rc.Width(), (float)rc.Height()));
-  if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT) {
-    DWRITE_FLOW_DIRECTION flow = m_style.vertical_text_left_to_right
-                                     ? DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT
-                                     : DWRITE_FLOW_DIRECTION_RIGHT_TO_LEFT;
-    HR(pDWR->SetLayoutReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM));
-    HR(pDWR->SetLayoutFlowDirection(flow));
+static HBITMAP CopyDCToBitmap(HDC hDC, LPRECT lpRect) {
+  if (!hDC || !lpRect || IsRectEmpty(lpRect))
+    return NULL;
+  int nWidth = lpRect->right - lpRect->left;
+  int nHeight = lpRect->bottom - lpRect->top;
+  HDC hMemDC = CreateCompatibleDC(hDC);
+  if (!hMemDC)
+    return NULL;
+  HBITMAP hBitmap = CreateCompatibleBitmap(hDC, nWidth, nHeight);
+  if (!hBitmap) {
+    DeleteDC(hMemDC);
+    return NULL;
   }
+  HBITMAP hOldBitmap = (HBITMAP)SelectObject(hMemDC, hBitmap);
+  StretchBlt(hMemDC, 0, 0, nWidth, nHeight, hDC, lpRect->left, lpRect->top,
+             nWidth, nHeight, SRCCOPY);
+  SelectObject(hMemDC, hOldBitmap);
+  DeleteDC(hMemDC);
+  return hBitmap;
+}
 
-  // offsetx for font glyph over left
-  float offsetx = (float)rc.left;
-  float offsety = (float)rc.top;
-  // prepare for space when first character overhanged
-  DWRITE_OVERHANG_METRICS omt;
-  HR(pDWR->GetLayoutOverhangMetrics(&omt));
-  if (m_style.layout_type != UIStyle::LAYOUT_VERTICAL_TEXT && omt.left > 0)
-    offsetx += omt.left;
-  if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT && omt.top > 0)
-    offsety += omt.top;
-
-  if (pDWR->pTextLayout != NULL) {
-    pDWR->DrawTextLayoutAt({offsetx, offsety});
-#if 0
-    D2D1_RECT_F rectf =  D2D1::RectF(offsetx, offsety, offsetx + rc.Width(), offsety + rc.Height());
-    pDWR->DrawRect(&rectf);
-#endif
+void WeaselPanel::_CaptureRect(CRect& rect) {
+  HDC ScreenDC = ::GetDC(NULL);
+  RECT rc_screen = rect;
+  ::MapWindowPoints(m_hWnd, HWND_DESKTOP, reinterpret_cast<LPPOINT>(&rc_screen),
+                    2);
+  // capture input window
+  if (::OpenClipboard(m_hWnd)) {
+    HBITMAP bmp = CopyDCToBitmap(ScreenDC, &rc_screen);
+    EmptyClipboard();
+    HANDLE result = SetClipboardData(CF_BITMAP, bmp);
+    CloseClipboard();
+    if (!result && bmp) {
+      DeleteObject(bmp);
+    }
   }
+  ::ReleaseDC(NULL, ScreenDC);
+}
+
+void WeaselPanel::OnDestroy() {
+  // Posted pointer payloads otherwise disappear with the HWND without destructors.
+  MSG pending{};
+  while (::PeekMessage(&pending, m_hWnd, WM_WEASEL_MOVETO,
+                       WM_WEASEL_SETSTYLE, PM_REMOVE)) {
+    switch (pending.message) {
+      case WM_WEASEL_MOVETO:
+        delete reinterpret_cast<RECT*>(pending.lParam);
+        break;
+      case WM_WEASEL_UPDATE:
+        delete reinterpret_cast<WeaselUIUpdate*>(pending.lParam);
+        break;
+      case WM_WEASEL_SETSTYLE:
+        delete reinterpret_cast<UIStyle*>(pending.lParam);
+        break;
+    }
+  }
+  // ensure timers are cleared and then reset state
+  _ClearTimers();
+  if (GetCapture() == m_hWnd)
+    ReleaseCapture();
+
+  m_hoverIndex = -1;
+  m_shown = false;
+  m_layout_ready = false;
+  m_layout.reset();
+  m_sticky = false;
+  m_dragging = false;
+}
+
+HRESULT WeaselPanel::OnScroll(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  if (m_preview_mode)
+    return 0;
+  int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+  if (m_uiCallback && delta != 0) {
+    bool scroll_down = delta < 0;
+    m_uiCallback(NULL, NULL, NULL, &scroll_down);
+  }
+  return 0;
+}
+
+LRESULT WeaselPanel::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  if (m_preview_mode) {
+    if (m_dragging) {
+      POINT point{};
+      GetCursorPos(&point);
+      const int dx = point.x - m_drag_start.x;
+      const int dy = point.y - m_drag_start.y;
+      SetWindowPos(m_hWnd, nullptr, m_drag_window.left + dx,
+                   m_drag_window.top + dy, 0, 0,
+                   SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+    return 0;
+  }
+  if (m_style.hover_type == UIStyle::NONE)
+    return 0;
+  CPoint point(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+  bool hovered = false;
+  bool hover_index_change = false;
+  CPoint ptScreen = point;
+  ClientToScreen(m_hWnd, &ptScreen);
+  if (ptScreen == m_lastCursorPos)
+    return 0;
+  m_lastCursorPos = ptScreen;
+  for (int i = 0; i < m_candidateCount; i++) {
+    CRect rect = _GetInflatedCandRect(i);
+    if (rect.PtInRect(point)) {
+      hovered = true;
+      if (i != m_ctx.cinfo.highlighted) {
+        if (m_style.hover_type == UIStyle::HoverType::HILITE) {
+          if (m_uiCallback) {
+            size_t hover_index = i;
+            m_uiCallback(nullptr, &hover_index, nullptr, nullptr);
+          }
+        } else if (m_hoverIndex != i) {
+          m_hoverIndex = i;
+          hover_index_change = true;
+        }
+      } else if (m_style.hover_type == UIStyle::HoverType::SEMI_HILITE &&
+                 m_hoverIndex != -1) {
+        m_hoverIndex = -1;
+        hover_index_change = true;
+      }
+    }
+  }
+  if (!hovered && m_hoverIndex >= 0) {
+    m_hoverIndex = -1;
+    hover_index_change = true;
+  }
+  if (hover_index_change)
+    RedrawWindow();
+  return 0;
+}
+
+LRESULT WeaselPanel::OnMouseActive(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  return MA_NOACTIVATE;
+}
+
+LRESULT WeaselPanel::OnLeftClickUp(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  if (m_preview_mode) {
+    if (m_dragging) {
+      m_dragging = false;
+      ReleaseCapture();
+      // A click without a drag reattaches the preview to its parent dialog.
+      POINT point{};
+      GetCursorPos(&point);
+      const int dx = point.x - m_drag_start.x;
+      const int dy = point.y - m_drag_start.y;
+      const int cx = GetSystemMetrics(SM_CXDRAG);
+      const int cy = GetSystemMetrics(SM_CYDRAG);
+      if (dx > -cx && dx < cx && dy > -cy && dy < cy) {
+        m_preview_detached = false;
+        RepositionPreview();
+      }
+    }
+    return 0;
+  }
+  if (hide_candidates || m_candidateCount <= 0)
+    return 0;
+  const int highlighted = (m_ctx.cinfo.highlighted >= 0 &&
+                           m_ctx.cinfo.highlighted < m_candidateCount)
+                              ? m_ctx.cinfo.highlighted
+                              : -1;
+  if (highlighted < 0)
+    return 0;
+  CPoint point(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+
+  ::KillTimer(m_hWnd, AUTOREV_TIMER);
+  m_bar_scale = 1.0;
+  m_clickTimer = 0;
+
+  auto rect = _GetInflatedCandRect(highlighted);
+  if (rect.PtInRect(point)) {
+    size_t i = (size_t)highlighted;
+    if (m_uiCallback) {
+      m_uiCallback(&i, nullptr, nullptr, nullptr);
+      if (!m_status.composing)
+        DestroyWindow();
+    }
+  } else {
+    RedrawWindow();
+  }
+  return 0;
+}
+
+LRESULT WeaselPanel::OnLeftClickDown(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  if (m_preview_mode) {
+    GetCursorPos(&m_drag_start);
+    GetWindowRect(m_hWnd, &m_drag_window);
+    m_dragging = true;
+    m_preview_detached = true;
+    SetCapture(m_hWnd);
+    return 0;
+  }
+  if (hide_candidates || m_candidateCount <= 0)
+    return 0;
+  const int highlighted = (m_ctx.cinfo.highlighted >= 0 &&
+                           m_ctx.cinfo.highlighted < m_candidateCount)
+                              ? m_ctx.cinfo.highlighted
+                              : -1;
+  CPoint point(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+  auto padx = DPI_SCALE(m_style.hilite_padding_x);
+  auto pady = DPI_SCALE(m_style.hilite_padding_y);
+  // capture
+  if (m_style.click_to_capture) {
+    CRect rcw;
+    GetClientRect(m_hWnd, &rcw);
+    auto recth = highlighted >= 0 ? _GetInflatedCandRect(highlighted) : CRect();
+    if (recth.PtInRect(point))
+      _CaptureRect(recth);
+    else {
+      CRect crc(rcw);
+      // if shadow_color transparent, decrease the capture rectangle size
+      if (COLORTRANSPARENT(m_style.shadow_color) &&
+          DPI_SCALE(m_style.shadow_radius) != 0) {
+        int shadow_gap =
+            (m_style.shadow_offset_x == 0 && m_style.shadow_offset_y == 0)
+                ? 2 * DPI_SCALE(m_style.shadow_radius)
+                : DPI_SCALE(m_style.shadow_radius) +
+                      DPI_SCALE(m_style.shadow_radius) / 2;
+        int ofx = padx + abs(DPI_SCALE(m_style.shadow_offset_x)) + shadow_gap >
+                          abs(DPI_SCALE(m_style.margin_x))
+                      ? padx + abs(DPI_SCALE(m_style.shadow_offset_x)) +
+                            shadow_gap - abs(DPI_SCALE(m_style.margin_x))
+                      : 0;
+        int ofy = pady + abs(DPI_SCALE(m_style.shadow_offset_y)) + shadow_gap >
+                          abs(DPI_SCALE(m_style.margin_y))
+                      ? pady + abs(DPI_SCALE(m_style.shadow_offset_y)) +
+                            shadow_gap - abs(DPI_SCALE(m_style.margin_y))
+                      : 0;
+        crc.DeflateRect(m_layout->offsetX - ofx, m_layout->offsetY - ofy);
+      }
+      _CaptureRect(crc);
+    }
+  }
+  // page buttons, and click to select
+  {
+    if (!m_style.inline_preedit && m_candidateCount != 0 &&
+        COLORNOTTRANSPARENT(m_style.prevpage_color) &&
+        COLORNOTTRANSPARENT(m_style.nextpage_color)) {
+      // click prepage
+      if (m_ctx.cinfo.currentPage != 0) {
+        CRect prc = m_layout->GetPrepageRect();
+        if (m_istorepos)
+          prc.OffsetRect(0, m_offsety_preedit);
+        if (prc.PtInRect(point)) {
+          bool nextPage = false;
+          if (m_uiCallback)
+            m_uiCallback(NULL, NULL, &nextPage, NULL);
+          return 0;
+        }
+      }
+      // click nextpage
+      if (!m_ctx.cinfo.is_last_page) {
+        CRect prc = m_layout->GetNextpageRect();
+        if (m_istorepos)
+          prc.OffsetRect(0, m_offsety_preedit);
+        if (prc.PtInRect(point)) {
+          bool nextPage = true;
+          if (m_uiCallback)
+            m_uiCallback(NULL, NULL, &nextPage, NULL);
+          return 0;
+        }
+      }
+    }
+    // select by click relative actions
+    for (size_t i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
+      auto rect = _GetInflatedCandRect(i);
+      if (rect.PtInRect(point)) {
+        m_bar_scale = 0.8f;
+        //  modify highlighted
+        if (i != m_ctx.cinfo.highlighted) {
+          if (m_uiCallback)
+            m_uiCallback(NULL, &i, NULL, NULL);
+        } else {
+          RedrawWindow();
+        }
+        m_clickTimer = ::SetTimer(m_hWnd, AUTOREV_TIMER, 1000, NULL);
+        return 0;
+      }
+    }
+  }
+  return 0;
+}
+
+LRESULT CALLBACK WeaselPanel::WindowProc(HWND hwnd,
+                                         UINT uMsg,
+                                         WPARAM wParam,
+                                         LPARAM lParam) {
+  if (uMsg == WM_NCCREATE) {
+    auto self = static_cast<WeaselPanel*>(
+        reinterpret_cast<LPCREATESTRUCT>(lParam)->lpCreateParams);
+    SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+  }
+  auto self =
+      reinterpret_cast<WeaselPanel*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+  if (self) {
+    try {
+      return self->MsgHandler(hwnd, uMsg, wParam, lParam);
+    } catch (...) {
+      DEBUG << "WeaselPanel::WindowProc: UI operation failed";
+      self->_RequestPaintRecovery();
+      if (uMsg == WM_PAINT)
+        ValidateRect(hwnd, nullptr);
+      return 0;
+    }
+  }
+  return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+LRESULT WeaselPanel::MsgHandler(HWND hwnd,
+                                UINT uMsg,
+                                WPARAM wParam,
+                                LPARAM lParam) {
+  switch (uMsg) {
+    case WM_WEASEL_REFRESH:
+      if (wParam) // Internal recovery must not cancel the auto-hide timer.
+        _Refresh();
+      else
+        Refresh();
+      return 0;
+    case WM_WEASEL_REDRAW:
+      RedrawWindow();
+      return 0;
+    case WM_WEASEL_MOVETO: {
+      std::unique_ptr<RECT> rc(reinterpret_cast<RECT*>(lParam));
+      if (rc)
+        MoveTo(*rc);
+      return 0;
+    }
+    case WM_WEASEL_UPDATE: {
+      std::unique_ptr<WeaselUIUpdate> update(
+          reinterpret_cast<WeaselUIUpdate*>(lParam));
+      if (update)
+        _ApplyUpdate(update->ctx, update->status);
+      return 0;
+    }
+    case WM_WEASEL_SETSTYLE: {
+      std::unique_ptr<UIStyle> style(reinterpret_cast<UIStyle*>(lParam));
+      if (style)
+        ApplyStyle(*style);
+      return 0;
+    }
+    case WM_WEASEL_SHOW:
+      _ApplyVisibility(static_cast<PanelVisibility>(wParam),
+                       static_cast<size_t>(lParam));
+      return 0;
+    case WM_WEASEL_PREVIEW:
+      RepositionPreview();
+      return 0;
+    case WM_PAINT:
+      DoPaint();
+      ValidateRect(hwnd, nullptr);
+      return 0;
+    case WM_DESTROY:
+      OnDestroy();
+      return 0;
+    case WM_NCDESTROY:
+      SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+      m_hWnd = nullptr;
+      return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    case WM_MOUSEMOVE:
+      OnMouseMove(uMsg, wParam, lParam);
+      break;
+    case WM_MOUSEACTIVATE:
+      return OnMouseActive(uMsg, wParam, lParam);
+    case WM_MOUSEWHEEL:
+      return OnScroll(uMsg, wParam, lParam);
+    case WM_LBUTTONUP:
+      return OnLeftClickUp(uMsg, wParam, lParam);
+    case WM_LBUTTONDOWN:
+      return OnLeftClickDown(uMsg, wParam, lParam);
+    case WM_DPICHANGED:
+      if (lParam) {
+        const auto* rc = reinterpret_cast<const RECT*>(lParam);
+        ::SetWindowPos(hwnd, nullptr, rc->left, rc->top, rc->right - rc->left,
+                       rc->bottom - rc->top,
+                       SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+      }
+      if (m_pD2D) {
+        m_pD2D->InitDpiInfo();
+        m_fullscreen_font_active = false;
+        m_fullscreen_font_snapshot = {};
+        if (!m_style.font_face.empty())
+          m_pD2D->InitDirectWriteResources();
+      }
+      Refresh();
+      return 0;
+    case WM_TIMER:
+      if (wParam == AUTOREV_TIMER) {
+        ::KillTimer(m_hWnd, AUTOREV_TIMER);
+        m_clickTimer = 0;
+        m_bar_scale = 1.0f;
+        RedrawWindow();
+        return 0;
+      } else if (wParam == AUTOHIDE_TIMER) {
+        ::KillTimer(m_hWnd, AUTOHIDE_TIMER);
+        m_autoHideTimer = 0;
+        m_autohide_counting = false;
+        // hide the panel on auto-hide
+        ShowWindow(SW_HIDE);
+        return 0;
+      }
+  }
+  return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
