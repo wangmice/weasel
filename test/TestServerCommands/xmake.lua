@@ -1,0 +1,6 @@
+target("TestServerCommands")
+  set_kind("binary")
+  add_files("./*.cpp", "../../WeaselTSF/*.cpp")
+  add_deps("WeaselIPC", "WeaselIPCServer", "WeaselUI")
+  add_links("oleaut32")
+  add_rules("subcmd")

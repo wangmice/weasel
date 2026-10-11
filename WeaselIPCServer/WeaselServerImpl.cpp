@@ -110,16 +110,28 @@ LRESULT ServerImpl::OnCommand(UINT uMsg,
                               LPARAM lParam,
                               BOOL& bHandled) {
   UINT uID = LOWORD(wParam);
+  // Window commands do not run under Run()'s pipe dispatch lock. Only
+  // option changes touch RequestHandler; keep shell/menu callbacks outside
+  // the lock, as before.
+  if (uID == ID_WEASELTRAY_ENABLE_ASCII ||
+      uID == ID_WEASELTRAY_DISABLE_ASCII) {
+    std::lock_guard guard(g_api_mutex);
+    return _HandleCommand(uID, lParam, bHandled);
+  }
+  return _HandleCommand(uID, lParam, bHandled);
+}
+
+LRESULT ServerImpl::_HandleCommand(UINT uID,
+                                   LPARAM lParam,
+                                   BOOL& bHandled) {
   switch (uID) {
     case ID_WEASELTRAY_ENABLE_ASCII:
       if (m_pRequestHandler) {
-        std::lock_guard guard(g_api_mutex);
         m_pRequestHandler->SetOption(lParam, "ascii_mode", true);
       }
       return 0;
     case ID_WEASELTRAY_DISABLE_ASCII:
       if (m_pRequestHandler) {
-        std::lock_guard guard(g_api_mutex);
         m_pRequestHandler->SetOption(lParam, "ascii_mode", false);
       }
       return 0;
@@ -152,7 +164,8 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
                             DWORD wParam,
                             DWORD lParam) {
   BOOL handled = TRUE;
-  OnCommand(uMsg, wParam, lParam, handled);
+  // Run() already holds g_api_mutex for every pipe command.
+  _HandleCommand(LOWORD(wParam), lParam, handled);
   return handled;
 }
 

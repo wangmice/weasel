@@ -262,12 +262,9 @@ static int count_server_process() {
 }
 
 bool WeaselTSF::_EnsureServerConnected() {
-  // Trust an established session and skip the Echo roundtrip per key: a
-  // dead server breaks the pipe, the failed transact invalidates the
-  // session on the client, and only then do we pay for a full reconnect.
-  if (m_client.IsSessionActive())
-    return true;
-
+  // Deployment maintenance can clear server sessions without closing this
+  // client's pipe. Validate the session before sending a key; a live pipe
+  // and a cached nonzero session ID alone do not establish validity.
   if (!m_client.Echo()) {
     _Reconnect();
     if (!m_client.IsSessionActive()) {

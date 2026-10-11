@@ -141,6 +141,9 @@ if is_mode("debug") then
   includes("test/TestWeaselSetup")
   includes("test/TestKeyEvent")
   includes("test/TestRegisterTipKeys")
+  if is_arch("x64") or is_arch("x86") then
+    includes("test/TestServerCommands")
+  end
 else
   add_cxflags("/GL")
   add_ldflags("/LTCG /INCREMENTAL:NO", {force = true})

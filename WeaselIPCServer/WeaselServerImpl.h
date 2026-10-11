@@ -99,6 +99,8 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
       BOOL(WINAPI*)(HWND, LPPOINT);
 
   void _Finailize();
+  // Caller must hold g_api_mutex for commands that change handler options.
+  LRESULT _HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled);
   /* Interrupt and join the pipe listener and its workers; idempotent */
   void _StopPipeServer();
   template <typename _Resp>
