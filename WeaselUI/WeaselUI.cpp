@@ -57,6 +57,10 @@ void UI::Update(const Context& ctx, const Status& status) {
   pimpl_->Update(ctx, status);
 }
 
+Context& UI::octx() {
+  return pimpl_ ? pimpl_->panel.PaintedContext() : ctx_;
+}
+
 void UI::SetStyle(const UIStyle& style) {
   if (!pimpl_) {
     style_ = style;

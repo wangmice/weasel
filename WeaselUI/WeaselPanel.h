@@ -47,6 +47,7 @@ class WeaselPanel {
   BOOL Create(HWND parent, bool preview_mode = false);
   void SetPreviewMode(bool enabled) { m_preview_mode = enabled; }
   bool GetIsReposition() { return m_istorepos; }
+  Context& PaintedContext() { return m_octx; }
 
   static const int AUTOREV_TIMER = 20241209;
   static const int AUTOHIDE_TIMER = 20241107;

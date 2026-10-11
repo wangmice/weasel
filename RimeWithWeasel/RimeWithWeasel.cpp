@@ -3,6 +3,7 @@
 #include <RimeWithWeasel.h>
 #include <StringAlgorithm.hpp>
 #include <WeaselConstants.h>
+#include <WeaselSessionIdAllocator.h>
 #include <WeaselStyleColor.h>
 #include <WeaselUtility.h>
 
@@ -18,13 +19,6 @@
 using namespace weasel;
 
 static RimeApi* rime_api;
-// 常量引用：AddSession 路径无需按值拷贝整个会话表
-WeaselSessionId _GenerateNewWeaselSessionId(const SessionStatusMap& sm,
-                                            DWORD pid) {
-  if (sm.empty())
-    return (WeaselSessionId)(pid + 1);
-  return (WeaselSessionId)(sm.rbegin()->first + 1);
-}
 
 int expand_ibus_modifier(int m) {
   return (m & 0xff) | ((m & 0xff00) << 16);
@@ -51,6 +45,7 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
     }
   }
   m_pid = (m_pid << (31 - msbit));
+  m_next_ipc_session_id = m_pid + 1;
   LOG(INFO) << "setting up Rime traits";
   _Setup();
   LOG(INFO) << "RimeWithWeaselHandler constructed";
@@ -191,8 +186,15 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
     }
   }
 
-  WeaselSessionId ipc_id =
-      _GenerateNewWeaselSessionId(m_session_status_map, m_pid);
+  WeaselSessionId ipc_id = AllocateMonotonicSessionId(
+      m_next_ipc_session_id, [this](WeaselSessionId candidate) {
+        return m_session_status_map.find(candidate) != m_session_status_map.end();
+      });
+  if (!ipc_id) {
+    LOG(ERROR) << "AddSession: exhausted IPC session ids.";
+    rime_api->destroy_session(session_id);
+    return 0;
+  }
   DLOG(INFO) << "Add session: created session_id = " << session_id
              << ", ipc_id = " << ipc_id;
   SessionStatus& session_status = new_session_status(ipc_id);

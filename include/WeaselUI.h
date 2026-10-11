@@ -47,6 +47,10 @@ class UI {
   void Update(Context const& ctx, Status const& status);
   void SetStyle(UIStyle const& style);
   Context& ctx() { return ctx_; }
+  // Last context that completed a panel paint. Kept as an accessor rather
+  // than a second UI-owned copy so fork paint-recovery tests can distinguish
+  // state delivery from an actually rendered frame.
+  Context& octx();
   Status& status() { return status_; }
   UIStyle& style() { return style_; }
   UIStyle& ostyle() { return ostyle_; }

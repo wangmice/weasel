@@ -3,6 +3,7 @@
 #include "../../WeaselTSF/stdafx.h"
 #include "../../WeaselIPCServer/stdafx.h"
 #include <WeaselIPCData.h>
+#include <WeaselSessionIdAllocator.h>
 #include <WeaselUtility.h>
 #include <KeyEvent.h>
 #include <ResponseParser.h>
@@ -59,6 +60,32 @@ static void check(bool ok, const char* what) {
     ++g_failures;
 }
 
+static void test_session_id_allocator_survives_maintenance_clear() {
+  DWORD next_id = 0x1000;
+  std::set<DWORD> active;
+  auto allocate = [&]() {
+    return weasel::AllocateMonotonicSessionId(
+        next_id, [&](DWORD candidate) { return active.count(candidate) != 0; });
+  };
+
+  const DWORD client_a = allocate();
+  active.insert(client_a);
+  const DWORD client_b = allocate();
+  active.insert(client_b);
+
+  // Maintenance destroys all live sessions but stale clients can keep their
+  // old IDs on still-connected named pipes. The allocator high-water mark
+  // must survive that clear.
+  active.clear();
+  const DWORD replacement = allocate();
+
+  check(client_a == 0x1000 && client_b == 0x1001 &&
+            replacement == 0x1002,
+        "session ids remain monotonic after maintenance clears active sessions");
+  check(replacement != client_a && replacement != client_b,
+        "new sessions cannot alias stale client ids after maintenance");
+}
+
 class SessionHandler : public weasel::RequestHandler {
  public:
   DWORD FindSession(DWORD id) override {
@@ -68,7 +95,11 @@ class SessionHandler : public weasel::RequestHandler {
   DWORD AddSession(LPWSTR buffer, EatLine eat) override {
     if (maintaining)
       return 0;
-    DWORD id = ++next_session;
+    DWORD id = weasel::AllocateMonotonicSessionId(
+        next_session,
+        [this](DWORD candidate) { return sessions.count(candidate) != 0; });
+    if (!id)
+      return 0;
     sessions.insert(id);
     ++sessions_created;
     std::wstring response = L"action=status\nstatus.ascii_mode=0\n.\n";
@@ -104,7 +135,7 @@ class SessionHandler : public weasel::RequestHandler {
   }
 
   std::set<DWORD> sessions;
-  DWORD next_session = 0;
+  DWORD next_session = 1;
   bool maintaining = false;
   std::atomic<int> echo_calls{0};
   std::atomic<int> sessions_created{0};
@@ -290,6 +321,7 @@ int main() {
   if (FAILED(hr))
     return 1;
   g_hInst = GetModuleHandle(nullptr);
+  test_session_id_allocator_survives_maintenance_clear();
   test_pipe_ascii_commands();
   test_window_ascii_commands();
   test_maintenance_session_recovery();

@@ -160,4 +160,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   bool m_global_ascii_mode;
   int m_show_notifications_time;
   DWORD m_pid;
+  // Process-lifetime high-water mark. Maintenance clears active sessions but
+  // must never make a stale client ID eligible for immediate reuse.
+  WeaselSessionId m_next_ipc_session_id = 1;
 };
