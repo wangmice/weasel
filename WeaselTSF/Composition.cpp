@@ -9,8 +9,10 @@ class CStartCompositionEditSession : public CEditSession {
  public:
   CStartCompositionEditSession(com_ptr<WeaselTSF> pTextService,
                                com_ptr<ITfContext> pContext,
-                               BOOL fCUASWorkaroundEnabled)
-      : CEditSession(pTextService, pContext) {
+                               BOOL fCUASWorkaroundEnabled,
+                               UINT64 pendingUIGeneration)
+      : CEditSession(pTextService, pContext),
+        _pendingUIGeneration(pendingUIGeneration) {
     _fCUASWorkaroundEnabled = fCUASWorkaroundEnabled;
   }
 
@@ -19,9 +21,17 @@ class CStartCompositionEditSession : public CEditSession {
 
  private:
   BOOL _fCUASWorkaroundEnabled;
+  UINT64 _pendingUIGeneration;
 };
 
 STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
+  // A newer server response can arrive while this asynchronous edit session
+  // waits for the document lock. Never create a composition for an obsolete
+  // pending candidate snapshot.
+  if (_pendingUIGeneration != 0 &&
+      !_pTextService->_IsPendingUIGenerationCurrent(_pendingUIGeneration))
+    return S_OK;
+
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
   com_ptr<ITfRange> pRangeSelection;
   com_ptr<ITfRange> pRangeComposition;
@@ -60,7 +70,7 @@ STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
     // The old composition's range is still visible while its asynchronous
     // end session is pending. Position only after the new composition has
     // actually been created, not from the response handler's stale range.
-    _pTextService->_UpdateCompositionWindow(_pContext);
+    _pTextService->_UpdateCompositionWindow(_pContext, _pendingUIGeneration);
 
     return S_OK;
   }
@@ -70,10 +80,11 @@ STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
 }
 
 void WeaselTSF::_StartComposition(com_ptr<ITfContext> pContext,
-                                  BOOL fCUASWorkaroundEnabled) {
+                                  BOOL fCUASWorkaroundEnabled,
+                                  UINT64 pendingUIGeneration) {
   com_ptr<CStartCompositionEditSession> pStartCompositionEditSession;
-  pStartCompositionEditSession.Attach(
-      new CStartCompositionEditSession(this, pContext, fCUASWorkaroundEnabled));
+  pStartCompositionEditSession.Attach(new CStartCompositionEditSession(
+      this, pContext, fCUASWorkaroundEnabled, pendingUIGeneration));
   _cand->StartUI();
   if (pStartCompositionEditSession != nullptr) {
     HRESULT hr;
@@ -151,8 +162,10 @@ class CGetTextExtentEditSession : public CEditSession {
                             com_ptr<ITfContext> pContext,
                             com_ptr<ITfContextView> pContextView,
                             com_ptr<ITfComposition> pComposition,
-                            bool enhancedPosition)
-      : CEditSession(pTextService, pContext) {
+                            bool enhancedPosition,
+                            UINT64 pendingUIGeneration)
+      : CEditSession(pTextService, pContext),
+        _pendingUIGeneration(pendingUIGeneration) {
     _pContextView = pContextView;
     _pComposition = pComposition;
     _enhancedPosition = enhancedPosition;
@@ -165,9 +178,15 @@ class CGetTextExtentEditSession : public CEditSession {
   com_ptr<ITfContextView> _pContextView;
   com_ptr<ITfComposition> _pComposition;
   bool _enhancedPosition;
+  UINT64 _pendingUIGeneration;
 };
 
 STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
+  // A delayed extent from response A must not reposition or publish response B.
+  if (_pendingUIGeneration != 0 &&
+      !_pTextService->_IsPendingUIGenerationCurrent(_pendingUIGeneration))
+    return S_OK;
+
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
   com_ptr<ITfRange> pRangeComposition;
   ITfRange* pRange;
@@ -218,7 +237,7 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
         rc.bottom += offsety;
       }
     }
-    _pTextService->_SetCompositionPosition(rc);
+    _pTextService->_SetCompositionPosition(rc, _pendingUIGeneration);
   }
   // pRange holds exactly one reference on every path: GetRange's, or the
   // selection reference adopted above.
@@ -227,14 +246,15 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
 }
 
 /* Composition Window Handling */
-BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext) {
+BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext,
+                                         UINT64 pendingUIGeneration) {
   com_ptr<ITfContextView> pContextView;
   if (pContext->GetActiveView(&pContextView) != S_OK)
     return FALSE;
   com_ptr<CGetTextExtentEditSession> pEditSession;
-  pEditSession.Attach(
-      new CGetTextExtentEditSession(this, pContext, pContextView, _pComposition,
-                                    _cand->style().enhanced_position));
+  pEditSession.Attach(new CGetTextExtentEditSession(
+      this, pContext, pContextView, _pComposition,
+      _cand->style().enhanced_position, pendingUIGeneration));
   if (pEditSession == NULL) {
     return FALSE;
   }
@@ -244,7 +264,14 @@ BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext) {
   return SUCCEEDED(hr);
 }
 
-void WeaselTSF::_SetCompositionPosition(const RECT& rc) {
+void WeaselTSF::_SetCompositionPosition(const RECT& rc,
+                                        UINT64 pendingUIGeneration) {
+  // Re-check at the publication boundary. Even if the edit session was current
+  // when it started, a newer response must win if it arrived before this call.
+  if (pendingUIGeneration != 0 &&
+      !_IsPendingUIGenerationCurrent(pendingUIGeneration))
+    return;
+
   /* Test if rect is valid.
    * If it is invalid during CUAS test, we need to apply CUAS workaround */
   if (!_fCUASWorkaroundTested) {
@@ -259,15 +286,48 @@ void WeaselTSF::_SetCompositionPosition(const RECT& rc) {
   _rc.top = _rc.bottom = rc.bottom;
   m_client.UpdateInputPosition(rc);
   _cand->UpdateInputPosition(rc);
-  _FlushPendingUI();
+  if (pendingUIGeneration != 0)
+    _FlushPendingUI(pendingUIGeneration);
 }
 
-void WeaselTSF::_FlushPendingUI() {
-  if (!_hasPendingUI || !_pendingUIContext)
-    return;
-  auto context = std::move(_pendingUIContext);
-  auto status = _pendingUIStatus;
+UINT64 WeaselTSF::_QueuePendingUI(
+    const std::shared_ptr<weasel::Context>& context,
+    const weasel::Status& status) {
+  ++_pendingUIGeneration;
+  if (_pendingUIGeneration == 0)
+    ++_pendingUIGeneration;
+  _pendingUIContext = context;
+  _pendingUIStatus = status;
+  _hasPendingUI = true;
+  return _pendingUIGeneration;
+}
+
+void WeaselTSF::_InvalidatePendingUI() {
+  _pendingUIContext.reset();
   _hasPendingUI = false;
+}
+
+bool WeaselTSF::_IsPendingUIGenerationCurrent(UINT64 generation) const {
+  return generation != 0 && _hasPendingUI &&
+         generation == _pendingUIGeneration && _pendingUIContext != nullptr;
+}
+
+bool WeaselTSF::_TakePendingUI(UINT64 generation,
+                               std::shared_ptr<weasel::Context>& context,
+                               weasel::Status& status) {
+  if (!_IsPendingUIGenerationCurrent(generation))
+    return false;
+  context = std::move(_pendingUIContext);
+  status = _pendingUIStatus;
+  _hasPendingUI = false;
+  return context != nullptr;
+}
+
+void WeaselTSF::_FlushPendingUI(UINT64 pendingUIGeneration) {
+  std::shared_ptr<weasel::Context> context;
+  weasel::Status status;
+  if (!_TakePendingUI(pendingUIGeneration, context, status))
+    return;
   _UpdateUI(*context, status);
 }
 
@@ -493,6 +553,7 @@ STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
 }
 
 void WeaselTSF::_AbortComposition(bool clear) {
+  _InvalidatePendingUI();
   m_client.ClearComposition();
   if (_IsComposing()) {
     _EndComposition(_pEditSessionContext, clear);

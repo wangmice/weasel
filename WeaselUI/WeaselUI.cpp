@@ -106,6 +106,8 @@ void UI::Destroy(bool full) {
 bool UI::Create(HWND parent, bool preview_mode) {
   if (pimpl_) {
     pimpl_->panel.SetPreviewMode(preview_mode);
+    if (!pimpl_->panel.IsWindow())
+      pimpl_->panel.InvalidateWindowSizeCache();
     return pimpl_->panel.Create(parent, preview_mode);
   }
   pimpl_ = std::make_unique<UIImpl>(*this);

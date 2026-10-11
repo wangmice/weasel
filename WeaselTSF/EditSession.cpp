@@ -9,10 +9,13 @@ STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
   _pendingCommit.clear();
 
   bool compositionEnded = false;
+  UINT64 pendingUIGeneration = 0;
   if (_status.composing) {
-    _pendingUIContext = _context;
-    _pendingUIStatus = _status;
-    _hasPendingUI = true;
+    pendingUIGeneration = _QueuePendingUI(_context, _status);
+  } else {
+    // A non-composing response owns the visible state immediately. Any extent
+    // session still queued for the previous composition must become inert.
+    _InvalidatePendingUI();
   }
   if (!commit.empty()) {
     // For auto-selecting, commit and preedit can both exist.
@@ -21,8 +24,10 @@ STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
     // synchronously, so the following state check starts a new TSF
     // composition instead of observing the old one.
     if (!_IsComposing()) {
+      // This temporary composition only carries committed text. It does not
+      // own the pending candidate snapshot, so its extent must never flush it.
       _StartComposition(_pEditSessionContext,
-                        _fCUASWorkaroundEnabled && !_config.inline_preedit);
+                        _fCUASWorkaroundEnabled && !_config.inline_preedit, 0);
     }
     _InsertText(_pEditSessionContext, commit);
     // Keep the candidate UI alive while the replacement composition is
@@ -36,7 +41,8 @@ STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
   }
   if (_status.composing && (compositionEnded || !_IsComposing())) {
     _StartComposition(_pEditSessionContext,
-                      _fCUASWorkaroundEnabled && !_config.inline_preedit);
+                      _fCUASWorkaroundEnabled && !_config.inline_preedit,
+                      pendingUIGeneration);
   } else if (!_status.composing && _IsComposing()) {
     _EndComposition(_pEditSessionContext, true);
   }
@@ -44,17 +50,17 @@ STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
     _ShowInlinePreedit(_pEditSessionContext, _context);
   }
 
-  // For a normal update, position the panel before publishing new candidates.
-  // After a commit, the replacement composition's extent session flushes the
-  // pending UI from _SetCompositionPosition().
-  if (_IsComposing() && !compositionEnded)
-    _UpdateCompositionWindow(_pEditSessionContext);
+  // For an existing composition, this response owns exactly one extent token.
+  // A replacement composition schedules its extent from the start session once
+  // the new range really exists.
+  if (_status.composing && _IsComposing() && !compositionEnded)
+    _UpdateCompositionWindow(_pEditSessionContext, pendingUIGeneration);
 
-  // Wait for the current composition's real text extent before painting new
-  // candidates. This avoids one frame at the previous caret position.
-  if (!(_status.composing && _IsComposing())) {
+  // Composing responses are published only by their matching extent session.
+  // Do not use _IsComposing() here: the asynchronous start session may still
+  // be waiting for the host document lock even though this response composes.
+  if (!_status.composing)
     _UpdateUI(*_context, _status);
-  }
 
   return S_OK;
 }

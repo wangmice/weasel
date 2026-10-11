@@ -120,7 +120,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   /* Composition */
   void _StartComposition(com_ptr<ITfContext> pContext,
-                         BOOL fCUASWorkaroundEnabled);
+                         BOOL fCUASWorkaroundEnabled,
+                         UINT64 pendingUIGeneration = 0);
   void _EndComposition(com_ptr<ITfContext> pContext,
                        BOOL clear,
                        BOOL endUI = TRUE);
@@ -132,10 +133,18 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _IsComposing();
   BOOL _IsCurrentComposition(ITfComposition* pComposition);
   void _SetComposition(com_ptr<ITfComposition> pComposition);
-  void _SetCompositionPosition(const RECT& rc);
-  BOOL _UpdateCompositionWindow(com_ptr<ITfContext> pContext);
-  // Publish UI data after the composition position has been updated.
-  void _FlushPendingUI();
+  void _SetCompositionPosition(const RECT& rc, UINT64 pendingUIGeneration = 0);
+  BOOL _UpdateCompositionWindow(com_ptr<ITfContext> pContext,
+                                UINT64 pendingUIGeneration = 0);
+  UINT64 _QueuePendingUI(const std::shared_ptr<weasel::Context>& context,
+                         const weasel::Status& status);
+  void _InvalidatePendingUI();
+  bool _IsPendingUIGenerationCurrent(UINT64 generation) const;
+  bool _TakePendingUI(UINT64 generation,
+                      std::shared_ptr<weasel::Context>& context,
+                      weasel::Status& status);
+  // Publish UI data only for the extent request that owns this generation.
+  void _FlushPendingUI(UINT64 pendingUIGeneration);
   void _FinalizeComposition();
   void _AbortComposition(bool clear = true);
 
@@ -308,5 +317,6 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _isToOpenClose = false;
   std::shared_ptr<weasel::Context> _pendingUIContext;
   weasel::Status _pendingUIStatus;
+  UINT64 _pendingUIGeneration = 0;
   bool _hasPendingUI = false;
 };

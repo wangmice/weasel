@@ -67,8 +67,11 @@ STDMETHODIMP WeaselTSF::OnLayoutChange(ITfContext* pContext,
   if (pContext != _pTextEditSinkContext)
     return S_OK;
 
-  if (lcode == TF_LC_CHANGE)
-    _UpdateCompositionWindow(pContext);
+  if (lcode == TF_LC_CHANGE) {
+    const UINT64 pendingUIGeneration =
+        _hasPendingUI ? _pendingUIGeneration : 0;
+    _UpdateCompositionWindow(pContext, pendingUIGeneration);
+  }
   return S_OK;
 }
 

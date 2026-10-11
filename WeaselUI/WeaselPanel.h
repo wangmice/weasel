@@ -48,6 +48,10 @@ class WeaselPanel {
   void SetPreviewMode(bool enabled) { m_preview_mode = enabled; }
   bool GetIsReposition() { return m_istorepos; }
   Context& PaintedContext() { return m_octx; }
+  void InvalidateWindowSizeCache() {
+    m_lastWindowWidth = -1;
+    m_lastWindowHeight = -1;
+  }
 
   static const int AUTOREV_TIMER = 20241209;
   static const int AUTOHIDE_TIMER = 20241107;

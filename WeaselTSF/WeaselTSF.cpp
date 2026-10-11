@@ -87,6 +87,7 @@ STDMETHODIMP WeaselTSF::Activate(ITfThreadMgr* pThreadMgr,
 }
 
 STDMETHODIMP WeaselTSF::Deactivate() {
+  _InvalidatePendingUI();
   m_client.EndSession();
 
   _InitTextEditSink(com_ptr<ITfDocumentMgr>());
@@ -232,6 +233,7 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
     _ShowLanguageBar(TRUE);
     _UpdateLanguageBar(_status);
   } else {
+    _InvalidatePendingUI();
     _DeleteCandidateList();
     _ShowLanguageBar(FALSE);
   }

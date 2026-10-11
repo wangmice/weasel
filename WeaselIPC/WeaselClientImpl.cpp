@@ -6,27 +6,25 @@ using namespace weasel;
 
 namespace {
 
-bool HasResponseField(PipeChannel<PipeMessage>& channel,
-                      UINT64 previous_serial,
-                      const wchar_t* expected) {
+bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
+                               UINT64 previous_serial) {
   if (channel.ResponseSerial() == previous_serial)
     return false;
 
+  // The server emits this small exceptional response before librime sees a
+  // stale key. Compare only the fixed prefix instead of line-scanning the
+  // entire normal response (which TSF parses immediately afterwards anyway).
+  static constexpr wchar_t kInvalidSessionPrefix[] =
+      L"action=noop\nsession.invalid=1\n";
+  static constexpr size_t kPrefixLength =
+      sizeof(kInvalidSessionPrefix) / sizeof(kInvalidSessionPrefix[0]) - 1;
+
   bool found = false;
   channel.HandleResponseData([&](LPWSTR buffer, DWORD length) {
-    if (!buffer)
+    if (!buffer || length < kPrefixLength)
       return false;
-
-    wbufferstream stream(buffer, length);
-    std::wstring line;
-    while (std::getline(stream, line)) {
-      if (line == expected) {
-        found = true;
-        break;
-      }
-      if (line == L".")
-        break;
-    }
+    found = std::char_traits<wchar_t>::compare(
+                buffer, kInvalidSessionPrefix, kPrefixLength) == 0;
     return true;
   });
   return found;
@@ -100,8 +98,7 @@ KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
 
   // InvalidSession is emitted only before librime receives the key, making a
   // single caller-controlled retry safe.
-  if (HasResponseField(channel, response_serial,
-                       kInvalidSessionResponseField)) {
+  if (HasInvalidSessionResponse(channel, response_serial)) {
     _SetSessionId(0);
     return KeyEventResult::InvalidSession;
   }

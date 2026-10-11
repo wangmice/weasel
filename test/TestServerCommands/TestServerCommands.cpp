@@ -24,6 +24,7 @@
 #include <vector>
 #include <PipeChannel.h>
 #include "../../WeaselIPCServer/SecurityAttribute.h"
+#include "../../WeaselUI/d2d.h"
 
 // Only expose project internals, after loading their system dependencies.
 // This lets the test use an isolated pipe and the dispatcher's actual mutex
@@ -84,6 +85,90 @@ static void test_session_id_allocator_survives_maintenance_clear() {
         "session ids remain monotonic after maintenance clears active sessions");
   check(replacement != client_a && replacement != client_b,
         "new sessions cannot alias stale client ids after maintenance");
+}
+
+static void test_pending_ui_generation_rejects_stale_extent() {
+  WeaselTSF tsf;
+
+  auto first = std::make_shared<weasel::Context>();
+  first->preedit.str = L"first";
+  weasel::Status first_status;
+  first_status.composing = true;
+  const UINT64 first_generation = tsf._QueuePendingUI(first, first_status);
+
+  auto second = std::make_shared<weasel::Context>();
+  second->preedit.str = L"second";
+  weasel::Status second_status;
+  second_status.composing = true;
+  const UINT64 second_generation = tsf._QueuePendingUI(second, second_status);
+
+  check(first_generation != 0 && second_generation != first_generation,
+        "pending UI generation advances for a newer response");
+  check(!tsf._IsPendingUIGenerationCurrent(first_generation) &&
+            tsf._IsPendingUIGenerationCurrent(second_generation),
+        "stale extent generation cannot publish newer UI");
+
+  std::shared_ptr<weasel::Context> taken;
+  weasel::Status taken_status;
+  check(!tsf._TakePendingUI(first_generation, taken, taken_status) &&
+            tsf._hasPendingUI,
+        "stale extent leaves the current pending UI untouched");
+  check(tsf._TakePendingUI(second_generation, taken, taken_status) && taken &&
+            taken->preedit.str == L"second" && !tsf._hasPendingUI,
+        "current extent consumes exactly its own UI snapshot");
+
+  const UINT64 canceled_generation =
+      tsf._QueuePendingUI(second, second_status);
+  tsf._InvalidatePendingUI();
+  check(!tsf._IsPendingUIGenerationCurrent(canceled_generation) &&
+            !tsf._hasPendingUI,
+        "composition teardown invalidates delayed extent callbacks");
+}
+
+static void test_panel_recreate_reapplies_window_size() {
+  weasel::UI ui;
+  weasel::UIStyle style;
+  style.font_face = L"Segoe UI";
+  style.font_point = 12;
+  ui.SetStyle(style);
+
+  weasel::Context context;
+  weasel::Text candidate;
+  candidate.str = L"candidate-window-size";
+  context.cinfo.candies.push_back(candidate);
+  weasel::Text label;
+  label.str = L"1";
+  context.cinfo.labels.push_back(label);
+  context.cinfo.comments.emplace_back();
+  context.cinfo.highlighted = 0;
+  weasel::Status status;
+  status.composing = true;
+  ui.Update(context, status);
+
+  const bool first_created = ui.Create(nullptr);
+  RECT first{};
+  const bool first_rect = first_created && ui.hwnd() &&
+                          GetWindowRect(ui.hwnd(), &first);
+  const int first_width = first.right - first.left;
+  const int first_height = first.bottom - first.top;
+
+  ui.Destroy(false);
+  const bool second_created = ui.Create(nullptr);
+  RECT second{};
+  const bool second_rect = second_created && ui.hwnd() &&
+                           GetWindowRect(ui.hwnd(), &second);
+  const int second_width = second.right - second.left;
+  const int second_height = second.bottom - second.top;
+
+  check(first_rect && first_width > 10 && first_height > 10,
+        "panel first HWND is resized from its 10x10 creation size");
+  check(second_rect && second_width == first_width &&
+            second_height == first_height && second_width > 10 &&
+            second_height > 10,
+        "retained panel reapplies layout size to a recreated HWND");
+
+  ui.Destroy(true);
+  weasel::DeviceResources::Get().Reset();
 }
 
 class SessionHandler : public weasel::RequestHandler {
@@ -322,9 +407,11 @@ int main() {
     return 1;
   g_hInst = GetModuleHandle(nullptr);
   test_session_id_allocator_survives_maintenance_clear();
+  test_pending_ui_generation_rejects_stale_extent();
   test_pipe_ascii_commands();
   test_window_ascii_commands();
   test_maintenance_session_recovery();
+  test_panel_recreate_reapplies_window_size();
   CoUninitialize();
   std::printf("Failures: %d\n", g_failures);
   return g_failures ? 1 : 0;
