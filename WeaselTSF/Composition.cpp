@@ -22,21 +22,28 @@ class CStartCompositionEditSession : public CEditSession {
 };
 
 STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
-  HRESULT hr = E_FAIL;
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
+  com_ptr<ITfRange> pRangeSelection;
   com_ptr<ITfRange> pRangeComposition;
   if (_pContext->QueryInterface(IID_ITfInsertAtSelection,
                                 (LPVOID*)&pInsertAtSelection) != S_OK)
-    return hr;
+    return E_FAIL;
+  if (pInsertAtSelection->InsertTextAtSelection(ec, TF_IAS_QUERYONLY, NULL, 0,
+                                                &pRangeSelection) != S_OK)
+    return E_FAIL;
+
+  // Typing replaces the selection: delete it and re-query the collapsed
+  // insertion point. A rejected edit keeps the previous behavior.
+  pRangeSelection->SetText(ec, 0, L"", 0);
   if (pInsertAtSelection->InsertTextAtSelection(ec, TF_IAS_QUERYONLY, NULL, 0,
                                                 &pRangeComposition) != S_OK)
-    return hr;
+    return E_FAIL;
 
   com_ptr<ITfContextComposition> pContextComposition;
   com_ptr<ITfComposition> pComposition;
   if (_pContext->QueryInterface(IID_ITfContextComposition,
                                 (LPVOID*)&pContextComposition) != S_OK)
-    return hr;
+    return E_FAIL;
   if ((pContextComposition->StartComposition(
            ec, pRangeComposition, _pTextService, &pComposition) == S_OK) &&
       (pComposition != NULL)) {
@@ -54,9 +61,12 @@ STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
     // end session is pending. Position only after the new composition has
     // actually been created, not from the response handler's stale range.
     _pTextService->_UpdateCompositionWindow(_pContext);
+
+    return S_OK;
   }
 
-  return hr;
+  // composition could not be created
+  return E_FAIL;
 }
 
 void WeaselTSF::_StartComposition(com_ptr<ITfContext> pContext,
@@ -99,7 +109,8 @@ STDMETHODIMP CEndCompositionEditSession::DoEditSession(TfEditCookie ec) {
   if (!_pTextService || !_pContext)
     return S_OK;
 
-  _pTextService->_ClearCompositionDisplayAttributes(ec, _pContext);
+  _pTextService->_ClearCompositionDisplayAttributes(ec, _pContext,
+                                                    _pComposition);
 
   com_ptr<ITfRange> pCompositionRange;
   if (_clear && _pComposition->GetRange(&pCompositionRange) == S_OK)
@@ -174,9 +185,12 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
 
   if (_pComposition != nullptr && _pComposition->GetRange(&pRange) == S_OK) {
     pRange->Collapse(ec, TF_ANCHOR_START);
+    // GetSelection AddRef'd this range and we did not adopt it above.
+    selection.range->Release();
   } else {
     // composition end
     // note: selection.range is always an empty range
+    // Adopt the single reference GetSelection gave us.
     pRange = selection.range;
   }
 
@@ -206,6 +220,9 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
     }
     _pTextService->_SetCompositionPosition(rc);
   }
+  // pRange holds exactly one reference on every path: GetRange's, or the
+  // selection reference adopted above.
+  pRange->Release();
   return S_OK;
 }
 
@@ -242,16 +259,6 @@ void WeaselTSF::_SetCompositionPosition(const RECT& rc) {
   _rc.top = _rc.bottom = rc.bottom;
   m_client.UpdateInputPosition(rc);
   _cand->UpdateInputPosition(rc);
-  _FlushPendingUI();
-}
-
-void WeaselTSF::_FlushPendingUI() {
-  if (!_hasPendingUI || !_pendingUIContext)
-    return;
-  auto context = std::move(_pendingUIContext);
-  auto status = _pendingUIStatus;
-  _hasPendingUI = false;
-  _UpdateUI(*context, status);
 }
 
 /* Inline Preedit */
@@ -349,29 +356,42 @@ class CInsertTextEditSession : public CEditSession {
 };
 
 STDMETHODIMP CInsertTextEditSession::DoEditSession(TfEditCookie ec) {
+  if (_pComposition != nullptr) {
+    com_ptr<ITfRange> pRange;
+    if (FAILED(_pComposition->GetRange(&pRange)))
+      return E_FAIL;
+
+    if (FAILED(pRange->SetText(ec, 0, _text.c_str(),
+                               static_cast<LONG>(_text.length()))))
+      return E_FAIL;
+
+    /* update the selection to an insertion point just past the inserted
+     * text. */
+    pRange->Collapse(ec, TF_ANCHOR_END);
+
+    TF_SELECTION tfSelection;
+    tfSelection.range = pRange;
+    tfSelection.style.ase = TF_AE_NONE;
+    tfSelection.style.fInterimChar = FALSE;
+
+    _pContext->SetSelection(ec, 1, &tfSelection);
+    return S_OK;
+  }
+
+  // No composition yet: the TF_ES_ASYNCDONTCARE start session may not have
+  // run (e.g. Word holds the document lock), and failing here would drop
+  // committed text that Rime has already cleared from its buffer. Insert
+  // directly at the selection instead.
+  com_ptr<ITfInsertAtSelection> pInsertAtSelection;
+  if (FAILED(_pContext->QueryInterface(IID_ITfInsertAtSelection,
+                                       (LPVOID*)&pInsertAtSelection)))
+    return E_FAIL;
   com_ptr<ITfRange> pRange;
-  TF_SELECTION tfSelection;
-  HRESULT hRet = S_OK;
-
-  if (_pComposition == nullptr)
+  if (FAILED(pInsertAtSelection->InsertTextAtSelection(
+          ec, TF_IAS_NO_DEFAULT_COMPOSITION, _text.c_str(),
+          static_cast<LONG>(_text.length()), &pRange)))
     return E_FAIL;
-  if (FAILED(_pComposition->GetRange(&pRange)))
-    return E_FAIL;
-
-  if (FAILED(pRange->SetText(ec, 0, _text.c_str(),
-                             static_cast<LONG>(_text.length()))))
-    return E_FAIL;
-
-  /* update the selection to an insertion point just past the inserted text. */
-  pRange->Collapse(ec, TF_ANCHOR_END);
-
-  tfSelection.range = pRange;
-  tfSelection.style.ase = TF_AE_NONE;
-  tfSelection.style.fInterimChar = FALSE;
-
-  _pContext->SetSelection(ec, 1, &tfSelection);
-
-  return hRet;
+  return S_OK;
 }
 
 BOOL WeaselTSF::_InsertText(com_ptr<ITfContext> pContext,
@@ -389,14 +409,53 @@ BOOL WeaselTSF::_InsertText(com_ptr<ITfContext> pContext,
   return TRUE;
 }
 
+/* Consume Server Response */
+bool WeaselTSF::_ConsumeResponse(LPWSTR buffer, DWORD length) {
+  std::wstring commit;
+  weasel::Config config;
+  // Context 仍按键新建：排队中的编辑会话（如 CInlinePreeditEditSession）
+  // 持有旧快照的 shared_ptr 副本，复用同一分配会让异步会话读到后续键的
+  // 数据（01885fc 的快照隔离语义，承重，保留）
+  auto context = std::make_shared<weasel::Context>();
+  // 复用成员 parser 免去每键重建 deserializer 注册表；各 deserializer
+  // 均在 Store 时经 m_pTarget->p_* 读目标，解析前重指即可
+  _parser.p_commit = &commit;
+  _parser.p_context = context.get();
+  _parser.p_status = &_status;
+  _parser.p_config = &config;
+  _parser.p_style = &_cand->style();
+  bool ok = _parser(buffer, length);
+  if (!ok)
+    return false;
+  _pendingCommit.append(commit);
+  _context = std::move(context);
+  _config = config;
+  // 语言栏/输入指示随解析即时更新，不依赖可能被排队延迟的编辑会话
+  _UpdateLanguageBar(_status);
+  return true;
+}
+
+void WeaselTSF::_ConsumeResponseIfFresh() {
+  UINT64 serial = m_client.ResponseSerial();
+  if (serial == _parsedSerial)
+    return;
+  _parsedSerial = serial;
+  m_client.GetResponseData([this](LPWSTR buffer, DWORD length) {
+    return _ConsumeResponse(buffer, length);
+  });
+}
+
 void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext) {
+  // 应答缓冲会被下一次 Transact（下一键）覆盖，须在回调线程内先解析；
+  // 下面的会话只应用已解析的结果，异步排队不影响数据完整性
+  _ConsumeResponseIfFresh();
+
   HRESULT hr;
 
   _pEditSessionContext = pContext;
 
   _pEditSessionContext->RequestEditSession(
       _tfClientId, this, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
-  _async_edit = !!(hr == TF_S_ASYNC);
 }
 
 /* Composition State */

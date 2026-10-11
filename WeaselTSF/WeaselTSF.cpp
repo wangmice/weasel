@@ -8,16 +8,6 @@
 #include "CandidateList.h"
 #include "LanguageBar.h"
 #include "Compartment.h"
-#include "ResponseParser.h"
-
-static void error_message(const WCHAR* msg) {
-  static DWORD next_tick = 0;
-  DWORD now = GetTickCount();
-  if (now > next_tick) {
-    next_tick = now + 10000;  // (ms)
-    MessageBox(NULL, msg, get_weasel_ime_name().c_str(), MB_ICONERROR | MB_OK);
-  }
-}
 
 WeaselTSF::WeaselTSF() {
   _cRef = 1;
@@ -27,12 +17,12 @@ WeaselTSF::WeaselTSF() {
   _dwTextEditSinkCookie = TF_INVALID_COOKIE;
   _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
   _dwThreadFocusSinkCookie = TF_INVALID_COOKIE;
-  _fTestKeyDownPending = FALSE;
-  _fTestKeyUpPending = FALSE;
 
   _fCUASWorkaroundTested = _fCUASWorkaroundEnabled = FALSE;
 
-  _cand = new CCandidateList(this);
+  // Attach (no AddRef): ~WeaselTSF's CComPtr release must be able to drop
+  // the reference count to zero (a plain assignment would leak one).
+  _cand.Attach(new CCandidateList(this));
 
   DllAddRef();
 }
@@ -110,13 +100,19 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 
   _UninitCompartment();
 
-  _UninitThreadMgrEventSink();
+  _UninitThreadFocusSink();
+
+  // 停用期间 INPUTMODE_CONVERSION 可能被宿主/其他输入源改写，
+  // 上次写入值缓存不再可信
+  _conversionFlagsValid = false;
+
+  // While the thread manager is still valid: DestroyAll ends the UIElement,
+  // which makes the UIElementMgr drop its reference to the candidate list.
+  _cand->DestroyAll();
 
   _pThreadMgr = NULL;
 
   _tfClientId = TF_CLIENTID_NULL;
-
-  _cand->DestroyAll();
 
   return S_OK;
 }
@@ -124,7 +120,6 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
                                    TfClientId tfClientId,
                                    DWORD dwFlags) {
-  LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;
 
@@ -142,10 +137,9 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
   if (!_InitKeyEventSink())
     goto ExitError;
 
-  // if (!_InitDisplayAttributeGuidAtom())
-  //	goto ExitError;
-  //	some app might init failed because it not provide DisplayAttributeInfo,
-  // like some opengl stuff
+  // Init failure is non-fatal: some apps don't provide DisplayAttributeInfo
+  // (e.g. OpenGL stuff). The atom stays 0 and the attribute setter skips the
+  // write, so no bogus atom reaches GUID_PROP_ATTRIBUTE.
   _InitDisplayAttributeGuidAtom();
 
   if (!_InitPreservedKey())
@@ -171,17 +165,36 @@ ExitError:
   return E_FAIL;
 }
 
-STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
-  std::wstring _ToggleImeOnOpenClose{};
+// 该注册表值仅 WeaselSetup（安装/设置）写入，变更极罕见；限频重读，
+// 外部改动最迟 TTL 后的下一次焦点切换生效，与原逐次读取行为一致
+static const ULONGLONG kToggleImeRefreshIntervalMs = 10 * 1000;
+
+void WeaselTSF::_RefreshToggleImeOnOpenClose() {
+  ULONGLONG now = GetTickCount64();
+  if (_toggleImeReadTick != 0 &&
+      now - _toggleImeReadTick < kToggleImeRefreshIntervalMs)
+    return;
+  _toggleImeReadTick = now;
+  std::wstring value;
   RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
-                    L"ToggleImeOnOpenClose", _ToggleImeOnOpenClose);
-  _isToOpenClose = (_ToggleImeOnOpenClose == L"yes");
+                    L"ToggleImeOnOpenClose", value);
+  _isToOpenClose = (value == L"yes");
+}
+
+STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
+  _RefreshToggleImeOnOpenClose();
+  // Echo + ProcessKeyEvent(0) 两轮 IPC 为承重路径，保留（K21 考证）：
+  // - Echo 是会话有效性闸门（服务端 FindSession）。若省掉而直接发
+  //   ProcessKeyEvent(0)，会话已失效时服务端会对孤儿会话跑 process_key
+  //   并把 m_active_session 指向死会话 id，改变服务端可见行为。
+  // - ProcessKeyEvent(0)（keycode=0，librime 各 processor 均不处理）的
+  //   作用是借 _Respond 拿回全量 status 快照：tray 菜单的中/英切换（作用于
+  //   服务端 m_active_session）与 global_ascii_mode 的跨会话联动都可能
+  //   在本客户端无通知的情况下改变本会话状态，焦点切换时须重新同步
+  //   _status 与语言栏图标，省掉会让图标陈旧至下一次击键。
   if (m_client.Echo()) {
     m_client.ProcessKeyEvent(0);
-    weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
-    bool ok = m_client.GetResponseData(std::ref(parser));
-    if (ok)
-      _UpdateLanguageBar(_status);
+    _ConsumeResponseIfFresh();
   }
   return S_OK;
 }
@@ -226,58 +239,61 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
 
 void WeaselTSF::_Reconnect() {
   m_client.Disconnect();
-  m_client.Connect(NULL);
+  m_client.Connect();
   m_client.StartSession();
-  weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
-  bool ok = m_client.GetResponseData(std::ref(parser));
-  if (ok) {
-    _UpdateLanguageBar(_status);
-  }
+  _ConsumeResponseIfFresh();
 }
 
-static unsigned int retry = 0;
+static int count_server_process() {
+  int count = 0;
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE)
+    return 0;
+  PROCESSENTRY32 pe;
+  pe.dwSize = sizeof(pe);
+  if (Process32First(snap, &pe)) {
+    do {
+      if (_wcsicmp(pe.szExeFile, L"WeaselServer.exe") == 0)
+        count++;
+    } while (Process32Next(snap, &pe));
+  }
+  CloseHandle(snap);
+  return count;
+}
 
 bool WeaselTSF::_EnsureServerConnected() {
-  if (!m_client.Echo()) {
-    _Reconnect();
-    retry++;
-    if (retry >= 6) {
-      HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
-      const auto count_server_process = []() -> int {
-        int count = 0;
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snap == INVALID_HANDLE_VALUE)
-          return 0;
-        PROCESSENTRY32 pe;
-        pe.dwSize = sizeof(pe);
-        if (Process32First(snap, &pe)) {
-          do {
-            if (_wcsicmp(pe.szExeFile, L"WeaselServer.exe") == 0)
-              count++;
-          } while (Process32Next(snap, &pe));
-        }
-        CloseHandle(snap);
-        return count;
-      };
-      if (!m_client.Echo() && GetLastError() != ERROR_ALREADY_EXISTS &&
-          !count_server_process()) {
+  // Healthy typing is a local fast path. A remotely invalidated session is
+  // detected by PROCESS_KEY_EVENT itself, avoiding an Echo roundtrip per key.
+  if (m_client.IsSessionActive())
+    return true;
+
+  _Reconnect();
+  if (!m_client.IsSessionActive()) {
+    if (++_reconnectRetry >= 6) {
+      HANDLE hMutex =
+          CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
+      // Read GetLastError right after CreateMutex: any later pipe call
+      // would overwrite the ERROR_ALREADY_EXISTS indicator.
+      bool alreadyLaunching = (GetLastError() == ERROR_ALREADY_EXISTS);
+      if (!alreadyLaunching && count_server_process() == 0) {
         std::wstring dir = _GetRootDir();
-        std::thread th([dir, this]() {
+        // The detached thread must not capture this: it can outlive the
+        // TIP object while the host app tears down. It only starts the
+        // service; the next keystroke's reconnect path completes login.
+        std::thread th([dir]() {
           ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
                         NULL, dir.c_str(), SW_HIDE);
-          // wait 500ms, then reconnect
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          _Reconnect();
         });
         th.detach();
       }
       if (hMutex) {
         CloseHandle(hMutex);
       }
-      retry = 0;
+      _reconnectRetry = 0;
     }
-    return (m_client.Echo() != 0);
-  } else {
-    return true;
+    return false;
   }
+
+  _reconnectRetry = 0;
+  return true;
 }
