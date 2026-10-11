@@ -1,4 +1,5 @@
 #pragma once
+#include <logging.h>
 #include <string>
 #include <memory>
 #include <windows.h>
@@ -8,6 +9,32 @@
 
 namespace weasel {
 
+/* Release a named pipe handle: disconnect the server end (no-op for a
+ * client end) and close the kernel handle. Idempotent. */
+inline void FinalizePipeHandle(HANDLE& p) {
+  if (p != INVALID_HANDLE_VALUE) {
+    DisconnectNamedPipe(p);
+    CloseHandle(p);
+  }
+  p = INVALID_HANDLE_VALUE;
+}
+
+/* Owns one thread's pipe handle. boost's default TSS cleanup is a plain
+ * delete, so the handle used to live in a raw HANDLE that was never
+ * closed; the owner destructor releases it when the owning thread exits
+ * without an explicit Disconnect (server-side handles live in local
+ * variables and are finalized by their own paths). */
+struct PipeHandleOwner {
+  PipeHandleOwner() = default;
+  ~PipeHandleOwner() { Finalize(); }
+  PipeHandleOwner(const PipeHandleOwner&) = delete;
+  PipeHandleOwner& operator=(const PipeHandleOwner&) = delete;
+
+  void Finalize() { FinalizePipeHandle(handle); }
+
+  HANDLE handle = INVALID_HANDLE_VALUE;
+};
+
 class PipeChannelBase {
  public:
   using Stream = boost::interprocess::wbufferstream;
@@ -16,9 +43,15 @@ class PipeChannelBase {
     std::unique_ptr<char[]> buffer;
     std::unique_ptr<Stream> write_stream;
     bool has_body;
+    // bumped each time a fresh response body is received into buffer;
+    // lets callers tell an unparsed response from a stale one (request
+    // staging or body-less replies reuse the same buffer)
+    UINT64 resp_serial;
 
     ChannelContext(size_t bs)
-        : buffer(std::make_unique<char[]>(bs)), has_body(false) {}
+        : buffer(std::make_unique<char[]>(bs)),
+          has_body(false),
+          resp_serial(0) {}
   };
 
   PipeChannelBase(std::wstring&& pn_cmd, size_t bs, SECURITY_ATTRIBUTES* s);
@@ -34,15 +67,18 @@ class PipeChannelBase {
   /* Try to connect for one time */
   HANDLE _TryConnect();
   size_t _WritePipe(HANDLE p, size_t s, char* b);
-  void _FinalizePipe(HANDLE& p);
   void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len);
   /* Try to get a connection from client */
   HANDLE _ConnectServerPipe(std::wstring& pn);
+  /* Create a new server-side pipe instance */
+  HANDLE _CreateServerPipe(std::wstring& pn);
+  /* Wait for a client to connect to an instance */
+  HANDLE _AcceptServerPipe(HANDLE pipe);
   inline bool _Invalid(HANDLE p) const { return p == INVALID_HANDLE_VALUE; }
 
-  HANDLE* _GetPipeHandle() const {
+  PipeHandleOwner* _GetPipeHandle() const {
     if (!hpipe_ptr.get()) {
-      hpipe_ptr.reset(new HANDLE(INVALID_HANDLE_VALUE));
+      hpipe_ptr.reset(new PipeHandleOwner());
     }
     return hpipe_ptr.get();
   }
@@ -56,8 +92,8 @@ class PipeChannelBase {
 
  protected:
   std::wstring pname;
-  // Thread-local pipe handle for isolation
-  mutable boost::thread_specific_ptr<HANDLE> hpipe_ptr;
+  // Thread-local pipe handle; its owner closes it when the thread exits
+  mutable boost::thread_specific_ptr<PipeHandleOwner> hpipe_ptr;
   const size_t buff_size;
   // Thread-local context for buffer and state
   mutable boost::thread_specific_ptr<ChannelContext> context;
@@ -94,13 +130,12 @@ class PipeChannel : public PipeChannelBase {
 
   bool Connect() { return _Ensure(); }
   bool Connected() const {
-    HANDLE* phandle = _GetPipeHandle();
-    return !_Invalid(*phandle);
+    return !_Invalid(_GetPipeHandle()->handle);
   }
-  void Disconnect() {
-    HANDLE* phandle = _GetPipeHandle();
-    _FinalizePipe(*phandle);
-  }
+  // serial of the latest response body received on this thread; changes
+  // iff the buffer now holds an unread response
+  UINT64 ResponseSerial() { return _GetContext()->resp_serial; }
+  void Disconnect() { _GetPipeHandle()->Finalize(); }
 
   /* Write data to buffer */
 
@@ -118,10 +153,26 @@ class PipeChannel : public PipeChannelBase {
   }
 
   _TyRes Transact(Msg& msg) {
-    _Ensure();
-    HANDLE* phandle = _GetPipeHandle();
-    _Send(*phandle, msg);
-    return _ReceiveResponse();
+    PipeHandleOwner* phandle = _GetPipeHandle();
+    if (!_Ensure()) {
+      // Server unreachable: drop any staged body so the next request starts
+      // clean instead of appending to the leftover one.
+      ClearBufferStream();
+      throw (DWORD)ERROR_FILE_NOT_FOUND;  // server unreachable
+    }
+    try {
+      _Send(phandle->handle, msg);
+      return _ReceiveResponse();
+    } catch (...) {
+      // The connection died mid-request. Drop the request (it may already
+      // have been delivered) and re-establish so the next call can proceed.
+      // A staged-but-unsent body is dropped too: keeping it would make the
+      // next START_SESSION carry two client info blocks, or let it ride
+      // along with the next body-less command.
+      ClearBufferStream();
+      _Reconnect();
+      throw;
+    }
   }
 
   void ClearBufferStream() {
@@ -134,7 +185,9 @@ class PipeChannel : public PipeChannelBase {
 
   char* SendBuffer() const { return _GetContext()->buffer.get() + _MsgSize; }
 
-  char* ReceiveBuffer() const { return _GetContext()->buffer.get() + _ResSize; }
+  // Request bodies land at buffer[0] via _Receive's ERROR_MORE_DATA path:
+  // the fixed-size header is consumed into the caller's variable first.
+  char* ReceiveBuffer() const { return _GetContext()->buffer.get(); }
 
   template <typename _TyHandler>
   bool HandleResponseData(_TyHandler const& handler) {
@@ -157,27 +210,31 @@ class PipeChannel : public PipeChannelBase {
     size_t body_bytes = 0;
     if (ctx->has_body && ctx->write_stream) {
       std::streampos pos = ctx->write_stream->tellp();
-      if (pos != std::streampos(-1)) {
-        body_bytes = static_cast<size_t>(pos) * sizeof(wchar_t);
+      if (pos == std::streampos(-1)) {
+        // The staged body overran the fixed send buffer (wbufferstream
+        // failbit): sending now would deliver the header without the body,
+        // losing it silently. Fail the transaction explicitly and drop the
+        // poisoned staging state instead.
+        ClearBufferStream();
+        LOG(ERROR) << "IPC request body exceeds the send buffer ("
+                   << (buff_size - _MsgSize) << " bytes), dropping it";
+        throw (DWORD)ERROR_MORE_DATA;
       }
+      body_bytes = static_cast<size_t>(pos) * sizeof(wchar_t);
     }
+    // body_bytes is bounded by the buffer capacity, so data_sz never
+    // exceeds buff_size here
     size_t data_sz = ctx->has_body ? (_MsgSize + body_bytes) : _MsgSize;
-    if (data_sz > buff_size)
-      data_sz = buff_size;
 
-    try {
-      _WritePipe(pipe, data_sz, pbuff);
-    } catch (...) {
-      _Reconnect();
-      _WritePipe(_GetPipeHandle(), data_sz, pbuff);
-    }
+    // No resend on failure: a request may already have been delivered, and
+    // duplicating it would process one keystroke twice.
+    _WritePipe(pipe, data_sz, pbuff);
     ClearBufferStream();
   }
 
   _TyRes _ReceiveResponse() {
-    HANDLE* phandle = _GetPipeHandle();
     _TyRes result;
-    _Receive(*phandle, &result, sizeof(result));
+    _Receive(_GetPipeHandle()->handle, &result, sizeof(result));
     return result;
   }
 
