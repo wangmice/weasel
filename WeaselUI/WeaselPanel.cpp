@@ -152,7 +152,7 @@ void WeaselPanel::ApplyUpdate(const Context& ctx, const Status& status) {
 
 void WeaselPanel::_ApplyUpdate(const Context& ctx, const Status& status) {
   _CancelAutoHide();
-  if (m_ctx == ctx && m_status == status)
+  if (m_layout_ready && m_layout && m_ctx == ctx && m_status == status)
     return;
   m_ctx = ctx;
   m_status = status;
@@ -529,6 +529,9 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
     if (!m_style.font_face.empty())
       m_pD2D->InitDirectWriteResources();
     m_ostyle = m_style;
+    // A new HWND needs a fresh layout even if the retained response is
+    // unchanged. Do not rely on the host's one-time UI warmup or WM_PAINT.
+    Refresh();
   }
   return !!m_hWnd;
 }

@@ -1,0 +1,5 @@
+target("TestWeaselUILayout")
+  set_kind("binary")
+  add_files("./*.cpp")
+  add_deps("WeaselUI")
+  add_rules("subcmd")

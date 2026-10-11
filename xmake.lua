@@ -137,6 +137,7 @@ if is_mode("debug") then
   includes("test/TestCompartmentUtil")
   includes("test/TestPerUserReg")
   includes("test/TestWeaselUI")
+  includes("test/TestWeaselUILayout")
   includes("test/TestBstrUtil")
   includes("test/TestWeaselSetup")
   includes("test/TestKeyEvent")
