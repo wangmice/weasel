@@ -20,6 +20,7 @@ Unicode true
 
 !define WEASEL_ROOT $INSTDIR\weasel-${WEASEL_VERSION}
 !define REG_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
+Var InstallBaseDir
 
 ; The name of the installer
 Name "小狼毫 ${WEASEL_VERSION}"
@@ -75,6 +76,8 @@ LangString LNKFORUNINSTALL ${LANG_TRADCHINESE} "卸載小狼毫"
 LangString CONFIRMATION ${LANG_TRADCHINESE} "安裝前，請先卸載舊版本的小狼毫。$\n$\n按下「確定」移除舊版本，按下「取消」放棄本次安裝。"
 LangString SYSTEMVERSIONNOTOK ${LANG_TRADCHINESE} "您的系统不被支持，最低系統要求:Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_TRADCHINESE} "自動檢查版本更新？"
+LangString SETUPCANCELLED ${LANG_TRADCHINESE} "已取消安裝，不會繼續部署或啟動服務。"
+LangString SETUPFAILED ${LANG_TRADCHINESE} "輸入法安裝失敗，不會繼續部署或啟動服務。"
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
 LangString DISPLAYNAME ${LANG_SIMPCHINESE} "小狼毫输入法"
@@ -92,6 +95,8 @@ LangString LNKFORUNINSTALL ${LANG_SIMPCHINESE} "卸载小狼毫"
 LangString CONFIRMATION ${LANG_SIMPCHINESE} '安装前，请先卸载旧版本的小狼毫。$\n$\n点击 "确定" 移除旧版本，或点击 "取消" 放弃本次安装。'
 LangString SYSTEMVERSIONNOTOK ${LANG_SIMPCHINESE} "您的系統不被支持，最低系统要求:Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_SIMPCHINESE} "自动检查版本更新？"
+LangString SETUPCANCELLED ${LANG_SIMPCHINESE} "已取消安装，不会继续部署或启动服务。"
+LangString SETUPFAILED ${LANG_SIMPCHINESE} "输入法安装失败，不会继续部署或启动服务。"
 
 !insertmacro MUI_LANGUAGE "English"
 LangString DISPLAYNAME ${LANG_ENGLISH} "Weasel"
@@ -109,6 +114,8 @@ LangString LNKFORUNINSTALL ${LANG_ENGLISH} "Uninstall Weasel"
 LangString CONFIRMATION ${LANG_ENGLISH} "Before installation, please uninstall the old version of Weasel.$\n$\nPress 'OK' to remove the old version, or 'Cancel' to abort installation."
 LangString SYSTEMVERSIONNOTOK ${LANG_ENGLISH} "Your system not supported, minimium system required: Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_ENGLISH} "Automatically check for updates?"
+LangString SETUPCANCELLED ${LANG_ENGLISH} "Installation cancelled. Deployment and service startup will not continue."
+LangString SETUPFAILED ${LANG_ENGLISH} "Input method setup failed. Deployment and service startup will not continue."
 
 ;--------------------------------
 
@@ -212,10 +219,9 @@ Section "Weasel"
 
   SectionIn RO
 
-  ; Write the new installation path into the registry
-  ; redirect on 64 bit system
-  ; HKLM SOFTWARE\WOW6432Node\Rime\Weasel "InstallDir" "$INSTDIR"
-  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$INSTDIR"
+  ; Publish the base directory only after Setup succeeds. Do not replace
+  ; an existing registration when setup is cancelled or fails.
+  StrCpy $InstallBaseDir "$INSTDIR"
 
   ; Reset INSTDIR for the new version
   StrCpy $INSTDIR "${WEASEL_ROOT}"
@@ -311,9 +317,22 @@ program_files:
   IfErrors +2 0
   StrCpy $R2 "/t"
 
-  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2' $R3
+  ${If} ${Errors}
+    SetErrorLevel 1
+    Abort "$(SETUPFAILED)"
+  ${EndIf}
+  ${If} $R3 == 1223 ; ERROR_CANCELLED from WeaselSetup
+    SetErrorLevel 1223
+    Abort "$(SETUPCANCELLED)"
+  ${ElseIf} $R3 != 0
+    SetErrorLevel $R3
+    Abort "$(SETUPFAILED)"
+  ${EndIf}
 
   ; Write the uninstall keys for Windows
+  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$InstallBaseDir"
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayName" "$(DISPLAYNAME)"
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayIcon" '"$INSTDIR\WeaselServer.exe"'
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayVersion" "${WEASEL_VERSION}.${WEASEL_BUILD}"

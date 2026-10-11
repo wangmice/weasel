@@ -272,7 +272,7 @@ inline LONG RegGetStringValue(HKEY key,
                               LPCWSTR lpValue,
                               std::wstring& value) {
   TCHAR szValue[MAX_PATH];
-  DWORD dwBufLen = MAX_PATH;
+  DWORD dwBufLen = sizeof(szValue);  // RegGetValue expects bytes, not characters
 
   LONG lRes = RegGetValue(key, lpSubKey, lpValue, RRF_RT_REG_SZ, NULL, szValue,
                           &dwBufLen);

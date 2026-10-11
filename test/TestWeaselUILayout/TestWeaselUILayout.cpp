@@ -8,6 +8,7 @@
 #include "../../WeaselUI/VerticalLayout.h"
 #include <atomic>
 #include <cstdio>
+#include <type_traits>
 
 #define private public
 #include "../../WeaselUI/WeaselPanel.h"
@@ -20,6 +21,52 @@ static void check(bool ok, const char* what) {
   std::printf("[%s] %s\n", ok ? "ok" : "FAIL", what);
   if (!ok)
     ++g_failures;
+}
+
+class TrackedLayout : public weasel::VerticalLayout {
+ public:
+  TrackedLayout(const weasel::UIStyle& style,
+                const weasel::Context& ctx,
+                const weasel::Status& status,
+                weasel::an<weasel::D2D>& d2d,
+                bool& destroyed)
+      : VerticalLayout(style, ctx, status, d2d), m_destroyed(destroyed) {}
+  ~TrackedLayout() { m_destroyed = true; }
+
+ private:
+  bool& m_destroyed;
+};
+
+static void test_polymorphic_layout_destruction() {
+  const bool safe = std::has_virtual_destructor<weasel::Layout>::value;
+  check(safe, "Layout supports safe destruction through a base pointer");
+  if (!safe)
+    return;  // Do not invoke undefined behavior in a non-sanitized test.
+  weasel::UI ui;
+  ui.style().font_face = L"Segoe UI";
+  ui.style().font_point = 12;
+  weasel::WeaselPanel panel(ui);
+  bool created = panel.Create(nullptr);
+  check(created, "polymorphic destruction test creates graphics resources");
+  if (!created)
+    return;
+  weasel::Context ctx;
+  weasel::Status status;
+  bool destroyed = false;
+  std::unique_ptr<weasel::Layout> layout = std::make_unique<TrackedLayout>(
+      ui.style(), ctx, status, panel.m_pD2D, destroyed);
+  layout.reset();
+  check(destroyed, "base unique_ptr invokes the derived layout destructor");
+
+  destroyed = false;
+  RECT input_pos{0, 0, 1, 1};
+  auto inner = std::make_unique<TrackedLayout>(
+      ui.style(), ctx, status, panel.m_pD2D, destroyed);
+  layout = std::make_unique<weasel::FullScreenLayout>(
+      ui.style(), ctx, status, input_pos, std::move(inner), panel.m_pD2D);
+  layout.reset();
+  check(destroyed, "base destruction releases the nested fullscreen layout");
+  panel.DestroyWindow();
 }
 
 static void test_recreate_with_unchanged_context() {
@@ -145,6 +192,7 @@ int main() {
     std::printf("COM initialization failed: 0x%08lx\n", hr);
     return 1;
   }
+  test_polymorphic_layout_destruction();
   test_recreate_with_unchanged_context();
   test_fullscreen_tracks_input_rectangle();
   // Release the process-wide WIC/graphics COM pointers while their apartment

@@ -165,9 +165,20 @@ function Find-Makensis {
       return (Join-Path $base 'NSIS\Bin\makensis.exe')
     }
   }
-  $scoopPrefix = (& scoop prefix nsis 2>$null)
-  if ($scoopPrefix -and (Test-Path (Join-Path $scoopPrefix 'current\Bin\makensis.exe'))) {
-    return (Join-Path $scoopPrefix 'current\Bin\makensis.exe')
+  if (Get-Command scoop -ErrorAction SilentlyContinue) {
+    # A missing Scoop command/package is a discovery miss, not a fatal
+    # packaging error: let the installation fallback below handle it.
+    try {
+      $scoopPrefix = (& scoop prefix nsis 2>$null)
+    } catch {
+      $scoopPrefix = $null
+    }
+    if ($scoopPrefix) {
+      foreach ($relative in @('Bin\makensis.exe', 'makensis.exe')) {
+        $candidate = Join-Path $scoopPrefix $relative
+        if (Test-Path $candidate) { return $candidate }
+      }
+    }
   }
   return $null
 }

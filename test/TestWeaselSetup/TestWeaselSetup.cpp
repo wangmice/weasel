@@ -10,8 +10,11 @@
 
 #include <string>
 #include <vector>
+#include <chrono>
+#include <iomanip>
 
 #include "../../WeaselSetup/SetupUtil.h"
+#include <WeaselUtility.h>
 
 static int g_failures = 0;
 
@@ -160,10 +163,75 @@ static void test_delete_reg_tree() {
         "deleting a missing tree reports ERROR_FILE_NOT_FOUND");
 }
 
+static void test_reg_get_string_value() {
+  const std::wstring key = L"Software\\Rime\\WeaselUtilityTest-" +
+                           std::to_wstring(GetCurrentProcessId());
+  HKEY hKey = NULL;
+  check(RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, NULL,
+                       REG_OPTION_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE,
+                       NULL, &hKey, NULL) == ERROR_SUCCESS,
+        "private utility test key created");
+  if (!hKey)
+    return;
+
+  for (const std::wstring& path : {std::wstring(L"C:\\Rime"),
+                                  std::wstring(200, L'路'),
+                                  std::wstring(MAX_PATH - 1, L'界'),
+                                  std::wstring()}) {
+    check(RegSetValueExW(hKey, L"Path", 0, REG_SZ,
+                         reinterpret_cast<const BYTE*>(path.c_str()),
+                         DWORD((path.size() + 1) * sizeof(WCHAR))) ==
+              ERROR_SUCCESS,
+          "private utility path value written");
+    std::wstring out = L"unchanged";
+    check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"Path", out) ==
+                  ERROR_SUCCESS && out == path,
+          "Unicode REG_SZ uses the full MAX_PATH character capacity");
+  }
+
+  const std::wstring unterminated(200, L'路');
+  check(RegSetValueExW(hKey, L"NoNul", 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(unterminated.data()),
+                       DWORD(unterminated.size() * sizeof(WCHAR))) ==
+            ERROR_SUCCESS,
+        "private non-terminated value written");
+  std::wstring out;
+  check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"NoNul", out) ==
+                ERROR_SUCCESS && out == unterminated,
+        "RegGetValue supplies the missing REG_SZ terminator in bounds");
+
+  out = L"unchanged";
+  check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"Missing", out) ==
+                ERROR_FILE_NOT_FOUND && out == L"unchanged",
+        "missing utility value preserves the output and error code");
+  DWORD number = 1;
+  check(RegSetValueExW(hKey, L"Number", 0, REG_DWORD,
+                       reinterpret_cast<const BYTE*>(&number),
+                       sizeof(number)) == ERROR_SUCCESS,
+        "private non-string value written");
+  check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"Number", out) ==
+                ERROR_UNSUPPORTED_TYPE && out == L"unchanged",
+        "utility rejects non-REG_SZ without changing the output");
+
+  const std::wstring too_long(MAX_PATH + 40, L'路');
+  check(RegSetValueExW(hKey, L"TooLong", 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(too_long.c_str()),
+                       DWORD((too_long.size() + 1) * sizeof(WCHAR))) ==
+            ERROR_SUCCESS,
+        "private over-capacity value written");
+  check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"TooLong", out) ==
+                ERROR_MORE_DATA && out == L"unchanged",
+        "over-capacity utility value fails without returning truncated data");
+  RegCloseKey(hKey);
+  check(RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str()) == ERROR_SUCCESS,
+        "private utility test key removed");
+}
+
 int main() {
   test_unquote_argument();
   test_read_reg_sz();
   test_delete_reg_tree();
+  test_reg_get_string_value();
 
   if (g_failures) {
     printf("%d failure(s)\n", g_failures);

@@ -24,6 +24,7 @@ class Layout {
          const Context& context,
          const Status& status,
          an<D2D>& pD2D);
+  virtual ~Layout() = default;
   virtual void DoLayout() = 0;
   virtual CSize& GetContentSize() = 0;
   virtual CRect& GetPreeditRect() = 0;

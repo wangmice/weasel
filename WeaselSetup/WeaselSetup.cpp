@@ -101,7 +101,7 @@ static int CustomInstall(bool installing) {
     dlg.profile = profile;
     dlg.user_dir = user_dir;
     if (IDOK != dlg.DoModal())
-      return 1;  // 用户取消：一律中止，不以默认 profile 继续安装（A13）
+      return ERROR_CANCELLED;  // 与安装失败区分，外层安装器必须中止
     profile = dlg.profile;
     user_dir = dlg.user_dir;
     _has_installed = dlg.installed;

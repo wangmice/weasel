@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <WeaselUI.h>
+#include "../../WeaselUI/d2d.h"
 
 #include <boost/thread.hpp>
 
@@ -70,12 +71,15 @@ class UiThread {
   }
 
   weasel::UI ui;
+  bool com_initialized = false;
   bool created = false;
   bool same_thread_show_ok = false;
   bool same_thread_hide_ok = false;
 
   void Run() {
-    created = ui.Create(NULL);
+    const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    com_initialized = SUCCEEDED(hr);
+    created = com_initialized && ui.Create(NULL);
     if (created) {
       // 同线程直调：不经消息泵立即生效
       ui.Show();
@@ -95,6 +99,11 @@ class UiThread {
     }
     // destroy the window on its owning thread
     ui.Destroy(true);
+    // Shared WIC/graphics COM pointers outlive the panel. Release them on
+    // the graphics-owning thread before tearing down its COM apartment.
+    weasel::DeviceResources::Get().Reset();
+    if (com_initialized)
+      CoUninitialize();
   }
 
   void NotifyReady() { WaitForSingleObject(m_ready, INFINITE); }
@@ -426,6 +435,7 @@ int main() {
   boost::thread ui_thread([&t] { t.Run(); });
   t.NotifyReady();
 
+  check(t.com_initialized, "B1: UI thread initializes its COM apartment");
   check(t.created, "B1: panel window created");
   check(t.same_thread_show_ok, "B1: same-thread Show is synchronous");
   check(t.same_thread_hide_ok, "B1: same-thread Hide is synchronous");
