@@ -57,7 +57,7 @@ STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
   if ((pContextComposition->StartComposition(
            ec, pRangeComposition, _pTextService, &pComposition) == S_OK) &&
       (pComposition != NULL)) {
-    _pTextService->_SetComposition(pComposition);
+    _pTextService->_SetComposition(pComposition, _pContext);
 
     /* set selection */
     TF_SELECTION tfSelection;
@@ -142,15 +142,23 @@ void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext,
                                 BOOL clear,
                                 BOOL endUI) {
   CEndCompositionEditSession* pEditSession;
-  HRESULT hr;
-  com_ptr<ITfComposition> pComposition = _pComposition;
+  com_ptr<ITfComposition> pComposition =
+      _IsComposingInContext(pContext) ? _pComposition : nullptr;
 
   if (endUI)
     _cand->EndUI();
   if ((pEditSession = new CEndCompositionEditSession(
            this, pContext, pComposition, clear)) != NULL) {
-    pContext->RequestEditSession(_tfClientId, pEditSession,
-                                 TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
+    HRESULT sessionHr = E_FAIL;
+    const HRESULT requestHr = pContext->RequestEditSession(
+        _tfClientId, pEditSession, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE,
+        &sessionHr);
+    // Once TSF accepts the end request, this composition is committed to
+    // teardown even if the edit session runs later. Release local ownership
+    // now so a response for another ITfContext cannot overwrite it. If the
+    // request itself fails, retain ownership and block the cross-context handoff.
+    if (SUCCEEDED(requestHr) && _IsCurrentComposition(pComposition))
+      _FinalizeComposition();
     pEditSession->Release();
   }
 }
@@ -252,8 +260,10 @@ BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext,
   if (pContext->GetActiveView(&pContextView) != S_OK)
     return FALSE;
   com_ptr<CGetTextExtentEditSession> pEditSession;
+  com_ptr<ITfComposition> pComposition =
+      _IsComposingInContext(pContext) ? _pComposition : nullptr;
   pEditSession.Attach(new CGetTextExtentEditSession(
-      this, pContext, pContextView, _pComposition,
+      this, pContext, pContextView, pComposition,
       _cand->style().enhanced_position, pendingUIGeneration));
   if (pEditSession == NULL) {
     return FALSE;
@@ -396,8 +406,10 @@ BOOL WeaselTSF::_ShowInlinePreedit(
     com_ptr<ITfContext> pContext,
     const std::shared_ptr<weasel::Context> context) {
   com_ptr<CInlinePreeditEditSession> pEditSession;
+  com_ptr<ITfComposition> pComposition =
+      _IsComposingInContext(pContext) ? _pComposition : nullptr;
   pEditSession.Attach(
-      new CInlinePreeditEditSession(this, pContext, _pComposition, context));
+      new CInlinePreeditEditSession(this, pContext, pComposition, context));
   if (pEditSession != NULL) {
     HRESULT hr;
     pContext->RequestEditSession(_tfClientId, pEditSession,
@@ -448,10 +460,9 @@ STDMETHODIMP CInsertTextEditSession::DoEditSession(TfEditCookie ec) {
     return S_OK;
   }
 
-  // No composition yet: the TF_ES_ASYNCDONTCARE start session may not have
-  // run (e.g. Word holds the document lock), and failing here would drop
-  // committed text that Rime has already cleared from its buffer. Insert
-  // directly at the selection instead.
+  // No composition in this response's context. Insert the commit directly at
+  // that context's selection instead of creating an asynchronous throwaway
+  // composition whose matching EndComposition might never capture it.
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
   if (FAILED(_pContext->QueryInterface(IID_ITfInsertAtSelection,
                                        (LPVOID*)&pInsertAtSelection)))
@@ -468,8 +479,10 @@ BOOL WeaselTSF::_InsertText(com_ptr<ITfContext> pContext,
                             const std::wstring& text) {
   CInsertTextEditSession* pEditSession;
   HRESULT hr;
+  com_ptr<ITfComposition> pComposition =
+      _IsComposingInContext(pContext) ? _pComposition : nullptr;
 
-  if ((pEditSession = new CInsertTextEditSession(this, pContext, _pComposition,
+  if ((pEditSession = new CInsertTextEditSession(this, pContext, pComposition,
                                                  text)) != NULL) {
     pContext->RequestEditSession(_tfClientId, pEditSession,
                                  TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
@@ -515,17 +528,49 @@ void WeaselTSF::_ConsumeResponseIfFresh() {
   });
 }
 
+class CApplyResponseEditSession : public CEditSession {
+ public:
+  CApplyResponseEditSession(com_ptr<WeaselTSF> pTextService,
+                            com_ptr<ITfContext> pContext,
+                            weasel::tsf::ResponseApplySnapshot snapshot)
+      : CEditSession(pTextService, pContext),
+        _snapshot(std::move(snapshot)) {}
+
+  STDMETHODIMP DoEditSession(TfEditCookie ec) override {
+    return _pTextService->_ApplyResponseSnapshot(_pContext,
+                                                 std::move(_snapshot));
+  }
+
+ private:
+  weasel::tsf::ResponseApplySnapshot _snapshot;
+};
+
 void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext) {
-  // 应答缓冲会被下一次 Transact（下一键）覆盖，须在回调线程内先解析；
-  // 下面的会话只应用已解析的结果，异步排队不影响数据完整性
+  // Parse while the IPC response buffer still belongs to this key/callback,
+  // then freeze the result into the edit-session object. A later key or a
+  // focus/context switch may replace the TSF's current response members before
+  // this session receives a document lock; it must never observe those values.
   _ConsumeResponseIfFresh();
 
-  HRESULT hr;
-
   _pEditSessionContext = pContext;
+  auto snapshot = weasel::tsf::MakeResponseApplySnapshot(
+      _pendingCommit, _context, _status, _config);
 
-  _pEditSessionContext->RequestEditSession(
-      _tfClientId, this, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hr);
+  com_ptr<CApplyResponseEditSession> pApplySession;
+  pApplySession.Attach(
+      new CApplyResponseEditSession(this, pContext, std::move(snapshot)));
+  if (!pApplySession)
+    return;
+
+  HRESULT sessionHr = E_FAIL;
+  const HRESULT requestHr = pContext->RequestEditSession(
+      _tfClientId, pApplySession, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE,
+      &sessionHr);
+  if (SUCCEEDED(requestHr)) {
+    // This commit now belongs exclusively to the queued immutable snapshot.
+    // If RequestEditSession itself failed, leave it pending for a later retry.
+    _pendingCommit.clear();
+  }
 }
 
 /* Composition State */
@@ -556,7 +601,9 @@ void WeaselTSF::_AbortComposition(bool clear) {
   _InvalidatePendingUI();
   m_client.ClearComposition();
   if (_IsComposing()) {
-    _EndComposition(_pEditSessionContext, clear);
+    com_ptr<ITfContext> compositionContext =
+        _pCompositionContext ? _pCompositionContext : _pEditSessionContext;
+    _EndComposition(compositionContext, clear);
   }
   _committed = TRUE;
   _cand->Destroy();
@@ -564,14 +611,22 @@ void WeaselTSF::_AbortComposition(bool clear) {
 
 void WeaselTSF::_FinalizeComposition() {
   _pComposition = nullptr;
+  _pCompositionContext = nullptr;
 }
 
-void WeaselTSF::_SetComposition(com_ptr<ITfComposition> pComposition) {
+void WeaselTSF::_SetComposition(com_ptr<ITfComposition> pComposition,
+                                com_ptr<ITfContext> pContext) {
   _pComposition = pComposition;
+  _pCompositionContext = pContext;
 }
 
 BOOL WeaselTSF::_IsComposing() {
   return _pComposition != NULL;
+}
+
+BOOL WeaselTSF::_IsComposingInContext(ITfContext* pContext) {
+  return _pComposition != nullptr && _pCompositionContext != nullptr &&
+         _pCompositionContext == pContext;
 }
 
 BOOL WeaselTSF::_IsCurrentComposition(ITfComposition* pComposition) {

@@ -2,65 +2,91 @@
 #include "WeaselTSF.h"
 #include "CandidateList.h"
 
-STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
-  // 应答已在 _UpdateComposition 中解析（_status/_context/_config 及语言栏），
-  // 本会话只把结果应用到文档；commit 取走即清，重复排队的会话天然幂等
-  std::wstring commit = std::move(_pendingCommit);
-  _pendingCommit.clear();
+HRESULT WeaselTSF::_ApplyResponseSnapshot(
+    com_ptr<ITfContext> pContext,
+    weasel::tsf::ResponseApplySnapshot snapshot) {
+  auto context = std::move(snapshot.context);
+  auto status = snapshot.status;
+  auto config = snapshot.config;
+  std::wstring commit = std::move(snapshot.commit);
 
-  bool compositionEnded = false;
+  // A delayed response may finally obtain a write lock after focus moved to a
+  // different ITfContext. Never let a new context overwrite the single tracked
+  // composition while the old context still owns it. Queue the old end first;
+  // _EndComposition drops local ownership as soon as TSF accepts that request.
+  if (_IsComposing() && !_IsComposingInContext(pContext)) {
+    com_ptr<ITfContext> previousContext = _pCompositionContext;
+    if (previousContext)
+      _EndComposition(previousContext, true, !status.composing);
+  }
+
+  const bool blockedByForeignComposition =
+      _IsComposing() && !_IsComposingInContext(pContext);
+  const bool hasComposition = _IsComposingInContext(pContext);
+  const auto plan = weasel::tsf::BuildResponseApplyPlan(
+      hasComposition, !commit.empty(), status.composing);
+
   UINT64 pendingUIGeneration = 0;
-  if (_status.composing) {
-    pendingUIGeneration = _QueuePendingUI(_context, _status);
+  if (status.composing) {
+    pendingUIGeneration = _QueuePendingUI(context, status);
   } else {
     // A non-composing response owns the visible state immediately. Any extent
     // session still queued for the previous composition must become inert.
     _InvalidatePendingUI();
   }
+
   if (!commit.empty()) {
-    // For auto-selecting, commit and preedit can both exist.
-    // Commit the old TSF composition. If Rime immediately has a new
-    // preedit (top-word input), _EndComposition() drops the local pointer
-    // synchronously, so the following state check starts a new TSF
-    // composition instead of observing the old one.
-    if (!_IsComposing()) {
-      // This temporary composition only carries committed text. It does not
-      // own the pending candidate snapshot, so its extent must never flush it.
-      _StartComposition(_pEditSessionContext,
-                        _fCUASWorkaroundEnabled && !_config.inline_preedit, 0);
+    // With no composition in this context, CInsertTextEditSession already has
+    // a direct InsertTextAtSelection fallback. Do not create a temporary
+    // asynchronous composition merely to carry committed text: its matching
+    // EndComposition session could capture nullptr and leave an orphan behind.
+    _InsertText(pContext, commit);
+    if (plan.end_existing_composition) {
+      // Keep the candidate UI alive while a replacement composition is being
+      // created; otherwise the key-down path destroys the old window and the
+      // new one cannot be positioned until key-up.
+      _EndComposition(pContext, false, !status.composing);
     }
-    _InsertText(_pEditSessionContext, commit);
-    // Keep the candidate UI alive while the replacement composition is
-    // being created; otherwise the key-down path destroys the old window
-    // and the new one cannot be positioned until key-up.
-    _EndComposition(_pEditSessionContext, false, !_status.composing);
-    compositionEnded = true;
     _committed = TRUE;
   } else {
     _committed = FALSE;
   }
-  if (_status.composing && (compositionEnded || !_IsComposing())) {
-    _StartComposition(_pEditSessionContext,
-                      _fCUASWorkaroundEnabled && !_config.inline_preedit,
+
+  if (plan.start_composition && !blockedByForeignComposition) {
+    _StartComposition(pContext,
+                      _fCUASWorkaroundEnabled && !config.inline_preedit,
                       pendingUIGeneration);
-  } else if (!_status.composing && _IsComposing()) {
-    _EndComposition(_pEditSessionContext, true);
+  } else if (!status.composing && hasComposition &&
+             !plan.end_existing_composition) {
+    _EndComposition(pContext, true);
   }
-  if (_IsComposing() && _config.inline_preedit) {
-    _ShowInlinePreedit(_pEditSessionContext, _context);
+
+  if (_IsComposingInContext(pContext) && config.inline_preedit) {
+    _ShowInlinePreedit(pContext, context);
   }
 
   // For an existing composition, this response owns exactly one extent token.
   // A replacement composition schedules its extent from the start session once
   // the new range really exists.
-  if (_status.composing && _IsComposing() && !compositionEnded)
-    _UpdateCompositionWindow(_pEditSessionContext, pendingUIGeneration);
+  if (status.composing && _IsComposingInContext(pContext) &&
+      !plan.end_existing_composition)
+    _UpdateCompositionWindow(pContext, pendingUIGeneration);
 
   // Composing responses are published only by their matching extent session.
   // Do not use _IsComposing() here: the asynchronous start session may still
   // be waiting for the host document lock even though this response composes.
-  if (!_status.composing)
-    _UpdateUI(*_context, _status);
+  if (!status.composing)
+    _UpdateUI(*context, status);
 
   return S_OK;
+}
+
+STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
+  // Compatibility fallback for callers that still obtain ITfEditSession from
+  // WeaselTSF directly. Internal response application now uses a dedicated
+  // edit-session object that carries its own context and immutable snapshot.
+  auto snapshot = weasel::tsf::MakeResponseApplySnapshot(
+      std::move(_pendingCommit), _context, _status, _config);
+  _pendingCommit.clear();
+  return _ApplyResponseSnapshot(_pEditSessionContext, std::move(snapshot));
 }

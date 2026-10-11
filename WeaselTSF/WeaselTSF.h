@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Globals.h"
+#include "ResponseApply.h"
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
 #include <ResponseParser.h>
@@ -130,9 +131,14 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _UpdateComposition(com_ptr<ITfContext> pContext);
   bool _ConsumeResponse(LPWSTR buffer, DWORD length);
   void _ConsumeResponseIfFresh();
+  HRESULT _ApplyResponseSnapshot(
+      com_ptr<ITfContext> pContext,
+      weasel::tsf::ResponseApplySnapshot snapshot);
   BOOL _IsComposing();
+  BOOL _IsComposingInContext(ITfContext* pContext);
   BOOL _IsCurrentComposition(ITfComposition* pComposition);
-  void _SetComposition(com_ptr<ITfComposition> pComposition);
+  void _SetComposition(com_ptr<ITfComposition> pComposition,
+                       com_ptr<ITfContext> pContext);
   void _SetCompositionPosition(const RECT& rc, UINT64 pendingUIGeneration = 0);
   BOOL _UpdateCompositionWindow(com_ptr<ITfContext> pContext,
                                 UINT64 pendingUIGeneration = 0);
@@ -276,6 +282,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _fKeyboardDisabledDirty = TRUE;
 
   com_ptr<ITfComposition> _pComposition;
+  com_ptr<ITfContext> _pCompositionContext;
 
   com_ptr<CLangBarItemButton> _pLangBarButton;
 
@@ -298,7 +305,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   DWORD _conversionFlags = 0;
   bool _conversionFlagsValid = false;
 
-  /* 已解析、待编辑会话应用的服务器应答；解析发生在按键/UI 回调线程内
+  /* 已解析、待编辑会话应用的服务器应答；解析发生在按键/UI回调线程内
    * （应答缓冲在下一次 Transact 前有效），会话可能异步排队、晚于解析 */
   std::wstring _pendingCommit;  // commit 是事件流：应用前按序累积
   std::shared_ptr<weasel::Context> _context =
