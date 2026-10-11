@@ -82,7 +82,6 @@ struct WeaselUIUpdate {
 WeaselPanel::WeaselPanel(UI& ui)
     : m_hWnd(nullptr),
       m_ctx(ui.ctx()),
-      m_octx(ui.octx()),
       m_layout(nullptr),
       m_pD2D(nullptr),
       m_status(ui.status()),
@@ -303,9 +302,15 @@ void WeaselPanel::MoveTo(RECT rc) {
 
 void WeaselPanel::_ResizeWindow() {
   CSize& size = m_layout->GetContentSize();
+  if (m_lastWindowWidth == size.cx && m_lastWindowHeight == size.cy &&
+      m_pD2D->swapChain) {
+    return;
+  }
   SetWindowPos(m_hWnd, 0, 0, 0, size.cx, size.cy,
                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOREDRAW);
   m_pD2D->OnResize(size.cx, size.cy);
+  m_lastWindowWidth = size.cx;
+  m_lastWindowHeight = size.cy;
 }
 
 void WeaselPanel::_CreateLayout() {
@@ -637,7 +642,7 @@ void WeaselPanel::_DoPaint() {
               : (m_status.type == SCHEMA
                      ? m_iconEnabled
                      : (m_status.full_shape ? m_iconFull : m_iconHalf));
-      HRESULT hrIcon = m_pD2D->GetBmpFromIcon(ico, pBitmap);
+      HRESULT hrIcon = m_pD2D->GetCachedBmpFromIcon(ico, pBitmap);
       // Draw the bitmap
       if (SUCCEEDED(hrIcon) && pBitmap) {
         auto iconRect = m_layout->GetStatusIconRect();

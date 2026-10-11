@@ -134,6 +134,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _SetComposition(com_ptr<ITfComposition> pComposition);
   void _SetCompositionPosition(const RECT& rc);
   BOOL _UpdateCompositionWindow(com_ptr<ITfContext> pContext);
+  // Publish UI data after the composition position has been updated.
+  void _FlushPendingUI();
   void _FinalizeComposition();
   void _AbortComposition(bool clear = true);
 
@@ -304,4 +306,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   TfGuidAtom _gaDisplayAttributeInput = 0;
   BOOL _committed = false;
   BOOL _isToOpenClose = false;
+  std::shared_ptr<weasel::Context> _pendingUIContext;
+  weasel::Status _pendingUIStatus;
+  bool _hasPendingUI = false;
 };

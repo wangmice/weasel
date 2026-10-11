@@ -9,6 +9,11 @@ STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
   _pendingCommit.clear();
 
   bool compositionEnded = false;
+  if (_status.composing) {
+    _pendingUIContext = _context;
+    _pendingUIStatus = _status;
+    _hasPendingUI = true;
+  }
   if (!commit.empty()) {
     // For auto-selecting, commit and preedit can both exist.
     // Commit the old TSF composition. If Rime immediately has a new
@@ -39,13 +44,17 @@ STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
     _ShowInlinePreedit(_pEditSessionContext, _context);
   }
 
-  if (!compositionEnded)
+  // For a normal update, position the panel before publishing new candidates.
+  // After a commit, the replacement composition's extent session flushes the
+  // pending UI from _SetCompositionPosition().
+  if (_IsComposing() && !compositionEnded)
     _UpdateCompositionWindow(_pEditSessionContext);
-  // Keep the existing candidate window alive during top-word input, but
-  // publish the new candidates in this key-down edit session. Positioning is
-  // still updated by the queued read session after the new composition is
-  // created.
-  _UpdateUI(*_context, _status);
+
+  // Wait for the current composition's real text extent before painting new
+  // candidates. This avoids one frame at the previous caret position.
+  if (!(_status.composing && _IsComposing())) {
+    _UpdateUI(*_context, _status);
+  }
 
   return S_OK;
 }

@@ -55,7 +55,15 @@ struct Text {
     }
     return true;
   }
-  bool operator!=(const Text& txt) const { return !(*this == txt); }
+  bool operator!=(const Text& txt) const {
+    if (str != txt.str || (attributes.size() != txt.attributes.size()))
+      return true;
+    for (size_t i = 0; i < attributes.size(); i++) {
+      if ((attributes[i] != txt.attributes[i]))
+        return true;
+    }
+    return false;
+  }
   std::wstring str;
   std::vector<TextAttribute> attributes;
 };
@@ -77,7 +85,7 @@ struct CandidateInfo {
     labels.clear();
   }
   bool empty() const { return candies.empty(); }
-  bool operator==(const CandidateInfo& ci) {
+  bool operator==(const CandidateInfo& ci) const {
     if (currentPage != ci.currentPage || totalPages != ci.totalPages ||
         highlighted != ci.highlighted || is_last_page != ci.is_last_page ||
         notequal(candies, ci.candies) || notequal(comments, ci.comments) ||
@@ -85,7 +93,7 @@ struct CandidateInfo {
       return false;
     return true;
   }
-  bool operator!=(const CandidateInfo& ci) {
+  bool operator!=(const CandidateInfo& ci) const {
     if (currentPage != ci.currentPage || totalPages != ci.totalPages ||
         highlighted != ci.highlighted || is_last_page != ci.is_last_page ||
         notequal(candies, ci.candies) || notequal(comments, ci.comments) ||
@@ -93,8 +101,6 @@ struct CandidateInfo {
       return true;
     return false;
   }
-  // 常量引用传参：每次击键的去重比较会触发多次 notequal，
-  // 按值传参将带来整份 vector<Text> 深拷贝
   bool notequal(const std::vector<Text>& txtSrc,
                 const std::vector<Text>& txtDst) const {
     if (txtSrc.size() != txtDst.size())
@@ -122,14 +128,14 @@ struct Context {
     cinfo.clear();
   }
   bool empty() const { return preedit.empty() && aux.empty() && cinfo.empty(); }
-  bool operator==(const Context& ctx) {
+  bool operator==(const Context& ctx) const {
     if (preedit == ctx.preedit && aux == ctx.aux && cinfo == ctx.cinfo)
       return true;
     return false;
   }
-  bool operator!=(const Context& ctx) { return !(operator==(ctx)); }
+  bool operator!=(const Context& ctx) const { return !(operator==(ctx)); }
 
-  bool operator!() {
+  bool operator!() const {
     if (preedit.str.empty() && aux.str.empty() && cinfo.candies.empty() &&
         cinfo.labels.empty() && cinfo.comments.empty())
       return true;

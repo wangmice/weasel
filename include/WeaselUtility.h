@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <atomic>
 #include <filesystem>
 #include <string>
 #include <sstream>
@@ -68,7 +69,6 @@ inline std::wstring string_to_wstring(const std::string& str,
   // support CP_ACP and CP_UTF8 only
   if (code_page != 0 && code_page != CP_UTF8)
     return L"";
-  // calc len
   int len =
       MultiByteToWideChar(code_page, 0, str.c_str(), (int)str.size(), NULL, 0);
   if (len <= 0)
@@ -84,7 +84,6 @@ inline std::wstring string_to_wstring(const std::string& str,
 
 inline std::string wstring_to_string(const std::wstring& wstr,
                                      int code_page = CP_ACP) {
-  // support CP_ACP and CP_UTF8 only
   if (code_page != 0 && code_page != CP_UTF8)
     return "";
   int len = WideCharToMultiByte(code_page, 0, wstr.c_str(), (int)wstr.size(),
@@ -182,7 +181,7 @@ inline std::basic_string<CharT> unescape_string(
         res.push_back(Esc::linefeed);
       } else if (*p == Esc::tab_escape) {
         res.push_back(Esc::tab);
-      } else {  // \a => a
+      } else {
         res.push_back(*p);
       }
     } else {
@@ -192,33 +191,26 @@ inline std::basic_string<CharT> unescape_string(
   return res;
 }
 
-// resource
 std::string GetCustomResource(const char* name, const char* type);
 
-// ---- 候选 label 格式化（label_text_format）----
-// 格式串可来自用户 yaml（style/label_format），却始终只以单个字符串参数
-// 执行格式化：除 %s / %% 外的说明符（%d、%n、尾部孤立 %…）以及第二个 %s
-// 都与实参不匹配，属未定义行为，一律回退默认格式 %s.（UIStyle 的默认值）
 inline bool IsSafeLabelTextFormat(const wchar_t* format) {
   bool has_conversion = false;
   for (const wchar_t* p = format; *p != L'\0'; ++p) {
     if (*p != L'%')
       continue;
-    const wchar_t next = p[1];  // 尾部孤立 % 时为 L'\0'，同样判非法
+    const wchar_t next = p[1];
     if (next == L's') {
       if (has_conversion)
-        return false;  // 多个 %s：第二个起没有对应实参
+        return false;
       has_conversion = true;
     } else if (next != L'%') {
       return false;
     }
-    ++p;  // 跳过说明符的第二个字符（%% 时跳过被转义的 %）
+    ++p;
   }
   return true;
 }
 
-// 有界格式化：结果超长按 127 个 wchar 截断（_TRUNCATE 截断返回 -1，不触发
-// CRT invalid-parameter 终止；swprintf_s 会直接终止进程），格式非法回退 %s.
 inline std::wstring FormatLabelText(const wchar_t* format,
                                     const std::wstring& label) {
   if (!format)
@@ -229,7 +221,6 @@ inline std::wstring FormatLabelText(const wchar_t* format,
   return std::wstring(buffer);
 }
 
-// ---- 候选词缩写的代理对安全截断 ----
 inline bool IsUtf16HighSurrogate(wchar_t ch) {
   return ch >= 0xD800 && ch <= 0xDBFF;
 }
@@ -237,16 +228,13 @@ inline bool IsUtf16LowSurrogate(wchar_t ch) {
   return ch >= 0xDC00 && ch <= 0xDFFF;
 }
 
-// 超过 max_length（wchar 计）时缩写为首部 + "..." + 末码点。截断点落在
-// 代理对中间时退一个 wchar、末尾连同其高代理一起取，保证不产生孤立代理
-// （emoji 等增补平面字符被切成半个会渲染成 U+FFFD）
 inline std::wstring AbbreviateText(const std::wstring& str, size_t max_length) {
   if (max_length == 0 || str.length() <= max_length)
     return str;
   size_t cut = max_length - 1;
   if (cut > 0 && IsUtf16HighSurrogate(str[cut - 1]) &&
       IsUtf16LowSurrogate(str[cut]))
-    --cut;  // 不把高代理与其低代理分开
+    --cut;
   const std::wstring tail =
       IsUtf16LowSurrogate(str.back()) ? str.substr(str.length() - 2)
                                       : str.substr(str.length() - 1);
@@ -272,7 +260,7 @@ inline LONG RegGetStringValue(HKEY key,
                               LPCWSTR lpValue,
                               std::wstring& value) {
   TCHAR szValue[MAX_PATH];
-  DWORD dwBufLen = sizeof(szValue);  // RegGetValue expects bytes, not characters
+  DWORD dwBufLen = sizeof(szValue);
 
   LONG lRes = RegGetValue(key, lpSubKey, lpValue, RRF_RT_REG_SZ, NULL, szValue,
                           &dwBufLen);
@@ -313,29 +301,74 @@ inline LANGID get_language_id() {
 #define acptow(x) string_to_wstring(x, CP_ACP)
 #define u8toacp(x) wtoacp(u8tow(x))
 
+inline std::atomic<int>& WeaselLogLevelStorage() {
+  static std::atomic<int> level{0};
+  return level;
+}
+
+inline int GetWeaselLogLevel() {
+  return WeaselLogLevelStorage().load(std::memory_order_relaxed);
+}
+
+inline void SetWeaselLogLevel(int level) {
+  WeaselLogLevelStorage().store(level < 0 ? 0 : level,
+                                std::memory_order_relaxed);
+}
+
+inline void LoadWeaselLogLevelFromRegistry() {
+  constexpr const LPCWSTR key = L"Software\\Rime\\Weasel";
+  constexpr const LPCWSTR value = L"LogLevel";
+  DWORD type = 0;
+  DWORD data = 0;
+  DWORD size = sizeof(data);
+  const LSTATUS status = RegGetValue(HKEY_CURRENT_USER, key, value,
+                                     RRF_RT_REG_DWORD, &type, &data, &size);
+  if (status == ERROR_SUCCESS && type == REG_DWORD)
+    SetWeaselLogLevel(static_cast<int>(data));
+  else
+    SetWeaselLogLevel(0);
+}
+
+inline bool IsWeaselLogEnabled() {
+  return GetWeaselLogLevel() > 0;
+}
+
+inline std::string current_time();
+
 class DebugStream {
  public:
-  DebugStream() = default;
-  ~DebugStream() { OutputDebugString(ss.str().c_str()); }
+  DebugStream() : enabled_(IsWeaselLogEnabled()) {}
+  DebugStream(const char* file, int line) : enabled_(IsWeaselLogEnabled()) {
+    if (enabled_)
+      *this << "[" << current_time() << " " << file << ":" << line << "] ";
+  }
+  ~DebugStream() {
+    if (enabled_)
+      OutputDebugString(ss.str().c_str());
+  }
   template <typename T>
   DebugStream& operator<<(const T& value) {
-    ss << value;
+    if (enabled_)
+      ss << value;
     return *this;
   }
   DebugStream& operator<<(const char* value) {
-    if (value) {
-      std::wstring wvalue(u8tow(value));  // utf-8
+    if (enabled_ && value) {
+      std::wstring wvalue(u8tow(value));
       ss << wvalue;
     }
     return *this;
   }
   DebugStream& operator<<(const std::string& value) {
-    std::wstring wvalue(u8tow(value));  // utf-8, same as const char*
+    if (!enabled_)
+      return *this;
+    std::wstring wvalue(u8tow(value));
     ss << wvalue;
     return *this;
   }
 
  private:
+  bool enabled_;
   std::wstringstream ss;
 };
 inline std::string current_time() {
@@ -351,9 +384,7 @@ inline std::string current_time() {
   return oss.str();
 }
 
-#define DEBUG                                                       \
-  (DebugStream() << "[" << current_time() << " " << __FILE__ << ":" \
-                 << __LINE__ << "] ")
+#define DEBUG DebugStream(__FILE__, __LINE__)
 
 using wstring = std::wstring;
 using string = std::string;
@@ -380,7 +411,6 @@ struct ComException {
 #define HR(result) HR_Impl(result, __FILE__, __LINE__)
 
 inline void HR_Impl(HRESULT const result, const char* file, int line) {
-  // 仅对失败码抛出：S_FALSE 等"成功但非 S_OK"的返回值不是错误
   if (FAILED(result)) {
     DebugStream() << "[" << current_time() << " " << file << ":" << line << "] "
                   << HRESULTToString(result);

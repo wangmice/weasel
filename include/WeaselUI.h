@@ -47,7 +47,6 @@ class UI {
   void Update(Context const& ctx, Status const& status);
   void SetStyle(UIStyle const& style);
   Context& ctx() { return ctx_; }
-  Context& octx() { return octx_; }
   Status& status() { return status_; }
   UIStyle& style() { return style_; }
   UIStyle& ostyle() { return ostyle_; }
@@ -62,7 +61,6 @@ class UI {
  private:
   the<UIImpl> pimpl_;
   Context ctx_;
-  Context octx_;
   Status status_;
   UIStyle style_;
   UIStyle ostyle_;
