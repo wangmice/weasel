@@ -3,6 +3,7 @@
 #include "EditSession.h"
 #include "ResponseParser.h"
 #include "CandidateList.h"
+#include "AsyncUiPolicy.h"
 
 /* Start Composition */
 class CStartCompositionEditSession : public CEditSession {
@@ -57,7 +58,23 @@ STDMETHODIMP CStartCompositionEditSession::DoEditSession(TfEditCookie ec) {
   if ((pContextComposition->StartComposition(
            ec, pRangeComposition, _pTextService, &pComposition) == S_OK) &&
       (pComposition != NULL)) {
+    // StartComposition can re-enter TSF code. If a newer response invalidated
+    // this generation while the host was creating the composition, discard the
+    // unowned composition before it can start a stale UI lifetime.
+    const bool generationCurrent =
+        _pendingUIGeneration == 0 ||
+        _pTextService->_IsPendingUIGenerationCurrent(_pendingUIGeneration);
+    if (!generationCurrent) {
+      pComposition->EndComposition(ec);
+      return S_OK;
+    }
+
     _pTextService->_SetComposition(pComposition, _pContext);
+
+    if (_pendingUIGeneration == 0 ||
+        weasel::tsf::ShouldBeginCandidateUI(true, generationCurrent)) {
+      _pTextService->_StartUI();
+    }
 
     /* set selection */
     TF_SELECTION tfSelection;
@@ -85,7 +102,6 @@ void WeaselTSF::_StartComposition(com_ptr<ITfContext> pContext,
   com_ptr<CStartCompositionEditSession> pStartCompositionEditSession;
   pStartCompositionEditSession.Attach(new CStartCompositionEditSession(
       this, pContext, fCUASWorkaroundEnabled, pendingUIGeneration));
-  _cand->StartUI();
   if (pStartCompositionEditSession != nullptr) {
     HRESULT hr;
     pContext->RequestEditSession(_tfClientId, pStartCompositionEditSession,
@@ -256,6 +272,13 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
 /* Composition Window Handling */
 BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext,
                                          UINT64 pendingUIGeneration) {
+  // Position-only refreshes (for example OnLayoutChange after the candidate
+  // snapshot was already painted) still belong to the active response. Bind a
+  // default/zero request to that generation instead of letting it bypass the
+  // stale-generation guard.
+  if (pendingUIGeneration == 0 && _IsComposingInContext(pContext))
+    pendingUIGeneration = _pendingUIGeneration;
+
   com_ptr<ITfContextView> pContextView;
   if (pContext->GetActiveView(&pContextView) != S_OK)
     return FALSE;
@@ -313,21 +336,34 @@ UINT64 WeaselTSF::_QueuePendingUI(
 }
 
 void WeaselTSF::_InvalidatePendingUI() {
+  // Invalidate not only the not-yet-painted snapshot, but every asynchronous
+  // inline-preedit/extent operation owned by the current response generation.
+  ++_pendingUIGeneration;
+  if (_pendingUIGeneration == 0)
+    ++_pendingUIGeneration;
   _pendingUIContext.reset();
   _hasPendingUI = false;
 }
 
 bool WeaselTSF::_IsPendingUIGenerationCurrent(UINT64 generation) const {
-  return generation != 0 && _hasPendingUI &&
-         generation == _pendingUIGeneration && _pendingUIContext != nullptr;
+  // A generation remains current after its candidate snapshot is consumed;
+  // layout and inline-preedit edit sessions may still be queued. Retaining the
+  // shared context marks that this numeric generation is active; teardown
+  // resets it even though the serial itself advances.
+  return generation != 0 && generation == _pendingUIGeneration &&
+         _pendingUIContext != nullptr;
 }
 
 bool WeaselTSF::_TakePendingUI(UINT64 generation,
                                std::shared_ptr<weasel::Context>& context,
                                weasel::Status& status) {
-  if (!_IsPendingUIGenerationCurrent(generation))
+  if (!_IsPendingUIGenerationCurrent(generation) || !_hasPendingUI)
     return false;
-  context = std::move(_pendingUIContext);
+  // Keep one shared_ptr as the active-generation marker after painting. The
+  // next response replaces it; teardown resets it. This lets delayed layout
+  // and inline-preedit sessions remain valid without keeping the snapshot
+  // pending for a second paint.
+  context = _pendingUIContext;
   status = _pendingUIStatus;
   _hasPendingUI = false;
   return context != nullptr;
@@ -347,10 +383,12 @@ class CInlinePreeditEditSession : public CEditSession {
   CInlinePreeditEditSession(com_ptr<WeaselTSF> pTextService,
                             com_ptr<ITfContext> pContext,
                             com_ptr<ITfComposition> pComposition,
-                            const std::shared_ptr<weasel::Context> context)
+                            const std::shared_ptr<weasel::Context> context,
+                            UINT64 pendingUIGeneration)
       : CEditSession(pTextService, pContext),
         _pComposition(pComposition),
-        _context(context) {}
+        _context(context),
+        _pendingUIGeneration(pendingUIGeneration) {}
 
   /* ITfEditSession */
   STDMETHODIMP DoEditSession(TfEditCookie ec);
@@ -358,14 +396,24 @@ class CInlinePreeditEditSession : public CEditSession {
  private:
   com_ptr<ITfComposition> _pComposition;
   const std::shared_ptr<weasel::Context> _context;
+  UINT64 _pendingUIGeneration;
 };
 
 STDMETHODIMP CInlinePreeditEditSession::DoEditSession(TfEditCookie ec) {
+  // Inline preedit is document state, not just paint state. Reject a delayed
+  // session once either its response generation or composition ownership is no
+  // longer current.
+  if (_pComposition == nullptr ||
+      !_pTextService->_IsCurrentComposition(_pComposition) ||
+      !_pTextService->_IsComposingInContext(_pContext))
+    return S_OK;
+  if (_pendingUIGeneration != 0 &&
+      !_pTextService->_IsPendingUIGenerationCurrent(_pendingUIGeneration))
+    return S_OK;
+
   std::wstring preedit = _context->preedit.str;
 
   com_ptr<ITfRange> pRangeComposition;
-  if (_pComposition == nullptr)
-    return E_FAIL;
   if ((_pComposition->GetRange(&pRangeComposition)) != S_OK)
     return E_FAIL;
 
@@ -408,8 +456,9 @@ BOOL WeaselTSF::_ShowInlinePreedit(
   com_ptr<CInlinePreeditEditSession> pEditSession;
   com_ptr<ITfComposition> pComposition =
       _IsComposingInContext(pContext) ? _pComposition : nullptr;
-  pEditSession.Attach(
-      new CInlinePreeditEditSession(this, pContext, pComposition, context));
+  const UINT64 pendingUIGeneration = _pendingUIGeneration;
+  pEditSession.Attach(new CInlinePreeditEditSession(
+      this, pContext, pComposition, context, pendingUIGeneration));
   if (pEditSession != NULL) {
     HRESULT hr;
     pContext->RequestEditSession(_tfClientId, pEditSession,

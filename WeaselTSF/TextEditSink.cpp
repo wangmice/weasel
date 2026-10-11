@@ -68,9 +68,10 @@ STDMETHODIMP WeaselTSF::OnLayoutChange(ITfContext* pContext,
     return S_OK;
 
   if (lcode == TF_LC_CHANGE) {
-    const UINT64 pendingUIGeneration =
-        _hasPendingUI ? _pendingUIGeneration : 0;
-    _UpdateCompositionWindow(pContext, pendingUIGeneration);
+    // Layout notifications can arrive after the candidate snapshot has already
+    // been consumed. Keep them bound to the response generation instead of
+    // downgrading to generation 0 and bypassing stale-position protection.
+    _UpdateCompositionWindow(pContext, _pendingUIGeneration);
   }
   return S_OK;
 }
