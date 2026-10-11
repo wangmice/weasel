@@ -125,7 +125,8 @@ struct D2D {
                      DWRITE_FONT_STYLE& fontStyle,
                      DWRITE_FONT_STRETCH& fontStretch);
   HRESULT GetBmpFromIcon(HICON hIcon, ComPtr<ID2D1Bitmap1>& pBitmap);
-  HRESULT GetCachedBmpFromIcon(HICON hIcon, ComPtr<ID2D1Bitmap1>& pBitmap);
+  HRESULT GetIconFromFile(const wstring& iconPath,
+                          ComPtr<ID2D1Bitmap1>& pD2DBitmap);
 
   HRESULT CreateRoundedRectanglePath(const RECT& rc,
                                      float radius,
@@ -158,8 +159,6 @@ struct D2D {
   PtTextFormat pCommentFormat;
   ComPtr<IDWriteFactory2> m_pWriteFactory;
   ComPtr<ID2D1SolidColorBrush> m_pBrush;
-  HICON cachedIcon = nullptr;
-  ComPtr<ID2D1Bitmap1> cachedIconBitmap;
   struct CachedTextFormat {
     PtTextFormat format;
     uint64_t last_used;
@@ -171,9 +170,7 @@ struct D2D {
   std::mutex cacheMutex;
   // clear caches that depend on device/context
   void ClearDeviceDependentCaches();
-  // release per-window resources (swapchain/visual/bitmap/dc) without touching
-  // shared devices if keepResourcesOnHide is true, ReleaseWindowResources will
-  // be a no-op
+  // Release per-window resources without invalidating shared devices.
   void ReleaseWindowResources();
   UIStyle& m_style;
   HWND m_hWnd;

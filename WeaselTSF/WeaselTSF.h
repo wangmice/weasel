@@ -3,6 +3,7 @@
 #include "Globals.h"
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
+#include <ResponseParser.h>
 
 class CCandidateList;
 class CLangBarItemButton;
@@ -106,6 +107,14 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _IsKeyboardDisabled();
   BOOL _IsKeyboardOpen();
   HRESULT _SetKeyboardOpen(BOOL fOpen);
+  // 在 OnChange 通知内对同一 compartment 的 SetValue 会被 TSF 以
+  // E_UNEXPECTED 拒绝（MSDN《ITfCompartment::SetValue》），强制重开须延迟
+  // 到通知返回之后：_RequestKeyboardOpenDeferred 借异步编辑会话做延迟
+  // 载体，会话内执行 _ApplyDeferredKeyboardOpen。自写同步触发的下一次
+  // OnChange 由 _fSuppressOpenCloseSelfWrite 跳过，避免 ascii_mode 被
+  // 强制重开翻转回去
+  void _RequestKeyboardOpenDeferred();
+  void _ApplyDeferredKeyboardOpen();
   HRESULT _GetCompartmentDWORD(DWORD& value, const GUID guid);
   HRESULT _SetCompartmentDWORD(const DWORD& value, const GUID guid);
 
@@ -118,13 +127,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _ShowInlinePreedit(com_ptr<ITfContext> pContext,
                           const std::shared_ptr<weasel::Context> context);
   void _UpdateComposition(com_ptr<ITfContext> pContext);
+  bool _ConsumeResponse(LPWSTR buffer, DWORD length);
+  void _ConsumeResponseIfFresh();
   BOOL _IsComposing();
   BOOL _IsCurrentComposition(ITfComposition* pComposition);
   void _SetComposition(com_ptr<ITfComposition> pComposition);
   void _SetCompositionPosition(const RECT& rc);
   BOOL _UpdateCompositionWindow(com_ptr<ITfContext> pContext);
-  // Publish UI data after the composition position has been updated.
-  void _FlushPendingUI();
   void _FinalizeComposition();
   void _AbortComposition(bool clear = true);
 
@@ -145,7 +154,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   /* Display Attribute */
   void _ClearCompositionDisplayAttributes(TfEditCookie ec,
-                                          _In_ ITfContext* pContext);
+                                          _In_ ITfContext* pContext,
+                                          _In_opt_ ITfComposition* pComposition);
   BOOL _SetCompositionDisplayAttributes(TfEditCookie ec,
                                         _In_ ITfContext* pContext,
                                         ITfRange* pRangeComposition);
@@ -175,6 +185,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _InitKeyEventSink();
   void _UninitKeyEventSink();
   void _ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten);
+  bool _ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent);
 
   BOOL _InitPreservedKey();
   void _UninitPreservedKey();
@@ -193,8 +204,23 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _UninitCompartment();
   HRESULT _HandleCompartment(REFGUID guidCompartment);
 
+  // K21：ToggleImeOnOpenClose 注册表值仅 WeaselSetup 写入，按 TTL 限频
+  // 重读，免去每次线程焦点切换的注册表访问
+  void _RefreshToggleImeOnOpenClose();
+  ULONGLONG _toggleImeReadTick = 0;
+
+  // K23c：_IsKeyboardDisabled 的禁用态缓存。KEYBOARD_DISABLED/
+  // EMPTYCONTEXT 是 context 级 compartment，sink 挂在焦点 top context
+  // 上，值变化置脏；context 变化（含 push/pop 改变 GetTop）时按身份
+  // 比对重挂。advise 失败则不缓存，退回逐键查询
+  HRESULT _OnKeyboardDisabledCompartmentChange(REFGUID guidCompartment);
+  void _RetargetKeyboardDisabledSinks(com_ptr<ITfContext> pContext);
+
   void _Reconnect();
   std::wstring _GetRootDir();
+  // consecutive failed reconnect attempts (per instance, was a shared
+  // file-static raced across threads and TIP instances)
+  unsigned int _reconnectRetry = 0;
 
   bool isImmersive() const {
     return (_activateFlags & TF_TMF_IMMERSIVEMODE) != 0;
@@ -207,13 +233,36 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   com_ptr<ITfContext> _pTextEditSinkContext;
   DWORD _dwTextEditSinkCookie, _dwTextLayoutSinkCookie;
   BYTE _lpbKeyState[256];
-  BOOL _fTestKeyDownPending, _fTestKeyUpPending;
+  // OnTestKeyDown/OnTestKeyUp 去重状态：pending 表示该键已送服务器、等待配对
+  // 的 OnKeyDown/OnKeyUp。键身份只记虚键码：配对回调间 lParam 无契约保证
+  // （CUAS/IMM32 兼容桥下 Test 与 Key 的 repeat count/previous state 等位可
+  // 不同，如 Qt 应用），且虚键码已是本组件消费的全部键身份；不同键到来即开
+  // 新周期，吞掉配对回调的残留 pending 不会吞掉后续键
+  struct PendingTestKey {
+    BOOL pending = FALSE;
+    UINT vkey = 0;
+  } _testKeyDownPending, _testKeyUpPending;
+  // Caps Lock 模拟的跨按键状态。键事件 sink 按 thread manager 各持一份，
+  // 实例化即按线程隔离（原文件级 static 被同进程多实例/多线程共享）
+  weasel::KeyEvent _prevKeyEvent;
+  BOOL _prevfEaten = FALSE;
+  int _keyCountToSimulate = 0;
 
   com_ptr<ITfContext> _pEditSessionContext;
-  std::wstring _editSessionText;
 
   com_ptr<CCompartmentEventSink> _pKeyboardCompartmentSink;
   com_ptr<CCompartmentEventSink> _pConvertionCompartmentSink;
+
+  // 自写 OPENCLOSE 的抑制标志：_ApplyDeferredKeyboardOpen 置位期间，
+  // _HandleCompartment 跳过该次自写触发的通知（见 Compartments 注释）
+  BOOL _fSuppressOpenCloseSelfWrite = FALSE;
+
+  // 禁用态缓存（K23c）：_pDisabledCacheContext 为空表示不缓存
+  com_ptr<CCompartmentEventSink> _pKeyboardDisabledSink;
+  com_ptr<CCompartmentEventSink> _pEmptyContextSink;
+  com_ptr<ITfContext> _pDisabledCacheContext;
+  BOOL _fKeyboardDisabled = FALSE;
+  BOOL _fKeyboardDisabledDirty = TRUE;
 
   com_ptr<ITfComposition> _pComposition;
 
@@ -233,12 +282,26 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   /* IME status */
   weasel::Status _status;
 
-  // guidatom for the display attibute.
-  TfGuidAtom _gaDisplayAttributeInput;
-  BOOL _async_edit = false;
+  // 上次成功写入 INPUTMODE_CONVERSION compartment 的值；稳态（连续击键
+  // 状态不变）据此跳过 SetValue。Deactivate 时失效
+  DWORD _conversionFlags = 0;
+  bool _conversionFlagsValid = false;
+
+  /* 已解析、待编辑会话应用的服务器应答；解析发生在按键/UI 回调线程内
+   * （应答缓冲在下一次 Transact 前有效），会话可能异步排队、晚于解析 */
+  std::wstring _pendingCommit;  // commit 是事件流：应用前按序累积
+  std::shared_ptr<weasel::Context> _context =
+      std::make_shared<weasel::Context>();
+  weasel::Config _config;
+  UINT64 _parsedSerial = 0;
+  // 复用的响应解析器：deserializer 注册表只建一次（Require 幂等），
+  // 每次解析前重指目标；目标指针仅在 _ConsumeResponse 执行期间有效
+  weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr,
+                                 nullptr};
+
+  // guidatom for the display attibute. 0 = RegisterGUID failed or not yet
+  // run; guards the SetValue in _SetCompositionDisplayAttributes.
+  TfGuidAtom _gaDisplayAttributeInput = 0;
   BOOL _committed = false;
   BOOL _isToOpenClose = false;
-  std::shared_ptr<weasel::Context> _pendingUIContext;
-  weasel::Status _pendingUIStatus;
-  bool _hasPendingUI = false;
 };

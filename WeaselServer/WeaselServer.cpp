@@ -4,7 +4,7 @@
 
 #include "stdafx.h"
 #include "resource.h"
-#include "WeaselService.h"
+#include "WeaselServerApp.h"
 #include <WeaselIPC.h>
 #include <WeaselUI.h>
 #include <RimeWithWeasel.h>
@@ -22,7 +22,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
                      HINSTANCE /*hPrevInstance*/,
                      LPTSTR lpstrCmdLine,
                      int nCmdShow) {
-  LoadWeaselLogLevelFromRegistry();
   LANGID langId = get_language_id();
   SetThreadUILanguage(langId);
   SetThreadLocale(langId);
@@ -39,10 +38,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   // 防止服务进程开启输入法
   ImmDisableIME(-1);
 
-  WCHAR user_name[20] = {0};
-  DWORD size = _countof(user_name);
-  GetUserName(user_name, &size);
-  if (!_wcsicmp(user_name, L"SYSTEM")) {
+  // 拒绝在 SYSTEM 账户下运行；getUsername 动态长度且失败返回空串，
+  // 超长用户名不再因固定缓冲读取失败而被静默放行
+  if (!_wcsicmp(getUsername().c_str(), L"SYSTEM")) {
     return 1;
   }
 
@@ -116,20 +114,11 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
 
   int nRet = 0;
   try {
-    LOG(INFO) << "constructing WeaselServerApp";
     WeaselServerApp app;
     RegisterApplicationRestart(NULL, 0);
-    LOG(INFO) << "starting WeaselServerApp";
     nRet = app.Run();
-    LOG(INFO) << "WeaselServerApp::Run returned: " << nRet;
-  } catch (DWORD error) {
-    LOG(ERROR) << "WeaselServer failed with Win32 error: " << error;
-    nRet = -1;
-  } catch (const std::exception& ex) {
-    LOG(ERROR) << "WeaselServer failed with exception: " << ex.what();
-    nRet = -1;
   } catch (...) {
-    LOG(ERROR) << "WeaselServer failed with unknown exception";
+    // bad luck...
     nRet = -1;
   }
 
