@@ -185,6 +185,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _InitKeyEventSink();
   void _UninitKeyEventSink();
   void _ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten);
+  bool _ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent);
 
   BOOL _InitPreservedKey();
   void _UninitPreservedKey();

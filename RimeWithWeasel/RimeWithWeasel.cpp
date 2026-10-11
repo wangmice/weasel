@@ -279,8 +279,19 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
                                             EatLine eat) {
   DLOG(INFO) << "Process key event: keycode = " << keyEvent.keycode
              << ", mask = " << keyEvent.mask << ", ipc_id = " << ipc_id;
-  if (m_disabled)
+
+  // Maintenance can clear server sessions while the named pipe stays alive.
+  // Reject a stale key before it reaches librime. The scalar reply remains
+  // FALSE for compatibility; new clients inspect the response field below.
+  if (m_disabled || !find_session_status(ipc_id)) {
+    if (eat) {
+      std::wstring response = L"action=noop\n";
+      response.append(kInvalidSessionResponseField).append(L"\n.\n");
+      eat(response);
+    }
     return FALSE;
+  }
+
   RimeSessionId session_id = to_session_id(ipc_id);
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));

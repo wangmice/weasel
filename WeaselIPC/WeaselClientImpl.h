@@ -19,6 +19,7 @@ class ClientImpl {
   void StartMaintenance();
   void EndMaintenance();
   bool Echo();
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   bool CommitComposition();
   bool ClearComposition();

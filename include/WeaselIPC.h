@@ -40,6 +40,19 @@ enum WEASEL_IPC_COMMAND {
 #define WM_WEASEL_SERVICE_NOTIFY (WEASEL_IPC_LAST_COMMAND + 200)
 
 namespace weasel {
+// Typed key result for callers that need to distinguish a normal unhandled
+// key from session invalidation and an ambiguous transport failure.
+enum class KeyEventResult {
+  Handled,
+  Unhandled,
+  InvalidSession,
+  TransportError,
+};
+
+// Kept in the response body instead of the scalar DWORD result so an older
+// client still sees FALSE and releases the key rather than swallowing it.
+constexpr wchar_t kInvalidSessionResponseField[] = L"session.invalid=1";
+
 struct PipeMessage {
   WEASEL_IPC_COMMAND Msg;
   DWORD wParam;
@@ -125,6 +138,8 @@ class Client {
   bool Echo();
   // 会话已建立在活连接上（失败后为 false，直到重新建立会话）
   bool IsSessionActive();
+  // 保留未吃键、失效会话与传输失败之间的区别；TSF 用它决定是否可安全重试
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
   // 请求服务处理按键消息
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   // 上屏正在編輯的文字

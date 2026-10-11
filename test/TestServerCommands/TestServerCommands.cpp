@@ -87,6 +87,10 @@ class SessionHandler : public weasel::RequestHandler {
   BOOL ProcessKeyEvent(weasel::KeyEvent key, DWORD id, EatLine eat) override {
     if (!sessions.count(id)) {
       ++invalid_keys;
+      std::wstring response = L"action=noop\n";
+      response.append(weasel::kInvalidSessionResponseField).append(L"\n.\n");
+      if (eat)
+        eat(response);
       return FALSE;
     }
     ++accepted_keys;
@@ -189,9 +193,18 @@ static void test_maintenance_session_recovery() {
   std::wstring pipe_name = weasel::GetPipeName() + L"_SessionRecoveryTest_" +
                            std::to_wstring(GetCurrentProcessId());
   TestChannelAccess::SetName(*server.channel, pipe_name);
+  std::atomic<int> echo_messages{0};
+  std::atomic<int> key_messages{0};
+  std::atomic<int> start_session_messages{0};
   server.pipeThread = std::make_unique<boost::thread>([&] {
     server.channel->Listen([&](weasel::PipeMessage msg,
                               weasel::PipeServer::Respond respond) {
+      if (msg.Msg == WEASEL_IPC_ECHO)
+        ++echo_messages;
+      else if (msg.Msg == WEASEL_IPC_PROCESS_KEY_EVENT)
+        ++key_messages;
+      else if (msg.Msg == WEASEL_IPC_START_SESSION)
+        ++start_session_messages;
       DWORD result = 0;
       {
         std::lock_guard guard(g_api_mutex);
@@ -214,26 +227,62 @@ static void test_maintenance_session_recovery() {
   tsf.m_client.StartSession();
   DWORD original_session = tsf.m_client.m_pImpl->_SessionId();
   check(original_session != 0, "TSF establishes its initial session");
+
   int echo_before = handler.echo_calls;
+  int echo_messages_before = echo_messages;
   check(tsf._EnsureServerConnected(), "valid session remains usable");
-  check(handler.echo_calls > echo_before && handler.sessions_created == 1,
-        "valid session is checked without creating another session");
+  check(handler.echo_calls == echo_before &&
+            echo_messages == echo_messages_before &&
+            handler.sessions_created == 1,
+        "healthy connection check stays local and sends no Echo IPC");
+
+  int key_before = key_messages;
+  int accepted_before = handler.accepted_keys;
+  int invalid_before = handler.invalid_keys;
+  int start_before = start_session_messages;
+  check(tsf._ProcessKeyEventWithRecovery(weasel::KeyEvent('a')),
+        "healthy key is accepted");
+  check(key_messages == key_before + 1 &&
+            handler.accepted_keys == accepted_before + 1 &&
+            handler.invalid_keys == invalid_before &&
+            start_session_messages == start_before &&
+            echo_messages == echo_messages_before,
+        "healthy key uses exactly one key IPC and no Echo");
 
   // A different client performs deployment while the TSF pipe stays open.
   deployer.StartMaintenance();
-  check(tsf.m_client.IsSessionActive(),
-        "TSF still has an open pipe and cached session after maintenance starts");
-  check(!tsf._EnsureServerConnected(),
-        "TSF refuses to use an invalid session during maintenance");
   deployer.EndMaintenance();
-  check(tsf._EnsureServerConnected(), "TSF reconnects after maintenance ends");
+  check(tsf.m_client.IsSessionActive(),
+        "TSF keeps the stale cached session after maintenance");
+  check(tsf._EnsureServerConnected(),
+        "cached session check stays local after maintenance");
+
+  key_before = key_messages;
+  accepted_before = handler.accepted_keys;
+  invalid_before = handler.invalid_keys;
+  start_before = start_session_messages;
+  check(tsf._ProcessKeyEventWithRecovery(weasel::KeyEvent('b')),
+        "first post-maintenance key recovers the stale session");
   check(tsf.m_client.m_pImpl->_SessionId() != original_session &&
             handler.sessions_created == 2,
         "TSF replaces the invalid session without a focus switch or restart");
-  check(tsf.m_client.ProcessKeyEvent(weasel::KeyEvent('a')),
-        "the first post-maintenance key is accepted");
-  check(handler.accepted_keys == 1 && handler.invalid_keys == 0,
-        "the key is delivered once and never sent to an invalid session");
+  check(key_messages == key_before + 2 &&
+            start_session_messages == start_before + 1 &&
+            echo_messages == echo_messages_before,
+        "stale key uses one rejection, one session rebuild, and one retry");
+  check(handler.accepted_keys == accepted_before + 1 &&
+            handler.invalid_keys == invalid_before + 1,
+        "recovered key reaches the input engine exactly once");
+
+  // Transport failure is ambiguous: the server may already have processed
+  // the request, so the current-key path must never replay it.
+  start_before = start_session_messages;
+  server._StopPipeServer();
+  check(!tsf._ProcessKeyEventWithRecovery(weasel::KeyEvent('c')),
+        "transport failure is released instead of replayed");
+  check(start_session_messages == start_before &&
+            !tsf.m_client.IsSessionActive(),
+        "transport failure does not rebuild the session");
 }
 
 int main() {

@@ -262,38 +262,38 @@ static int count_server_process() {
 }
 
 bool WeaselTSF::_EnsureServerConnected() {
-  // Deployment maintenance can clear server sessions without closing this
-  // client's pipe. Validate the session before sending a key; a live pipe
-  // and a cached nonzero session ID alone do not establish validity.
-  if (!m_client.Echo()) {
-    _Reconnect();
-    if (!m_client.IsSessionActive()) {
-      if (++_reconnectRetry >= 6) {
-        HANDLE hMutex =
-            CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
-        // Read GetLastError right after CreateMutex: any later pipe call
-        // would overwrite the ERROR_ALREADY_EXISTS indicator.
-        bool alreadyLaunching = (GetLastError() == ERROR_ALREADY_EXISTS);
-        if (!alreadyLaunching && count_server_process() == 0) {
-          std::wstring dir = _GetRootDir();
-          // The detached thread must not capture this: it can outlive the
-          // TIP object while the host app tears down. It only starts the
-          // service; the next keystroke's reconnect path completes login.
-          std::thread th([dir]() {
-            ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
-                          NULL, dir.c_str(), SW_HIDE);
-          });
-          th.detach();
-        }
-        if (hMutex) {
-          CloseHandle(hMutex);
-        }
-        _reconnectRetry = 0;
-      }
-      return false;
-    }
-    _reconnectRetry = 0;
+  // Healthy typing is a local fast path. A remotely invalidated session is
+  // detected by PROCESS_KEY_EVENT itself, avoiding an Echo roundtrip per key.
+  if (m_client.IsSessionActive())
     return true;
+
+  _Reconnect();
+  if (!m_client.IsSessionActive()) {
+    if (++_reconnectRetry >= 6) {
+      HANDLE hMutex =
+          CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
+      // Read GetLastError right after CreateMutex: any later pipe call
+      // would overwrite the ERROR_ALREADY_EXISTS indicator.
+      bool alreadyLaunching = (GetLastError() == ERROR_ALREADY_EXISTS);
+      if (!alreadyLaunching && count_server_process() == 0) {
+        std::wstring dir = _GetRootDir();
+        // The detached thread must not capture this: it can outlive the
+        // TIP object while the host app tears down. It only starts the
+        // service; the next keystroke's reconnect path completes login.
+        std::thread th([dir]() {
+          ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
+                        NULL, dir.c_str(), SW_HIDE);
+        });
+        th.detach();
+      }
+      if (hMutex) {
+        CloseHandle(hMutex);
+      }
+      _reconnectRetry = 0;
+    }
+    return false;
   }
+
+  _reconnectRetry = 0;
   return true;
 }

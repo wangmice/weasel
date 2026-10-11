@@ -4,6 +4,36 @@
 
 using namespace weasel;
 
+namespace {
+
+bool HasResponseField(PipeChannel<PipeMessage>& channel,
+                      UINT64 previous_serial,
+                      const wchar_t* expected) {
+  if (channel.ResponseSerial() == previous_serial)
+    return false;
+
+  bool found = false;
+  channel.HandleResponseData([&](LPWSTR buffer, DWORD length) {
+    if (!buffer)
+      return false;
+
+    wbufferstream stream(buffer, length);
+    std::wstring line;
+    while (std::getline(stream, line)) {
+      if (line == expected) {
+        found = true;
+        break;
+      }
+      if (line == L".")
+        break;
+    }
+    return true;
+  });
+  return found;
+}
+
+}  // namespace
+
 ClientImpl::ClientImpl()
     : session_id(0), channel(GetPipeName()), is_ime(false) {
   _InitializeClientInfo();
@@ -55,13 +85,32 @@ void ClientImpl::ShutdownServer() {
   _SendMessage(WEASEL_IPC_SHUTDOWN_SERVER, 0, 0);
 }
 
-bool ClientImpl::ProcessKeyEvent(KeyEvent const& keyEvent) {
+KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
   if (!_Active())
-    return false;
+    return KeyEventResult::TransportError;
 
+  const UINT64 response_serial = channel.ResponseSerial();
   LRESULT ret =
       _SendMessage(WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, _SessionId());
-  return ret != 0;
+
+  // _SendMessage clears session_id after a pipe exception. The server may
+  // already have processed that key, so this case must never be replayed.
+  if (!_Active())
+    return KeyEventResult::TransportError;
+
+  // InvalidSession is emitted only before librime receives the key, making a
+  // single caller-controlled retry safe.
+  if (HasResponseField(channel, response_serial,
+                       kInvalidSessionResponseField)) {
+    _SetSessionId(0);
+    return KeyEventResult::InvalidSession;
+  }
+
+  return ret != 0 ? KeyEventResult::Handled : KeyEventResult::Unhandled;
+}
+
+bool ClientImpl::ProcessKeyEvent(KeyEvent const& keyEvent) {
+  return ProcessKeyEventEx(keyEvent) == KeyEventResult::Handled;
 }
 
 bool ClientImpl::CommitComposition() {
@@ -225,6 +274,10 @@ void Client::ShutdownServer() {
 
 bool Client::ProcessKeyEvent(KeyEvent const& keyEvent) {
   return m_pImpl->ProcessKeyEvent(keyEvent);
+}
+
+KeyEventResult Client::ProcessKeyEventEx(KeyEvent const& keyEvent) {
+  return m_pImpl->ProcessKeyEventEx(keyEvent);
 }
 
 bool Client::CommitComposition() {

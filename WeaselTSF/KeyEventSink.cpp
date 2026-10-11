@@ -4,6 +4,23 @@
 #include <KeyEvent.h>
 #include "CandidateList.h"
 
+bool WeaselTSF::_ProcessKeyEventWithRecovery(
+    const weasel::KeyEvent& keyEvent) {
+  auto result = m_client.ProcessKeyEventEx(keyEvent);
+  if (result == weasel::KeyEventResult::InvalidSession) {
+    // The server rejected the stale session before librime saw this key.
+    // Start a replacement session on the still-live pipe and retry once.
+    m_client.StartSession();
+    _ConsumeResponseIfFresh();
+    if (!m_client.IsSessionActive())
+      return false;
+
+    result = m_client.ProcessKeyEventEx(keyEvent);
+  }
+
+  return result == weasel::KeyEventResult::Handled;
+}
+
 void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
   // when _IsKeyboardDisabled don't eat the key,
   // when keyboard closable and keyboard closed, don't eat the key
@@ -34,7 +51,7 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     // （下文无条件存入 _prevfEaten，且要上报 TSF）
     *pfEaten = FALSE;
     if (!_keyCountToSimulate)
-      *pfEaten = (BOOL)m_client.ProcessKeyEvent(ke);
+      *pfEaten = _ProcessKeyEventWithRecovery(ke) ? TRUE : FALSE;
 
     if (ke.keycode == ibus::Caps_Lock) {
       if (_prevKeyEvent.keycode == ibus::Caps_Lock && _prevfEaten == TRUE &&
