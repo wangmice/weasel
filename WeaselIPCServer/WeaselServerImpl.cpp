@@ -1,38 +1,36 @@
 ﻿#include "stdafx.h"
 #include "WeaselServerImpl.h"
+#include <PipeServer.h>
 #include <mutex>
+#include <vector>
 #include <Windows.h>
 #include <resource.h>
 #include <WeaselUtility.h>
 
-namespace weasel {
-class PipeServer : public PipeChannel<DWORD, PipeMessage> {
- public:
-  using ServerRunner = std::function<void()>;
-  using Respond = std::function<void(Msg)>;
-  using ServerHandler = std::function<void(PipeMessage, Respond)>;
-
-  PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s);
-
- public:
-  void Listen(ServerHandler const& handler);
-  /* Get a server runner */
-  ServerRunner GetServerRunner(ServerHandler const& handler);
-
- private:
-  void _ProcessPipeThread(HANDLE pipe, ServerHandler const& handler);
-};
-}  // namespace weasel
-
 using namespace weasel;
 
 extern CAppModule _Module;
+
+// Serializes every RequestHandler call: pipe worker threads run under it
+// in Run(); window-message paths (color change, tray menu, logoff) must
+// take it too, or they race handler state (session map, rime) mid-call.
+static std::mutex g_api_mutex;
+
+// Bounded backoff before Listen retries a failed iteration: without it a
+// persistently failing CreateNamedPipe (e.g. handle exhaustion) turns the
+// loop into a 100% CPU spin. The sleep itself is interruptible, so shutdown
+// (interrupt + WakeListener) is never delayed by the backoff.
+static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
 ServerImpl::ServerImpl()
     : m_pRequestHandler(NULL),
       m_darkMode(IsUserDarkMode()),
       channel(std::make_unique<PipeServer>(GetPipeName(), sa.get_attr())) {
   m_hUser32Module = GetModuleHandle(_T("user32.dll"));
+  m_pPhysicalToLogicalPointForPerMonitorDPI =
+      reinterpret_cast<PPhysicalToLogicalPointForPerMonitorDPI>(
+          ::GetProcAddress(m_hUser32Module,
+                           "PhysicalToLogicalPointForPerMonitorDPI"));
 }
 
 ServerImpl::~ServerImpl() {
@@ -40,13 +38,9 @@ ServerImpl::~ServerImpl() {
 }
 
 void ServerImpl::_Finailize() {
-  if (pipeThread != nullptr) {
-    pipeThread->interrupt();
-    pipeThread = nullptr;
-  } else {
-    // avoid finalize again
-    return;
-  }
+  // Ordered, idempotent teardown: join the pipe threads before the window
+  // goes away, so no worker can touch a destroyed handler or UI.
+  _StopPipeServer();
 
   if (IsWindow()) {
     DestroyWindow();
@@ -59,7 +53,10 @@ LRESULT ServerImpl::OnColorChange(UINT uMsg,
                                   BOOL& bHandled) {
   if (IsUserDarkMode() != m_darkMode) {
     m_darkMode = IsUserDarkMode();
-    m_pRequestHandler->UpdateColorTheme(m_darkMode);
+    if (m_pRequestHandler) {
+      std::lock_guard guard(g_api_mutex);
+      m_pRequestHandler->UpdateColorTheme(m_darkMode);
+    }
   }
   return 0;
 }
@@ -101,6 +98,7 @@ LRESULT ServerImpl::OnEndSystemSession(UINT uMsg,
                                        LPARAM lParam,
                                        BOOL& bHandled) {
   if (m_pRequestHandler) {
+    std::lock_guard guard(g_api_mutex);
     m_pRequestHandler->Finalize();
     m_pRequestHandler = nullptr;
   }
@@ -112,12 +110,30 @@ LRESULT ServerImpl::OnCommand(UINT uMsg,
                               LPARAM lParam,
                               BOOL& bHandled) {
   UINT uID = LOWORD(wParam);
+  // Window commands do not run under Run()'s pipe dispatch lock. Only
+  // option changes touch RequestHandler; keep shell/menu callbacks outside
+  // the lock, as before.
+  if (uID == ID_WEASELTRAY_ENABLE_ASCII ||
+      uID == ID_WEASELTRAY_DISABLE_ASCII) {
+    std::lock_guard guard(g_api_mutex);
+    return _HandleCommand(uID, lParam, bHandled);
+  }
+  return _HandleCommand(uID, lParam, bHandled);
+}
+
+LRESULT ServerImpl::_HandleCommand(UINT uID,
+                                   LPARAM lParam,
+                                   BOOL& bHandled) {
   switch (uID) {
     case ID_WEASELTRAY_ENABLE_ASCII:
-      m_pRequestHandler->SetOption(lParam, "ascii_mode", true);
+      if (m_pRequestHandler) {
+        m_pRequestHandler->SetOption(lParam, "ascii_mode", true);
+      }
       return 0;
     case ID_WEASELTRAY_DISABLE_ASCII:
-      m_pRequestHandler->SetOption(lParam, "ascii_mode", false);
+      if (m_pRequestHandler) {
+        m_pRequestHandler->SetOption(lParam, "ascii_mode", false);
+      }
       return 0;
     default:;
   }
@@ -148,7 +164,8 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
                             DWORD wParam,
                             DWORD lParam) {
   BOOL handled = TRUE;
-  OnCommand(uMsg, wParam, lParam, handled);
+  // Run() already holds g_api_mutex for every pipe command.
+  _HandleCommand(LOWORD(wParam), lParam, handled);
   return handled;
 }
 
@@ -160,13 +177,10 @@ HWND ServerImpl::Start() {
                    ::GetLastError() == ERROR_ACCESS_DENIED);
 
   if (areYouOK) {
-    LOG(ERROR) << "another WeaselServer instance is already running";
     return 0;  // assure single instance
   }
 
   HWND hwnd = Create(NULL);
-  if (!hwnd)
-    LOG(ERROR) << "ServerImpl::Create failed, error: " << GetLastError();
 
   return hwnd;
 }
@@ -178,8 +192,6 @@ int ServerImpl::Stop() {
   return 0;
 }
 
-static std::mutex g_api_mutex;
-
 int ServerImpl::Run() {
   // This workaround causes a VC internal error:
   // void PipeServer::Listen(ServerHandler handler);
@@ -188,17 +200,39 @@ int ServerImpl::Run() {
   // auto listener = boost::bind(&PipeServer::Listen, channel.get(), handler);
   //
   auto listener = [this](PipeMessage msg, PipeServer::Respond resp) -> void {
-    std::lock_guard guard(g_api_mutex);
-    HandlePipeMessage(msg, resp);
+    // Defer the response write until the api lock is released: a slow or
+    // hung client must not extend the global critical section.
+    PipeServer::Msg result = 0;
+    {
+      std::lock_guard guard(g_api_mutex);
+      HandlePipeMessage(msg, [&result](PipeServer::Msg r) { result = r; });
+    }
+    resp(result);
   };
+  // Capture the listener by value: a stack reference would dangle as soon
+  // as Run() returns while the pipe thread is still draining requests.
   pipeThread = std::make_unique<boost::thread>(
-      [this, &listener]() { channel->Listen(listener); });
+      [this, listener]() { channel->Listen(listener); });
 
   CMessageLoop theLoop;
   _Module.AddMessageLoop(&theLoop);
   int nRet = theLoop.Run();
   _Module.RemoveMessageLoop();
+  // Stop the pipe server before the caller (WeaselServerApp::Run) starts
+  // destroying the handler and UI: late requests would touch freed objects.
+  _StopPipeServer();
   return nRet;
+}
+
+void ServerImpl::_StopPipeServer() {
+  if (!pipeThread)
+    return;
+  pipeThread->interrupt();
+  channel->WakeListener();
+  if (pipeThread->joinable())
+    pipeThread->join();
+  channel->DrainWorkers();
+  pipeThread.reset();
 }
 
 DWORD ServerImpl::OnEcho(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
@@ -292,15 +326,14 @@ DWORD ServerImpl::OnUpdateInputPosition(WEASEL_IPC_COMMAND uMsg,
   rc.right = rc.left + width;
   rc.bottom = rc.top + height;
 
-  {
-    using PPTLPFPMDPI = BOOL(WINAPI*)(HWND, LPPOINT);
-    PPTLPFPMDPI PhysicalToLogicalPointForPerMonitorDPI =
-        (PPTLPFPMDPI)::GetProcAddress(m_hUser32Module,
-                                      "PhysicalToLogicalPointForPerMonitorDPI");
+  // PhysicalToLogicalPointForPerMonitorDPI exists since Win8.1 (the process
+  // gate in WeaselServer.cpp enforces it); if the lookup still failed, skip
+  // the conversion instead of calling a null pointer.
+  if (m_pPhysicalToLogicalPointForPerMonitorDPI) {
     POINT lt = {rc.left, rc.top};
     POINT rb = {rc.right, rc.bottom};
-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &lt);
-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &rb);
+    m_pPhysicalToLogicalPointForPerMonitorDPI(NULL, &lt);
+    m_pPhysicalToLogicalPointForPerMonitorDPI(NULL, &rb);
     rc = {lt.x, lt.y, rb.x, rb.y};
   }
 
@@ -327,8 +360,13 @@ DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnCommitComposition(WEASEL_IPC_COMMAND uMsg,
                                       DWORD wParam,
                                       DWORD lParam) {
-  if (m_pRequestHandler)
-    m_pRequestHandler->CommitComposition(lParam);
+  if (m_pRequestHandler) {
+    auto eat = [this](std::wstring& msg) -> bool {
+      *channel << msg;
+      return true;
+    };
+    m_pRequestHandler->CommitComposition(lParam, eat);
+  }
   return 0;
 }
 
@@ -343,8 +381,13 @@ DWORD ServerImpl::OnClearComposition(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnSelectCandidateOnCurrentPage(WEASEL_IPC_COMMAND uMsg,
                                                  DWORD wParam,
                                                  DWORD lParam) {
-  if (m_pRequestHandler)
-    m_pRequestHandler->SelectCandidateOnCurrentPage(wParam, lParam);
+  if (m_pRequestHandler) {
+    auto eat = [this](std::wstring& msg) -> bool {
+      *channel << msg;
+      return true;
+    };
+    m_pRequestHandler->SelectCandidateOnCurrentPage(wParam, lParam, eat);
+  }
   return 0;
 }
 
@@ -423,17 +466,64 @@ PipeServer::PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s)
 
 void PipeServer::Listen(ServerHandler const& handler) {
   for (;;) {
+    boost::this_thread::interruption_point();
     HANDLE pipe = INVALID_HANDLE_VALUE;
     try {
-      boost::this_thread::interruption_point();
       pipe = _ConnectServerPipe(pname);
-      boost::thread th(
-          [&handler, pipe, this] { _ProcessPipeThread(pipe, handler); });
-    } catch (DWORD ex) {
-      _FinalizePipe(pipe);
+      _LaunchWorker(pipe, handler);
+    } catch (...) {  // pipe errors and thread spawn failures alike
+      FinalizePipeHandle(pipe);
+      boost::this_thread::sleep_for(kListenRetryBackoff);
     }
     boost::this_thread::interruption_point();
   }
+}
+
+void PipeServer::WakeListener() {
+  // A client-side connection to our own pipe makes ConnectNamedPipe return
+  // so an interrupted listener can reach its interruption point and exit.
+  HANDLE wake = ::CreateFileW(pname.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                              NULL, OPEN_EXISTING, 0, NULL);
+  if (wake != INVALID_HANDLE_VALUE)
+    ::CloseHandle(wake);
+}
+
+void PipeServer::DrainWorkers() {
+  std::vector<std::shared_ptr<boost::thread>> workers;
+  {
+    std::lock_guard<std::mutex> lock(m_workers_mutex);
+    for (auto& pair : m_workers) {
+      // Abort pending reads and break the connection so blocked workers
+      // fail their next I/O instead of waiting for their clients forever.
+      ::CancelIoEx(pair.first, NULL);
+      ::DisconnectNamedPipe(pair.first);
+      workers.push_back(pair.second);
+    }
+    m_workers.clear();
+  }
+  for (auto& worker : workers)
+    if (worker->joinable())
+      worker->join();
+}
+
+void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
+  // The lock must cover thread creation AND registration: a worker whose
+  // client dropped instantly may call _RemoveWorker the moment it starts,
+  // and that removal must queue behind this critical section - otherwise it
+  // erases nothing (the entry is not there yet) and the registration that
+  // follows lingers in m_workers as an already-closed handle, which
+  // DrainWorkers would later misuse for CancelIoEx/DisconnectNamedPipe.
+  std::lock_guard<std::mutex> lock(m_workers_mutex);
+  // Copy the handler into the worker: it must not reference anything
+  // on this thread's stack.
+  auto worker = std::make_shared<boost::thread>(
+      [this, pipe, handler] { _ProcessPipeThread(pipe, handler); });
+  m_workers[pipe] = std::move(worker);
+}
+
+void PipeServer::_RemoveWorker(HANDLE pipe) {
+  std::lock_guard<std::mutex> lock(m_workers_mutex);
+  m_workers.erase(pipe);
 }
 
 PipeServer::ServerRunner PipeServer::GetServerRunner(
@@ -449,8 +539,11 @@ void PipeServer::_ProcessPipeThread(HANDLE pipe, ServerHandler const& handler) {
       handler(msg, [this, pipe](Msg resp) { _Send(pipe, resp); });
     }
   } catch (...) {
-    _FinalizePipe(pipe);
   }
+  // Unregister before closing the handle so the registry never lends a
+  // closed (possibly reused) handle value to DrainWorkers.
+  _RemoveWorker(pipe);
+  FinalizePipeHandle(pipe);
 }
 
 // weasel::Server

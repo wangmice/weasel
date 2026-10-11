@@ -16,7 +16,6 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
                        LPTSTR lpCmdLine,
                        int nCmdShow) {
   UNREFERENCED_PARAMETER(hPrevInstance);
-  LoadWeaselLogLevelFromRegistry();
   SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
   LANGID langId = get_language_id();
   SetThreadUILanguage(langId);
@@ -44,8 +43,11 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
   int ret = 0;
   HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
   if (!hMutex) {
+    LOG(ERROR) << "Error creating WeaselDeployerExclusiveMutex.";
     ret = 1;
   } else if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    // 部署器可能被脚本/计划任务静默调用，只记日志不弹框，避免破坏无人值守
+    LOG(WARNING) << "another deployer process is running; aborting operation.";
     ret = 1;
   } else {
     ret = Run(lpCmdLine);

@@ -5,6 +5,7 @@
 #include <string>
 #include <windows.h>
 #include <wrl.h>
+#include <WeaselUtility.h>
 
 namespace weasel {
 using namespace Microsoft::WRL;
@@ -42,9 +43,11 @@ class UI {
   void RepositionPreview();
   // 置输入焦点位置（光标跟随时移动候选窗）但不重绘
   void UpdateInputPosition(RECT const& rc);
-  // 更新界面显示内容
+  // Updates and style writes are marshalled to the window thread.
   void Update(Context const& ctx, Status const& status);
+  void SetStyle(UIStyle const& style);
   Context& ctx() { return ctx_; }
+  Context& octx() { return octx_; }
   Status& status() { return status_; }
   UIStyle& style() { return style_; }
   UIStyle& ostyle() { return ostyle_; }
@@ -59,6 +62,7 @@ class UI {
  private:
   the<UIImpl> pimpl_;
   Context ctx_;
+  Context octx_;
   Status status_;
   UIStyle style_;
   UIStyle ostyle_;

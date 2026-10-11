@@ -26,6 +26,26 @@ static void CreateFileIfNotExist(std::string filename) {
     o.close();
   }
 }
+
+// StartMaintenance 的作用域守卫：无论同步成败（含异常路径），退出时都
+// 重新连接并调用 EndMaintenance，保证服务端不会永久停留在维护模式（K1）。
+// 各维护路径统一在析构前完成 join_maintenance_thread 与 CloseHandle：
+// 部署任务全部落地、部署互斥释放之后，才唤醒服务（K19）。
+class MaintenanceReleaser {
+ public:
+  explicit MaintenanceReleaser(weasel::Client& client) : client_(client) {}
+  MaintenanceReleaser(const MaintenanceReleaser&) = delete;
+  MaintenanceReleaser& operator=(const MaintenanceReleaser&) = delete;
+  ~MaintenanceReleaser() {
+    if (client_.Connect()) {
+      LOG(INFO) << "Resuming service.";
+      client_.EndMaintenance();
+    }
+  }
+
+ private:
+  weasel::Client& client_;
+};
 Configurator::Configurator() {
   CreateFileIfNotExist("default.custom.yaml");
   CreateFileIfNotExist("weasel.custom.yaml");
@@ -41,7 +61,7 @@ void Configurator::Initialize() {
   std::string distribution_name = wtou8(get_weasel_ime_name());
   weasel_traits.distribution_name = distribution_name.c_str();
   weasel_traits.distribution_code_name = WEASEL_CODE_NAME;
-  weasel_traits.distribution_version = WEASEL_PRODUCT_VERSION;
+  weasel_traits.distribution_version = WEASEL_VERSION;
   weasel_traits.app_name = "rime.weasel";
   std::string log_dir = WeaselLogPath().u8string();
   weasel_traits.log_dir = log_dir.c_str();
@@ -100,10 +120,15 @@ int Configurator::Run(bool installing) {
   bool skip_ui_style_settings =
       installing && !api->is_first_run(ui_style_settings.settings());
 
-  (skip_switcher_settings ||
-   configure_switcher(api, switcher_settings, &reconfigured)) &&
-      (skip_ui_style_settings ||
-       configure_ui(api, &ui_style_settings, &reconfigured));
+  // 两步独立执行：取消其中一个对话框不能跳过另一个（K18）。
+  // 各步仅在用户确认且保存成功时置 reconfigured，取消不影响退出码，
+  // 退出码仍由 installing/reconfigured 决定是否重新部署。
+  if (!skip_switcher_settings) {
+    configure_switcher(api, switcher_settings, &reconfigured);
+  }
+  if (!skip_ui_style_settings) {
+    configure_ui(api, &ui_style_settings, &reconfigured);
+  }
 
   api->custom_settings_destroy((RimeCustomSettings*)switcher_settings);
 
@@ -139,18 +164,14 @@ int Configurator::UpdateWorkspace(bool report_errors) {
   }
 
   {
+    MaintenanceReleaser releaser(client);
     RimeApi* rime = rime_get_api();
     // initialize default config, preset schemas
     rime->deploy();
     // initialize weasel config
     rime->deploy_config_file("weasel.yaml", "config_version");
-  }
-
-  CloseHandle(hMutex);  // should be closed before resuming service.
-
-  if (client.Connect()) {
-    LOG(INFO) << "Resuming service.";
-    client.EndMaintenance();
+    rime->join_maintenance_thread();
+    CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return 0;
 }
@@ -178,19 +199,15 @@ int Configurator::DictManagement() {
   }
 
   {
+    MaintenanceReleaser releaser(client);
     RimeApi* rime = rime_get_api();
     if (RIME_API_AVAILABLE(rime, run_task)) {
       rime->run_task("installation_update");  // setup user data sync dir
     }
     DictManagementDialog dlg;
     dlg.DoModal();
-  }
-
-  CloseHandle(hMutex);  // should be closed before resuming service.
-
-  if (client.Connect()) {
-    LOG(INFO) << "Resuming service.";
-    client.EndMaintenance();
+    rime->join_maintenance_thread();
+    CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return 0;
 }
@@ -217,21 +234,19 @@ int Configurator::SyncUserData() {
     client.StartMaintenance();
   }
 
+  int retval = 0;
   {
+    // 失败或异常退出本作用域时同样恢复服务端；
+    // EndMaintenance 由析构执行，保持在 CloseHandle 之后（先释放部署互斥再唤醒服务）
+    MaintenanceReleaser releaser(client);
     RimeApi* rime = rime_get_api();
     if (!rime->sync_user_data()) {
       LOG(ERROR) << "Error synching user data.";
-      CloseHandle(hMutex);
-      return 1;
+      retval = 1;
     }
+    // 无论同步成败，等待可能仍在运行的维护任务结束后再唤醒服务
     rime->join_maintenance_thread();
+    CloseHandle(hMutex);  // should be closed before resuming service.
   }
-
-  CloseHandle(hMutex);  // should be closed before resuming service.
-
-  if (client.Connect()) {
-    LOG(INFO) << "Resuming service.";
-    client.EndMaintenance();
-  }
-  return 0;
+  return retval;
 }
