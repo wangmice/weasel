@@ -10,7 +10,9 @@ using weasel::tsf::ApplyFailureClass;
 using weasel::tsf::ApplyProgress;
 using weasel::tsf::CanRetryApplyFailure;
 using weasel::tsf::ClassifyScheduleFailure;
+using weasel::tsf::RetryBudget;
 using weasel::tsf::ScheduleFailureAction;
+using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
 using weasel::tsf::kMaxApplyRetries;
 
@@ -28,6 +30,12 @@ static_assert(!CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                     kMaxApplyRetries),
               "retries must be bounded so one document cannot pin the FIFO");
 
+constexpr RetryBudget kIndependentBudgets{2, 0};
+static_assert(!kIndependentBudgets.CanRetryHandoff(),
+              "handoff retries must have their own bound");
+static_assert(kIndependentBudgets.CanRetryApply(),
+              "handoff failures must not consume document-apply retries");
+
 static_assert(ClassifyScheduleFailure(false, false, true) ==
                   ScheduleFailureAction::RetryLater,
               "TF_E_LOCKED must preserve the request for a later edit-end retry");
@@ -40,6 +48,13 @@ static_assert(ClassifyScheduleFailure(false, true, false) ==
 static_assert(ClassifyScheduleFailure(false, false, false) ==
                   ScheduleFailureAction::Drop,
               "non-lock scheduling failures must not create an unbounded retry");
+
+static_assert(ShouldClearCompositionRange(true, true),
+              "the current composition may be cleared during an abort");
+static_assert(!ShouldClearCompositionRange(true, false),
+              "a stale async end session must never clear committed text");
+static_assert(!ShouldClearCompositionRange(false, true),
+              "normal commit teardown must preserve its composition text");
 
 static_assert(ShouldPublishCandidateImmediately(true),
               "UI-less hosts need candidate data before caret extent completes");

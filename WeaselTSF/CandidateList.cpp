@@ -99,15 +99,12 @@ STDMETHODIMP CCandidateList::GetUpdatedFlags(DWORD* pdwFlags) {
 }
 
 STDMETHODIMP CCandidateList::GetDocumentMgr(ITfDocumentMgr** ppdim) {
+  if (!ppdim)
+    return E_POINTER;
   *ppdim = nullptr;
-  auto pThreadMgr = _tsf->_GetThreadMgr();
-  if (pThreadMgr == nullptr) {
+  if (!_pContextDocument)
     return E_FAIL;
-  }
-  if (FAILED(pThreadMgr->GetFocus(ppdim)) || (*ppdim == nullptr)) {
-    return E_FAIL;
-  }
-  return S_OK;
+  return _pContextDocument->GetDocumentMgr(ppdim);
 }
 
 STDMETHODIMP CCandidateList::GetCount(UINT* pCandidateCount) {
@@ -267,26 +264,27 @@ UIStyle& CCandidateList::style() {
 }
 
 HWND CCandidateList::_GetActiveWnd() {
-  com_ptr<ITfDocumentMgr> pDocumentMgr;
-  com_ptr<ITfContext> pContext;
   com_ptr<ITfContextView> pContextView;
-  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
-
   HWND w = NULL;
 
-  // Reset current context
-  _pContextDocument = nullptr;
-
-  if (pThreadMgr != nullptr && SUCCEEDED(pThreadMgr->GetFocus(&pDocumentMgr)) &&
-      SUCCEEDED(pDocumentMgr->GetTop(&pContext)) &&
-      SUCCEEDED(pContext->GetActiveView(&pContextView))) {
-    // Set current context
-    _pContextDocument = pContext;
+  if (_pContextDocument &&
+      SUCCEEDED(_pContextDocument->GetActiveView(&pContextView))) {
     pContextView->GetWnd(&w);
   }
 
-  if (w == NULL)
-    w = ::GetFocus();
+  // Some bridged applications expose no TSF view HWND. Falling back to the
+  // Win32 focus window is safe only while that focus still belongs to our
+  // target context; never retarget an asynchronous response to another doc.
+  if (w == NULL && _pContextDocument) {
+    com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+    com_ptr<ITfDocumentMgr> pDocumentMgr;
+    com_ptr<ITfContext> pContext;
+    if (pThreadMgr && SUCCEEDED(pThreadMgr->GetFocus(&pDocumentMgr)) &&
+        pDocumentMgr && SUCCEEDED(pDocumentMgr->GetTop(&pContext)) &&
+        pContext == _pContextDocument) {
+      w = ::GetFocus();
+    }
+  }
   return w;
 }
 
@@ -313,23 +311,21 @@ HRESULT CCandidateList::_UpdateUIElement() {
   return S_OK;
 }
 
-void CCandidateList::StartUI() {
+void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
   if (_uiStarted)
     return;
 
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
-  if (!pThreadMgr) {
+  if (!pThreadMgr || !pContext)
     return;
-  }
 
   com_ptr<ITfUIElementMgr> pUIElementMgr;
   auto hr = pThreadMgr->QueryInterface(&pUIElementMgr);
   if (FAILED(hr))
     return;
 
-  if (pUIElementMgr == NULL) {
+  if (pUIElementMgr == NULL)
     return;
-  }
 
   if (!_ui->uiCallback())
     _ui->SetUICallBack([this](size_t* const sel, size_t* const hov,
@@ -337,12 +333,15 @@ void CCandidateList::StartUI() {
       _tsf->HandleUICallback(sel, hov, next, scroll_next);
     });
 
-  // BeginUIElement's pbShow is an in/out parameter.
-  // Do not reuse the host's result from the previous UIElement lifetime.
+  // BeginUIElement may synchronously query GetDocumentMgr, so bind the exact
+  // response/composition target before registering the UIElement.
+  _pContextDocument = pContext;
   _pbShow = TRUE;
 
-  if (FAILED(pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid)))
+  if (FAILED(pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid))) {
+    _pContextDocument = nullptr;
     return;
+  }
   _uiStarted = true;
   // pUIElementMgr->UpdateUIElement(uiid);
   if (_pbShow) {
@@ -358,8 +357,10 @@ void CCandidateList::StartUI() {
 }
 
 void CCandidateList::EndUI() {
-  if (!_uiStarted)
+  if (!_uiStarted) {
+    _pContextDocument = nullptr;
     return;
+  }
 
   // Host unregistration is best effort. Even if the UIElementMgr disappears
   // during a context/profile transition, the local lifetime must end so the
@@ -371,6 +372,7 @@ void CCandidateList::EndUI() {
       emgr->EndUIElement(uiid);
   }
   _uiStarted = false;
+  _pContextDocument = nullptr;
   _DisposeUIWindow();
 }
 
@@ -406,7 +408,7 @@ void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {
 }
 
 void WeaselTSF::_StartUI(com_ptr<ITfContext> pContext) {
-  _cand->StartUI();
+  _cand->StartUI(pContext);
   if (pContext)
     _pCandidateUIContext = pContext;
 }

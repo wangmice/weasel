@@ -85,11 +85,9 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
   if (fForeground)
     m_client.FocusIn();
   else {
-    // Invalidate every queued response before clearing the engine/composition.
-    // A host may still run an already queued edit session later; its flight
-    // token will then fail the guard before it can mutate the old document.
-    _responseApplyQueue.Reset();
-    _pendingCommit.clear();
+    // A response already emitted by Rime may still be waiting for its WRITE
+    // edit session. Keep that FIFO intact: _AbortComposition advances the
+    // engine epoch so stale state becomes inert while durable commits survive.
     m_client.FocusOut();
     _AbortComposition();
   }
