@@ -543,6 +543,8 @@ class CApplyResponseEditSession : public CEditSession {
         _flightToken(flightToken),
         _queue(queue) {}
 
+  ~CApplyResponseEditSession() override { _CompleteFlight(); }
+
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
     // Deactivate/reset can invalidate a queued TSF session before the host
     // actually runs it. Never let an obsolete flight mutate document state.
@@ -555,12 +557,16 @@ class CApplyResponseEditSession : public CEditSession {
       hr = _pTextService->_ApplyResponseSnapshot(
           ec, _request->context, std::move(_request->snapshot));
     }
-    if (_queue->Complete(_flightToken))
-      _pTextService->_ScheduleNextResponseApply(false);
+    _CompleteFlight();
     return hr;
   }
 
  private:
+  void _CompleteFlight() {
+    if (_queue && _queue->Complete(_flightToken))
+      _pTextService->_ScheduleNextResponseApply(false);
+  }
+
   std::shared_ptr<WeaselTSF::ResponseApplyRequest> _request;
   UINT64 _flightToken;
   ResponseApplyQueue* _queue;
@@ -578,18 +584,24 @@ class CContextHandoffEditSession : public CEditSession {
         _flightToken(flightToken),
         _queue(queue) {}
 
+  ~CContextHandoffEditSession() override { _CompleteFlight(); }
+
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
     if (!_queue || !_queue->InFlight() ||
         _queue->FlightToken() != _flightToken)
       return S_OK;
     const HRESULT hr = _pTextService->_EndCompositionLocked(
         ec, _pContext, _pComposition, TRUE, TRUE);
-    if (_queue->Complete(_flightToken))
-      _pTextService->_ScheduleNextResponseApply(false);
+    _CompleteFlight();
     return hr;
   }
 
  private:
+  void _CompleteFlight() {
+    if (_queue && _queue->Complete(_flightToken))
+      _pTextService->_ScheduleNextResponseApply(false);
+  }
+
   com_ptr<ITfComposition> _pComposition;
   UINT64 _flightToken;
   ResponseApplyQueue* _queue;
@@ -679,7 +691,12 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
   const HRESULT requestHr = request->context->RequestEditSession(
       _tfClientId, session, scheduleFlag | TF_ES_READWRITE, &sessionHr);
   if (FAILED(requestHr)) {
-    _responseApplyQueue.RestoreFront(std::move(request), flightToken);
+    if (requestHr == TF_E_DISCONNECTED) {
+      if (_responseApplyQueue.Complete(flightToken))
+        _ScheduleNextResponseApply(false);
+    } else {
+      _responseApplyQueue.RestoreFront(std::move(request), flightToken);
+    }
     return;
   }
 
