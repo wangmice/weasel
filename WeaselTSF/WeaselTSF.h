@@ -2,6 +2,7 @@
 
 #include "Globals.h"
 #include "ResponseApply.h"
+#include "ResponseApplyQueue.h"
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
 #include <ResponseParser.h>
@@ -120,20 +121,51 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   HRESULT _SetCompartmentDWORD(const DWORD& value, const GUID guid);
 
   /* Composition */
+  struct ResponseApplyRequest {
+    com_ptr<ITfContext> context;
+    weasel::tsf::ResponseApplySnapshot snapshot;
+    UINT64 responseSerial = 0;
+  };
+
   void _StartComposition(com_ptr<ITfContext> pContext,
                          BOOL fCUASWorkaroundEnabled,
                          UINT64 pendingUIGeneration = 0);
+  HRESULT _StartCompositionLocked(TfEditCookie ec,
+                                  com_ptr<ITfContext> pContext,
+                                  BOOL fCUASWorkaroundEnabled,
+                                  UINT64 pendingUIGeneration = 0);
   void _EndComposition(com_ptr<ITfContext> pContext,
                        BOOL clear,
                        BOOL endUI = TRUE);
+  HRESULT _EndCompositionLocked(TfEditCookie ec,
+                                com_ptr<ITfContext> pContext,
+                                com_ptr<ITfComposition> pComposition,
+                                BOOL clear,
+                                BOOL endUI);
   BOOL _ShowInlinePreedit(com_ptr<ITfContext> pContext,
                           const std::shared_ptr<weasel::Context> context);
+  HRESULT _ShowInlinePreeditLocked(
+      TfEditCookie ec,
+      com_ptr<ITfContext> pContext,
+      com_ptr<ITfComposition> pComposition,
+      const std::shared_ptr<weasel::Context>& context,
+      UINT64 pendingUIGeneration);
+  HRESULT _InsertTextLocked(TfEditCookie ec,
+                            com_ptr<ITfContext> pContext,
+                            com_ptr<ITfComposition> pComposition,
+                            const std::wstring& text);
   void _UpdateComposition(com_ptr<ITfContext> pContext);
   bool _ConsumeResponse(LPWSTR buffer, DWORD length);
   void _ConsumeResponseIfFresh();
   HRESULT _ApplyResponseSnapshot(
+      TfEditCookie ec,
       com_ptr<ITfContext> pContext,
       weasel::tsf::ResponseApplySnapshot snapshot);
+  void _EnqueueResponseApply(com_ptr<ITfContext> pContext,
+                             weasel::tsf::ResponseApplySnapshot snapshot,
+                             UINT64 responseSerial);
+  void _ScheduleNextResponseApply(bool allowSynchronous);
+  void _CompleteResponseApply();
   BOOL _IsComposing();
   BOOL _IsComposingInContext(ITfContext* pContext);
   BOOL _IsCurrentComposition(ITfComposition* pComposition);
@@ -163,7 +195,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   /* UI */
   void _UpdateUI(const weasel::Context& ctx, const weasel::Status& status);
-  void _StartUI();
+  void _StartUI(com_ptr<ITfContext> pContext = nullptr);
   void _EndUI();
   void _ShowUI();
   void _HideUI();
@@ -283,6 +315,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   com_ptr<ITfComposition> _pComposition;
   com_ptr<ITfContext> _pCompositionContext;
+  com_ptr<ITfContext> _pCandidateUIContext;
 
   com_ptr<CLangBarItemButton> _pLangBarButton;
 
@@ -312,6 +345,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
       std::make_shared<weasel::Context>();
   weasel::Config _config;
   UINT64 _parsedSerial = 0;
+  weasel::tsf::SerialApplyQueue<std::shared_ptr<ResponseApplyRequest>>
+      _responseApplyQueue;
   // 复用的响应解析器：deserializer 注册表只建一次（Require 幂等），
   // 每次解析前重指目标；目标指针仅在 _ConsumeResponse 执行期间有效
   weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr,

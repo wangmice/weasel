@@ -337,10 +337,10 @@ void CCandidateList::StartUI() {
       _tsf->HandleUICallback(sel, hov, next, scroll_next);
     });
 
-    // BeginUIElement's pbShow is an in/out parameter.
+  // BeginUIElement's pbShow is an in/out parameter.
   // Do not reuse the host's result from the previous UIElement lifetime.
   _pbShow = TRUE;
-  
+
   if (FAILED(pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid)))
     return;
   _uiStarted = true;
@@ -361,13 +361,13 @@ void CCandidateList::EndUI() {
   if (!_uiStarted)
     return;
 
+  // Host unregistration is best effort. Even if the UIElementMgr disappears
+  // during a context/profile transition, the local lifetime must end so the
+  // next composition can register a fresh element and owner window.
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
   if (pThreadMgr) {
     com_ptr<ITfUIElementMgr> emgr;
-    auto hr = pThreadMgr->QueryInterface(&emgr);
-    if (FAILED(hr))
-      return;
-    if (emgr != NULL)
+    if (SUCCEEDED(pThreadMgr->QueryInterface(&emgr)) && emgr != NULL)
       emgr->EndUIElement(uiid);
   }
   _uiStarted = false;
@@ -405,12 +405,15 @@ void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {
   _cand->UpdateUI(ctx, status);
 }
 
-void WeaselTSF::_StartUI() {
+void WeaselTSF::_StartUI(com_ptr<ITfContext> pContext) {
   _cand->StartUI();
+  if (pContext)
+    _pCandidateUIContext = pContext;
 }
 
 void WeaselTSF::_EndUI() {
   _cand->EndUI();
+  _pCandidateUIContext = nullptr;
 }
 
 void WeaselTSF::_ShowUI() {
@@ -427,6 +430,7 @@ com_ptr<ITfContext> WeaselTSF::_GetUIContextDocument() {
 
 void WeaselTSF::_DeleteCandidateList() {
   _cand->Destroy();
+  _pCandidateUIContext = nullptr;
 }
 
 void WeaselTSF::_SelectCandidateOnCurrentPage(size_t index) {

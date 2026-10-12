@@ -88,6 +88,8 @@ STDMETHODIMP WeaselTSF::Activate(ITfThreadMgr* pThreadMgr,
 
 STDMETHODIMP WeaselTSF::Deactivate() {
   _InvalidatePendingUI();
+  _responseApplyQueue.Reset();
+  _pendingCommit.clear();
   m_client.EndSession();
 
   _InitTextEditSink(com_ptr<ITfDocumentMgr>());
@@ -110,6 +112,7 @@ STDMETHODIMP WeaselTSF::Deactivate() {
   // While the thread manager is still valid: DestroyAll ends the UIElement,
   // which makes the UIElementMgr drop its reference to the candidate list.
   _cand->DestroyAll();
+  _pCandidateUIContext = nullptr;
 
   _pThreadMgr = NULL;
 
@@ -124,6 +127,12 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;
+
+  // Treat each TSF activation as a fresh response-apply epoch. This also
+  // recovers cleanly from hosts that reactivate after a partial teardown.
+  _responseApplyQueue.Reset();
+  _pendingCommit.clear();
+  _pCandidateUIContext = nullptr;
 
   _pThreadMgr = pThreadMgr;
   _tfClientId = tfClientId;
@@ -201,6 +210,8 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   return S_OK;
 }
 STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
+  _responseApplyQueue.Reset();
+  _pendingCommit.clear();
   _AbortComposition();
   return S_OK;
 }
@@ -234,6 +245,8 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
     _UpdateLanguageBar(_status);
   } else {
     _InvalidatePendingUI();
+    _responseApplyQueue.Reset();
+    _pendingCommit.clear();
     _DeleteCandidateList();
     _ShowLanguageBar(FALSE);
   }

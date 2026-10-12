@@ -27,7 +27,7 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
   /* did the selection change? */
   if (pEditRecord->GetSelectionStatus(&fSelectionChanged) == S_OK &&
       fSelectionChanged) {
-    if (_IsComposing()) {
+    if (_IsComposingInContext(pContext)) {
       /* if the caret moves out of composition range, stop the composition */
       TF_SELECTION tfSelection;
       ULONG cFetched;
@@ -61,7 +61,7 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
 STDMETHODIMP WeaselTSF::OnLayoutChange(ITfContext* pContext,
                                        TfLayoutCode lcode,
                                        ITfContextView* pContextView) {
-  if (!_IsComposing())
+  if (!_IsComposingInContext(pContext))
     return S_OK;
 
   if (pContext != _pTextEditSinkContext)

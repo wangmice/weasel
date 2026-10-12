@@ -85,6 +85,11 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
   if (fForeground)
     m_client.FocusIn();
   else {
+    // Invalidate every queued response before clearing the engine/composition.
+    // A host may still run an already queued edit session later; its flight
+    // token will then fail the guard before it can mutate the old document.
+    _responseApplyQueue.Reset();
+    _pendingCommit.clear();
     m_client.FocusOut();
     _AbortComposition();
   }
