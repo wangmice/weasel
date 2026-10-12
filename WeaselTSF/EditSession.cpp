@@ -28,21 +28,51 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
 
   const bool trackedResponse =
       snapshot.identity.serial != weasel::tsf::kInvalidResponseSerial;
-  const bool stateCurrent =
-      !trackedResponse ||
-      snapshot.identity.engine_epoch == _responseApplyQueue.CurrentEpoch();
-
-  // Engine resets invalidate preedit/candidate state, but commit is an event
-  // that Rime has already emitted. Preserve that text exactly once while
-  // suppressing every stale state transition from the old engine epoch.
-  if (!stateCurrent) {
-    if (commit.empty())
-      return S_OK;
-    status.composing = false;
-  }
+  const auto epochDisposition = trackedResponse
+                                    ? weasel::tsf::ClassifyEpochDisposition(
+                                          snapshot.identity.engine_epoch,
+                                          _responseApplyQueue.CurrentEpoch(),
+                                          !commit.empty())
+                                    : weasel::tsf::EpochDisposition::ApplyState;
+  if (epochDisposition == weasel::tsf::EpochDisposition::Drop)
+    return S_OK;
 
   if (_IsComposing() && !_IsComposingInContext(pContext))
     return E_UNEXPECTED;
+
+  // Engine resets invalidate every stateful part of an old response. A commit,
+  // however, is a durable event already emitted by Rime. Apply only that text
+  // to its original document context and never replay stale preedit, candidate,
+  // status, or configuration state into the new engine epoch.
+  if (epochDisposition == weasel::tsf::EpochDisposition::ApplyCommitOnly) {
+    com_ptr<ITfComposition> composition =
+        _IsComposingInContext(pContext) ? _pComposition : nullptr;
+    const HRESULT insertHr =
+        _InsertTextLocked(ec, pContext, composition, commit);
+    if (FAILED(insertHr))
+      return insertHr;
+
+    _committed = TRUE;
+    if (composition) {
+      const HRESULT endHr =
+          _EndCompositionLocked(ec, pContext, composition, FALSE, TRUE);
+      if (FAILED(endHr)) {
+        // The text has already reached the document. Do not report a retryable
+        // failure that could replay it. Also drop local ownership before an
+        // older deferred abort-clear session runs; that session may still end
+        // the host composition, but it must no longer erase the durable text.
+        _InvalidatePendingUI();
+        _EndUI();
+        if (_IsCurrentComposition(composition))
+          _FinalizeComposition();
+        _responseApplyQueue.AdvanceEpoch();
+        m_client.ClearComposition();
+      }
+    } else {
+      _EndUI();
+    }
+    return S_OK;
+  }
 
   if (_pCandidateUIContext && _pCandidateUIContext != pContext)
     _EndUI();
@@ -71,7 +101,10 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
     _EndUI();
     if (_IsComposingInContext(pContext)) {
       com_ptr<ITfComposition> current = _pComposition;
-      _EndCompositionLocked(ec, pContext, current, FALSE, TRUE);
+      const HRESULT endHr =
+          _EndCompositionLocked(ec, pContext, current, FALSE, TRUE);
+      if (FAILED(endHr) && _IsCurrentComposition(current))
+        _FinalizeComposition();
     }
     _responseApplyQueue.AdvanceEpoch();
     m_client.ClearComposition();

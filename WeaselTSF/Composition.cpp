@@ -611,7 +611,7 @@ class CApplyResponseEditSession : public CEditSession {
 
   ~CApplyResponseEditSession() override {
     if (_resetOnDispose && _queue && _queue->InFlight() &&
-        _queue->FlightToken() == _flightToken) {
+        _queue->FlightToken() == _flightToken && _ShouldResetEngine()) {
       _pTextService->_AbortComposition();
     }
     _CompleteFlight();
@@ -651,6 +651,14 @@ class CApplyResponseEditSession : public CEditSession {
   bool Executed() const { return _executed; }
 
  private:
+  bool _ShouldResetEngine() const {
+    if (!_request || !_queue)
+      return false;
+    return weasel::tsf::ShouldResetEngineAfterResponseFailure(
+        _request->snapshot.identity, _queue->CurrentEpoch(),
+        !_request->snapshot.commit.empty());
+  }
+
   void _CompleteFlight() {
     if (_queue && _queue->Complete(_flightToken))
       _pTextService->_ScheduleNextResponseApply(false);
@@ -826,6 +834,20 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
   if (!request)
     return;
   const UINT64 flightToken = _responseApplyQueue.FlightToken();
+  const auto failureIdentity = request->snapshot.identity;
+  const bool failureHasCommit = !request->snapshot.commit.empty();
+  auto shouldResetRequestEngine = [&]() {
+    return weasel::tsf::ShouldResetEngineAfterResponseFailure(
+        failureIdentity, _responseApplyQueue.CurrentEpoch(), failureHasCommit);
+  };
+  auto settleTerminalFailure = [&]() {
+    if (!_responseApplyQueue.Complete(flightToken))
+      return;
+    if (shouldResetRequestEngine())
+      _AbortComposition();
+    else
+      _ScheduleNextResponseApply(false);
+  };
 
   com_ptr<CApplyResponseEditSession> session;
   session.Attach(new CApplyResponseEditSession(
@@ -850,24 +872,21 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
       }
     }
 
-    if (_responseApplyQueue.Complete(flightToken))
-      _AbortComposition();
+    settleTerminalFailure();
     return;
   }
 
   if (!session->Executed() && sessionHr == TS_E_READONLY &&
       _responseApplyQueue.InFlight() &&
       _responseApplyQueue.FlightToken() == flightToken) {
-    _responseApplyQueue.Complete(flightToken);
-    _AbortComposition();
+    settleTerminalFailure();
     return;
   }
 
   if (!session->Executed() && sessionHr != TF_S_ASYNC &&
       _responseApplyQueue.InFlight() &&
       _responseApplyQueue.FlightToken() == flightToken) {
-    _responseApplyQueue.Complete(flightToken);
-    _AbortComposition();
+    settleTerminalFailure();
   }
 }
 

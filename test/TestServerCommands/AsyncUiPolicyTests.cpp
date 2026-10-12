@@ -13,6 +13,7 @@
 namespace {
 
 using weasel::tsf::ShouldBeginCandidateUI;
+using weasel::tsf::ShouldShowCandidateUI;
 
 static_assert(!ShouldBeginCandidateUI(false, true),
               "candidate UI must not begin before a composition exists");
@@ -20,6 +21,15 @@ static_assert(ShouldBeginCandidateUI(true, true),
               "a created composition may begin UI for its current generation");
 static_assert(!ShouldBeginCandidateUI(true, false),
               "a stale composition start must not begin candidate UI");
+
+static_assert(ShouldShowCandidateUI(true, true, true),
+              "a focused composing target may show its native candidate UI");
+static_assert(!ShouldShowCandidateUI(true, true, false),
+              "an async response for an unfocused document must stay hidden");
+static_assert(!ShouldShowCandidateUI(true, false, true),
+              "UI-less hosts own candidate rendering when pbShow is false");
+static_assert(!ShouldShowCandidateUI(false, true, true),
+              "non-composing state must never keep the candidate window shown");
 
 bool CurrentGenerationSurvivesPendingSnapshotConsumption() {
   WeaselTSF tsf;
@@ -34,9 +44,6 @@ bool CurrentGenerationSurvivesPendingSnapshotConsumption() {
   if (!tsf._TakePendingUI(generation, taken, taken_status))
     return false;
 
-  // Layout/inline-preedit callbacks can run after the candidate snapshot was
-  // already painted. They still belong to this response generation until a
-  // newer response or teardown invalidates it.
   if (!tsf._IsPendingUIGenerationCurrent(generation))
     return false;
 
@@ -44,8 +51,6 @@ bool CurrentGenerationSurvivesPendingSnapshotConsumption() {
   if (tsf._IsPendingUIGenerationCurrent(generation))
     return false;
 
-  // Invalidation advances the serial, but the new numeric value is not itself
-  // an active response generation until _QueuePendingUI installs a context.
   return !tsf._IsPendingUIGenerationCurrent(tsf._pendingUIGeneration);
 }
 

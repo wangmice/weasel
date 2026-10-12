@@ -3,6 +3,7 @@
 #include "WeaselTSF.h"
 #include "BstrUtil.h"
 #include "CandidateList.h"
+#include "AsyncUiPolicy.h"
 #include <KeyEvent.h>
 #include <math.h>
 
@@ -211,17 +212,23 @@ void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
     _ui->style().client_caps &= ~weasel::INLINE_PREEDIT_CAPABLE;
   }
 
-  /// In UWP, candidate window will only be shown
-  /// if it is owned by active view window
-  //_UpdateOwner();
   _ui->Update(ctx, status);
   if (_uiStarted)
     _UpdateUIElement();
 
-  if (status.composing)
-    Show(_pbShow);
-  else
-    Show(FALSE);
+  bool targetFocused = false;
+  if (_pContextDocument) {
+    com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+    com_ptr<ITfDocumentMgr> pDocumentMgr;
+    com_ptr<ITfContext> pContext;
+    targetFocused =
+        pThreadMgr && SUCCEEDED(pThreadMgr->GetFocus(&pDocumentMgr)) &&
+        pDocumentMgr && SUCCEEDED(pDocumentMgr->GetTop(&pContext)) &&
+        pContext == _pContextDocument;
+  }
+
+  Show(weasel::tsf::ShouldShowCandidateUI(
+      status.composing, _pbShow != FALSE, targetFocused));
 }
 
 void CCandidateList::UpdateInputPosition(RECT const& rc) {
