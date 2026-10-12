@@ -2,6 +2,7 @@
 #include <WeaselIPC.h>
 #include <PipeChannel.h>
 #include <cstdint>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
@@ -18,6 +19,7 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   using ServerHandler = std::function<void(PipeMessage, Respond)>;
 
   PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s = NULL);
+  ~PipeServer();
 
  public:
   void Listen(ServerHandler const& handler);
@@ -45,11 +47,14 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
    * that finishes instantly can never overtake its own registration. */
   void _LaunchWorker(HANDLE pipe, ServerHandler const& handler);
   void _MarkWorkerFinished(WorkerId worker_id);
-  void _ReapFinishedWorkers();
+  void _WorkerReaperLoop();
 
   std::mutex m_workers_mutex;
+  std::condition_variable m_workers_cv;
   std::map<WorkerId, WorkerEntry> m_workers;
   WorkerId m_next_worker_id = 0;
+  bool m_reaper_stop = false;
+  std::shared_ptr<boost::thread> m_reaper_thread;
 };
 
 }  // namespace weasel

@@ -465,11 +465,26 @@ void ServerImpl::HandlePipeMessage(PipeMessage pipe_msg, _Resp resp) {
 }
 
 PipeServer::PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s)
-    : PipeChannel(std::move(pn_cmd), s) {}
+    : PipeChannel(std::move(pn_cmd), s) {
+  m_reaper_thread = std::make_shared<boost::thread>(
+      [this] { _WorkerReaperLoop(); });
+}
+
+PipeServer::~PipeServer() {
+  // Normal ServerImpl teardown already drains after joining the listener.
+  // Keep this idempotent fallback for direct/test users of PipeServer.
+  DrainWorkers();
+  {
+    std::lock_guard<std::mutex> lock(m_workers_mutex);
+    m_reaper_stop = true;
+  }
+  m_workers_cv.notify_all();
+  if (m_reaper_thread && m_reaper_thread->joinable())
+    m_reaper_thread->join();
+}
 
 void PipeServer::Listen(ServerHandler const& handler) {
   for (;;) {
-    _ReapFinishedWorkers();
     boost::this_thread::interruption_point();
     HANDLE pipe = INVALID_HANDLE_VALUE;
     try {
@@ -514,11 +529,6 @@ void PipeServer::DrainWorkers() {
 }
 
 void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
-  // Finished workers retain their boost::thread ownership until an owner
-  // thread joins them. Reap before adding another connection so normal use
-  // does not accumulate completed thread objects between shutdowns.
-  _ReapFinishedWorkers();
-
   // The lock must cover thread creation AND registration: a worker whose
   // client dropped instantly may finish the moment it starts. Its finish
   // marker must queue behind registration so ownership cannot be lost.
@@ -541,28 +551,53 @@ void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
 }
 
 void PipeServer::_MarkWorkerFinished(WorkerId worker_id) {
-  std::lock_guard<std::mutex> lock(m_workers_mutex);
-  auto it = m_workers.find(worker_id);
-  if (it != m_workers.end())
-    it->second.finished = true;
-}
-
-void PipeServer::_ReapFinishedWorkers() {
-  std::vector<std::shared_ptr<boost::thread>> finished;
   {
     std::lock_guard<std::mutex> lock(m_workers_mutex);
-    for (auto it = m_workers.begin(); it != m_workers.end();) {
-      if (!it->second.finished) {
-        ++it;
-        continue;
-      }
-      finished.push_back(it->second.thread);
-      it = m_workers.erase(it);
+    auto it = m_workers.find(worker_id);
+    if (it != m_workers.end()) {
+      it->second.finished = true;
+    } else {
+      // DrainWorkers may already own this thread and be joining it.
+      return;
     }
   }
-  for (auto& worker : finished)
-    if (worker && worker->joinable())
-      worker->join();
+  m_workers_cv.notify_one();
+}
+
+void PipeServer::_WorkerReaperLoop() {
+  for (;;) {
+    std::vector<std::shared_ptr<boost::thread>> finished;
+    {
+      std::unique_lock<std::mutex> lock(m_workers_mutex);
+      m_workers_cv.wait(lock, [this] {
+        if (m_reaper_stop)
+          return true;
+        for (const auto& pair : m_workers) {
+          if (pair.second.finished)
+            return true;
+        }
+        return false;
+      });
+
+      if (m_reaper_stop)
+        return;
+
+      for (auto it = m_workers.begin(); it != m_workers.end();) {
+        if (!it->second.finished) {
+          ++it;
+          continue;
+        }
+        finished.push_back(it->second.thread);
+        it = m_workers.erase(it);
+      }
+    }
+
+    // Never join while holding m_workers_mutex: the worker may still be
+    // returning from _MarkWorkerFinished()/FinalizePipeHandle().
+    for (auto& worker : finished)
+      if (worker && worker->joinable())
+        worker->join();
+  }
 }
 
 PipeServer::ServerRunner PipeServer::GetServerRunner(

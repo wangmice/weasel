@@ -329,11 +329,11 @@ static void test_ordered_shutdown() {
   check(failed_fast, "1.5: dead connection fails fast");
 }
 
-/* 1.5b: a worker that has finished its I/O path must remain owned by the
- * server until an owner thread joins it. The old self-erasing registry left
- * a window where DrainWorkers saw an empty map while _ProcessPipeThread was
- * still returning through the PipeServer object. */
-static void test_finished_worker_remains_owned_until_drain() {
+/* 1.5b: a finished worker must be joined and removed even when no later
+ * client arrives to advance the listener loop. The worker itself still must
+ * not erase its ownership entry: the dedicated owner-side reaper performs
+ * the join and only then releases the entry. */
+static void test_finished_worker_is_reaped_without_new_connection() {
   std::wstring name = unique_pipe_name(L"owned");
   ExposedServer server{std::wstring(name)};
 
@@ -366,17 +366,11 @@ static void test_finished_worker_remains_owned_until_drain() {
   server.ExposedLaunch(instance, handler);
 
   // Closing the peer makes the worker's ReadFile fail and drives it through
-  // its exit path without a listener thread that could reap it for us.
+  // its exit path. There is deliberately no listener and no subsequent
+  // connection: cleanup must be driven only by the completion notification.
   ::CloseHandle(client);
-  check(wait_until([&] { return server.ExposedFinishedWorkerCount() == 1; },
-                   5000),
-        "1.5b: completed worker stays registered for owner join");
-  check(server.ExposedWorkerCount() == 1,
-        "1.5b: finished worker ownership is retained");
-
-  server.DrainWorkers();
-  check(server.ExposedWorkerCount() == 0,
-        "1.5b: drain joins and releases finished worker ownership");
+  check(wait_until([&] { return server.ExposedWorkerCount() == 0; }, 5000),
+        "1.5b: finished worker is owner-reaped without a new connection");
 }
 
 /* 1.6: a dropped connection must fail the in-flight request exactly once
@@ -838,7 +832,7 @@ int main() {
   test_start_session_body_offset();
   test_connect_bounded_wait();
   test_ordered_shutdown();
-  test_finished_worker_remains_owned_until_drain();
+  test_finished_worker_is_reaped_without_new_connection();
   test_transact_recovery_without_resend();
   test_command_response_body();
   test_failed_listener_backs_off();
