@@ -1,6 +1,7 @@
 #pragma once
 #include <WeaselIPC.h>
 #include <PipeChannel.h>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -29,14 +30,26 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   void DrainWorkers();
 
  protected:
-  void _ProcessPipeThread(HANDLE pipe, ServerHandler const& handler);
+  struct WorkerEntry {
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    std::shared_ptr<boost::thread> thread;
+    bool finished = false;
+  };
+
+  using WorkerId = std::uint64_t;
+
+  void _ProcessPipeThread(WorkerId worker_id,
+                          HANDLE pipe,
+                          ServerHandler const& handler);
   /* Create the worker thread and register it under one lock so a worker
    * that finishes instantly can never overtake its own registration. */
   void _LaunchWorker(HANDLE pipe, ServerHandler const& handler);
-  void _RemoveWorker(HANDLE pipe);
+  void _MarkWorkerFinished(WorkerId worker_id);
+  void _ReapFinishedWorkers();
 
   std::mutex m_workers_mutex;
-  std::map<HANDLE, std::shared_ptr<boost::thread>> m_workers;
+  std::map<WorkerId, WorkerEntry> m_workers;
+  WorkerId m_next_worker_id = 0;
 };
 
 }  // namespace weasel

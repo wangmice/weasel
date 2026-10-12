@@ -469,6 +469,7 @@ PipeServer::PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s)
 
 void PipeServer::Listen(ServerHandler const& handler) {
   for (;;) {
+    _ReapFinishedWorkers();
     boost::this_thread::interruption_point();
     HANDLE pipe = INVALID_HANDLE_VALUE;
     try {
@@ -496,11 +497,14 @@ void PipeServer::DrainWorkers() {
   {
     std::lock_guard<std::mutex> lock(m_workers_mutex);
     for (auto& pair : m_workers) {
-      // Abort pending reads and break the connection so blocked workers
-      // fail their next I/O instead of waiting for their clients forever.
-      ::CancelIoEx(pair.first, NULL);
-      ::DisconnectNamedPipe(pair.first);
-      workers.push_back(pair.second);
+      auto& entry = pair.second;
+      if (!entry.finished) {
+        // Abort pending reads and break the connection so blocked workers
+        // fail their next I/O instead of waiting for their clients forever.
+        ::CancelIoEx(entry.pipe, NULL);
+        ::DisconnectNamedPipe(entry.pipe);
+      }
+      workers.push_back(entry.thread);
     }
     m_workers.clear();
   }
@@ -510,23 +514,55 @@ void PipeServer::DrainWorkers() {
 }
 
 void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
+  // Finished workers retain their boost::thread ownership until an owner
+  // thread joins them. Reap before adding another connection so normal use
+  // does not accumulate completed thread objects between shutdowns.
+  _ReapFinishedWorkers();
+
   // The lock must cover thread creation AND registration: a worker whose
-  // client dropped instantly may call _RemoveWorker the moment it starts,
-  // and that removal must queue behind this critical section - otherwise it
-  // erases nothing (the entry is not there yet) and the registration that
-  // follows lingers in m_workers as an already-closed handle, which
-  // DrainWorkers would later misuse for CancelIoEx/DisconnectNamedPipe.
+  // client dropped instantly may finish the moment it starts. Its finish
+  // marker must queue behind registration so ownership cannot be lost.
   std::lock_guard<std::mutex> lock(m_workers_mutex);
+  WorkerId worker_id = 0;
+  do {
+    ++m_next_worker_id;
+    if (m_next_worker_id == 0)
+      ++m_next_worker_id;
+    worker_id = m_next_worker_id;
+  } while (m_workers.find(worker_id) != m_workers.end());
+
   // Copy the handler into the worker: it must not reference anything
   // on this thread's stack.
   auto worker = std::make_shared<boost::thread>(
-      [this, pipe, handler] { _ProcessPipeThread(pipe, handler); });
-  m_workers[pipe] = std::move(worker);
+      [this, worker_id, pipe, handler] {
+        _ProcessPipeThread(worker_id, pipe, handler);
+      });
+  m_workers.emplace(worker_id, WorkerEntry{pipe, std::move(worker), false});
 }
 
-void PipeServer::_RemoveWorker(HANDLE pipe) {
+void PipeServer::_MarkWorkerFinished(WorkerId worker_id) {
   std::lock_guard<std::mutex> lock(m_workers_mutex);
-  m_workers.erase(pipe);
+  auto it = m_workers.find(worker_id);
+  if (it != m_workers.end())
+    it->second.finished = true;
+}
+
+void PipeServer::_ReapFinishedWorkers() {
+  std::vector<std::shared_ptr<boost::thread>> finished;
+  {
+    std::lock_guard<std::mutex> lock(m_workers_mutex);
+    for (auto it = m_workers.begin(); it != m_workers.end();) {
+      if (!it->second.finished) {
+        ++it;
+        continue;
+      }
+      finished.push_back(it->second.thread);
+      it = m_workers.erase(it);
+    }
+  }
+  for (auto& worker : finished)
+    if (worker && worker->joinable())
+      worker->join();
 }
 
 PipeServer::ServerRunner PipeServer::GetServerRunner(
@@ -534,7 +570,9 @@ PipeServer::ServerRunner PipeServer::GetServerRunner(
   return [&handler, this]() { Listen(handler); };
 }
 
-void PipeServer::_ProcessPipeThread(HANDLE pipe, ServerHandler const& handler) {
+void PipeServer::_ProcessPipeThread(WorkerId worker_id,
+                                    HANDLE pipe,
+                                    ServerHandler const& handler) {
   try {
     for (;;) {
       Res msg;
@@ -543,9 +581,11 @@ void PipeServer::_ProcessPipeThread(HANDLE pipe, ServerHandler const& handler) {
     }
   } catch (...) {
   }
-  // Unregister before closing the handle so the registry never lends a
-  // closed (possibly reused) handle value to DrainWorkers.
-  _RemoveWorker(pipe);
+  // Keep thread ownership registered until an owner joins us. Mark before
+  // closing the handle: if DrainWorkers wins the mutex first the handle is
+  // still valid and cancellable; if it sees finished=true it skips cancellation
+  // and simply joins until this close/return completes.
+  _MarkWorkerFinished(worker_id);
   FinalizePipeHandle(pipe);
 }
 

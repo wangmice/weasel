@@ -80,8 +80,8 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
 
 STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
   // 焦点切换后，任何等待配对回调的 pending 状态都已失效
-  _testKeyDownPending.pending = FALSE;
-  _testKeyUpPending.pending = FALSE;
+  _testKeyDownPending.Clear();
+  _testKeyUpPending.Clear();
   if (fForeground)
     m_client.FocusIn();
   else {
@@ -117,15 +117,19 @@ STDMETHODIMP WeaselTSF::OnTestKeyDown(ITfContext* pContext,
                                       WPARAM wParam,
                                       LPARAM lParam,
                                       BOOL* pfEaten) {
-  _testKeyUpPending.pending = FALSE;
-  if (_testKeyDownPending.pending && _testKeyDownPending.vkey == wParam) {
+  _testKeyUpPending.Clear();
+  const auto vkey = static_cast<std::uint32_t>(wParam);
+  const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
+  if (_testKeyDownPending.IsDuplicateTest(vkey, messageTime)) {
     *pfEaten = TRUE;
     return S_OK;
   }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
-  _testKeyDownPending.pending = *pfEaten;
-  _testKeyDownPending.vkey = static_cast<UINT>(wParam);
+  if (*pfEaten)
+    _testKeyDownPending.Arm(vkey, messageTime);
+  else
+    _testKeyDownPending.Clear();
   return S_OK;
 }
 
@@ -133,11 +137,9 @@ STDMETHODIMP WeaselTSF::OnKeyDown(ITfContext* pContext,
                                   WPARAM wParam,
                                   LPARAM lParam,
                                   BOOL* pfEaten) {
-  _testKeyUpPending.pending = FALSE;
-  BOOL fDuplicate =
-      _testKeyDownPending.pending && _testKeyDownPending.vkey == wParam;
-  _testKeyDownPending.pending = FALSE;
-  if (fDuplicate) {
+  _testKeyUpPending.Clear();
+  if (_testKeyDownPending.ConsumePairedKey(
+          static_cast<std::uint32_t>(wParam))) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);
@@ -150,15 +152,19 @@ STDMETHODIMP WeaselTSF::OnTestKeyUp(ITfContext* pContext,
                                     WPARAM wParam,
                                     LPARAM lParam,
                                     BOOL* pfEaten) {
-  _testKeyDownPending.pending = FALSE;
-  if (_testKeyUpPending.pending && _testKeyUpPending.vkey == wParam) {
+  _testKeyDownPending.Clear();
+  const auto vkey = static_cast<std::uint32_t>(wParam);
+  const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
+  if (_testKeyUpPending.IsDuplicateTest(vkey, messageTime)) {
     *pfEaten = TRUE;
     return S_OK;
   }
   _ProcessKeyEvent(wParam, lParam, pfEaten);
   _UpdateComposition(pContext);
-  _testKeyUpPending.pending = *pfEaten;
-  _testKeyUpPending.vkey = static_cast<UINT>(wParam);
+  if (*pfEaten)
+    _testKeyUpPending.Arm(vkey, messageTime);
+  else
+    _testKeyUpPending.Clear();
   return S_OK;
 }
 
@@ -166,11 +172,9 @@ STDMETHODIMP WeaselTSF::OnKeyUp(ITfContext* pContext,
                                 WPARAM wParam,
                                 LPARAM lParam,
                                 BOOL* pfEaten) {
-  _testKeyDownPending.pending = FALSE;
-  BOOL fDuplicate =
-      _testKeyUpPending.pending && _testKeyUpPending.vkey == wParam;
-  _testKeyUpPending.pending = FALSE;
-  if (fDuplicate) {
+  _testKeyDownPending.Clear();
+  if (_testKeyUpPending.ConsumePairedKey(
+          static_cast<std::uint32_t>(wParam))) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);

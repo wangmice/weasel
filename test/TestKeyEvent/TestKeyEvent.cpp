@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include "../../include/KeyEvent.h"
+#include "../../WeaselTSF/KeyEventPairState.h"
 
 static int g_failures = 0;
 
@@ -142,11 +143,46 @@ static void testUnmappedKey() {
         "unmapped: reserved VK -> unknown key, keycode 0");
 }
 
+static void testPendingTestKeyPairing() {
+  weasel::tsf::PendingTestKeyState pending;
+
+  pending.Arm('A', 100);
+  check(pending.IsDuplicateTest('A', 100),
+        "pairing: repeated Test callback for same message is deduped");
+
+  // Regression: if the host swallowed the paired OnKeyDown after an eaten
+  // OnTestKeyDown, the next physical A arrives as a different Windows message
+  // and must not be mistaken for the previous Test callback.
+  check(!pending.IsDuplicateTest('A', 101),
+        "pairing: later same-vkey message is a new physical key");
+
+  pending.Arm('A', 101);
+  check(pending.ConsumePairedKey('A'),
+        "pairing: matching OnKey callback is consumed once");
+  check(!pending.ConsumePairedKey('A'),
+        "pairing: consumed state cannot swallow another key");
+
+  pending.Arm('A', 200);
+  check(!pending.ConsumePairedKey('B'),
+        "pairing: different vkey is not treated as the old pair");
+  check(!pending.pending,
+        "pairing: different key ends the stale Test cycle");
+
+  pending.Arm(VK_BACK, 300);
+  check(!pending.IsDuplicateTest(VK_BACK, 301),
+        "pairing: auto-repeat message for same key remains deliverable");
+
+  pending.Clear();
+  check(!pending.pending && !pending.IsDuplicateTest('A', 100),
+        "pairing: explicit reset clears pending state");
+}
+
 int main() {
   testKeyInfoPacking();
   testTranslateKeycode();
   testMasks();
   testUnmappedKey();
+  testPendingTestKeyPairing();
 
   printf(g_failures ? "FAILED: %d failure(s)\n" : "PASSED: %d failure(s)\n",
          g_failures);

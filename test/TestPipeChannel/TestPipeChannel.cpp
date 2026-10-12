@@ -95,10 +95,22 @@ class ExposedServer : public weasel::PipeServer {
   void ExposedReceive(HANDLE pipe, LPVOID msg, size_t len) {
     _Receive(pipe, msg, len);
   }
+  void ExposedLaunch(HANDLE pipe, ServerHandler const& handler) {
+    _LaunchWorker(pipe, handler);
+  }
   /* number of currently registered connection workers */
   size_t ExposedWorkerCount() {
     std::lock_guard<std::mutex> lock(m_workers_mutex);
     return m_workers.size();
+  }
+  size_t ExposedFinishedWorkerCount() {
+    std::lock_guard<std::mutex> lock(m_workers_mutex);
+    size_t count = 0;
+    for (const auto& pair : m_workers) {
+      if (pair.second.finished)
+        ++count;
+    }
+    return count;
   }
 };
 
@@ -315,6 +327,56 @@ static void test_ordered_shutdown() {
     failed_fast = true;
   }
   check(failed_fast, "1.5: dead connection fails fast");
+}
+
+/* 1.5b: a worker that has finished its I/O path must remain owned by the
+ * server until an owner thread joins it. The old self-erasing registry left
+ * a window where DrainWorkers saw an empty map while _ProcessPipeThread was
+ * still returning through the PipeServer object. */
+static void test_finished_worker_remains_owned_until_drain() {
+  std::wstring name = unique_pipe_name(L"owned");
+  ExposedServer server{std::wstring(name)};
+
+  HANDLE instance = server.ExposedCreate();
+  check(instance != INVALID_HANDLE_VALUE, "1.5b: create server instance");
+
+  HANDLE client = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                0, NULL, OPEN_EXISTING, 0, NULL);
+  check(client != INVALID_HANDLE_VALUE, "1.5b: connect raw client");
+  if (instance == INVALID_HANDLE_VALUE || client == INVALID_HANDLE_VALUE) {
+    if (client != INVALID_HANDLE_VALUE)
+      ::CloseHandle(client);
+    if (instance != INVALID_HANDLE_VALUE)
+      ::CloseHandle(instance);
+    return;
+  }
+
+  try {
+    server.ExposedAccept(instance);
+  } catch (...) {
+    check(false, "1.5b: accept raw client");
+    ::CloseHandle(client);
+    ::CloseHandle(instance);
+    return;
+  }
+
+  auto handler = [](weasel::PipeMessage, weasel::PipeServer::Respond resp) {
+    resp(1);
+  };
+  server.ExposedLaunch(instance, handler);
+
+  // Closing the peer makes the worker's ReadFile fail and drives it through
+  // its exit path without a listener thread that could reap it for us.
+  ::CloseHandle(client);
+  check(wait_until([&] { return server.ExposedFinishedWorkerCount() == 1; },
+                   5000),
+        "1.5b: completed worker stays registered for owner join");
+  check(server.ExposedWorkerCount() == 1,
+        "1.5b: finished worker ownership is retained");
+
+  server.DrainWorkers();
+  check(server.ExposedWorkerCount() == 0,
+        "1.5b: drain joins and releases finished worker ownership");
 }
 
 /* 1.6: a dropped connection must fail the in-flight request exactly once
@@ -776,6 +838,7 @@ int main() {
   test_start_session_body_offset();
   test_connect_bounded_wait();
   test_ordered_shutdown();
+  test_finished_worker_remains_owned_until_drain();
   test_transact_recovery_without_resend();
   test_command_response_body();
   test_failed_listener_backs_off();
