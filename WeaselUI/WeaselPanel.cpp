@@ -301,8 +301,13 @@ void WeaselPanel::MoveTo(RECT rc) {
 }
 
 void WeaselPanel::_ResizeWindow() {
-  CSize& size = m_layout->GetContentSize();
+  const CSize& size = m_layout->GetContentSize();
+  RECT client_rect{};
+  GetClientRect(m_hWnd, &client_rect);
+  const int client_width = client_rect.right - client_rect.left;
+  const int client_height = client_rect.bottom - client_rect.top;
   if (m_lastWindowWidth == size.cx && m_lastWindowHeight == size.cy &&
+      client_width == size.cx && client_height == size.cy &&
       m_pD2D->swapChain) {
     return;
   }
@@ -1131,6 +1136,9 @@ void WeaselPanel::OnDestroy() {
   m_shown = false;
   m_layout_ready = false;
   m_layout.reset();
+  // The next HWND starts with a small placeholder size.
+  m_lastWindowWidth = -1;
+  m_lastWindowHeight = -1;
   m_sticky = false;
   m_dragging = false;
 }
