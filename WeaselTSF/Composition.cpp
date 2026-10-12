@@ -555,7 +555,8 @@ class CApplyResponseEditSession : public CEditSession {
       hr = _pTextService->_ApplyResponseSnapshot(
           ec, _request->context, std::move(_request->snapshot));
     }
-    _pTextService->_CompleteResponseApply();
+    if (_queue->Complete(_flightToken))
+      _pTextService->_ScheduleNextResponseApply(false);
     return hr;
   }
 
@@ -583,7 +584,8 @@ class CContextHandoffEditSession : public CEditSession {
       return S_OK;
     const HRESULT hr = _pTextService->_EndCompositionLocked(
         ec, _pContext, _pComposition, TRUE, TRUE);
-    _pTextService->_CompleteResponseApply();
+    if (_queue->Complete(_flightToken))
+      _pTextService->_ScheduleNextResponseApply(false);
     return hr;
   }
 
@@ -681,9 +683,9 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
     return;
   }
 
-  // If a synchronous session ran, _CompleteResponseApply already completed
-  // this token (and may have started another). If it did not run, put the
-  // untouched request back at the head for a later retry.
+  // If a synchronous session ran, it already completed this token (and may
+  // have started another). If it did not run, put the untouched request back
+  // at the head for a later retry.
   if (sessionHr != TF_S_ASYNC && _responseApplyQueue.InFlight() &&
       _responseApplyQueue.FlightToken() == flightToken) {
     _responseApplyQueue.RestoreFront(std::move(request), flightToken);

@@ -51,10 +51,21 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
   if (!restored || *restored != 2)
     return false;
 
-  // Deactivation/reset invalidates callbacks from an older flight.
+  // Reset invalidates the old callback. Even if re-entry starts a new flight
+  // before that old callback returns, completing the stale token must leave the
+  // new flight untouched.
   queue.Reset();
-  return !queue.InFlight() && queue.PendingCount() == 0 &&
-         !queue.Complete(restoredToken);
+  queue.Push(std::make_shared<int>(3));
+  auto current = queue.TakeNext();
+  const auto currentToken = queue.FlightToken();
+  if (!current || *current != 3 || currentToken == restoredToken)
+    return false;
+  if (queue.Complete(restoredToken))
+    return false;
+  if (!queue.InFlight() || queue.FlightToken() != currentToken)
+    return false;
+  return queue.Complete(currentToken) && !queue.InFlight() &&
+         queue.PendingCount() == 0;
 }
 
 static_assert(
