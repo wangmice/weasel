@@ -541,13 +541,30 @@ void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
     worker_id = m_next_worker_id;
   } while (m_workers.find(worker_id) != m_workers.end());
 
-  // Copy the handler into the worker: it must not reference anything
-  // on this thread's stack.
-  auto worker = std::make_shared<boost::thread>(
-      [this, worker_id, pipe, handler] {
-        _ProcessPipeThread(worker_id, pipe, handler);
-      });
-  m_workers.emplace(worker_id, WorkerEntry{pipe, std::move(worker), false});
+  // Allocate and register the ownership slot before starting the thread.
+  // If map allocation fails, no worker exists yet and Listen() may safely
+  // close the pipe. Once the thread exists, its slot is guaranteed to exist;
+  // because m_workers_mutex is still held, an immediately finishing worker
+  // can only enter _MarkWorkerFinished() after thread ownership is published.
+  auto [it, inserted] =
+      m_workers.emplace(worker_id, WorkerEntry{pipe, nullptr, false});
+  if (!inserted)
+    throw static_cast<DWORD>(ERROR_ALREADY_EXISTS);
+
+  try {
+    // Copy the handler into the worker: it must not reference anything
+    // on this thread's stack.
+    auto worker = std::make_shared<boost::thread>(
+        [this, worker_id, pipe, handler] {
+          _ProcessPipeThread(worker_id, pipe, handler);
+        });
+    it->second.thread = std::move(worker);
+  } catch (...) {
+    // Thread construction failed before any worker could run. Roll back the
+    // pre-registered slot so Listen() remains the sole owner of |pipe|.
+    m_workers.erase(it);
+    throw;
+  }
 }
 
 void PipeServer::_MarkWorkerFinished(WorkerId worker_id) {
