@@ -16,6 +16,19 @@ enum class ApplyFailureClass : std::uint8_t {
 
 inline constexpr unsigned kMaxApplyRetries = 2;
 
+struct RetryBudget {
+  unsigned handoff_retries = 0;
+  unsigned apply_retries = 0;
+
+  constexpr bool CanRetryHandoff() const {
+    return handoff_retries < kMaxApplyRetries;
+  }
+
+  constexpr bool CanRetryApply() const {
+    return apply_retries < kMaxApplyRetries;
+  }
+};
+
 constexpr bool CanRetryApplyFailure(ApplyProgress progress,
                                     ApplyFailureClass failure,
                                     unsigned retries) {
@@ -37,6 +50,11 @@ constexpr ScheduleFailureAction ClassifyScheduleFailure(bool disconnected,
   if (locked)
     return ScheduleFailureAction::RetryLater;
   return ScheduleFailureAction::Drop;
+}
+
+constexpr bool ShouldClearCompositionRange(bool clearRequested,
+                                           bool compositionStillCurrent) {
+  return clearRequested && compositionStillCurrent;
 }
 
 constexpr bool ShouldPublishCandidateImmediately(bool uiLess) {

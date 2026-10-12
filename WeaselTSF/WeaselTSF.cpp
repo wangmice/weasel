@@ -210,8 +210,9 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   return S_OK;
 }
 STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
-  _responseApplyQueue.Reset();
-  _pendingCommit.clear();
+  // Thread focus loss invalidates composition state, not already emitted
+  // commit events. _AbortComposition advances the engine epoch and preserves
+  // durable queued commits for their original document context.
   _AbortComposition();
   return S_OK;
 }

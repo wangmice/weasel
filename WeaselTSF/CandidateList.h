@@ -51,7 +51,7 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   void UpdateInputPosition(RECT const& rc);
   void Destroy();
   void DestroyAll();
-  void StartUI();
+  void StartUI(com_ptr<ITfContext> pContext);
   void EndUI();
   bool IsUIless() const { return _uiStarted && !_pbShow; }
 
@@ -66,14 +66,10 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   weasel::UIStyle& style();
 
  private:
-  // void _UpdateOwner();
   HWND _GetActiveWnd();
   HRESULT _UpdateUIElement();
 
-  // for CCandidateList::EndUI(), after ending composition ||
-  // WeaselTSF::_EndUI()
   void _DisposeUIWindow();
-  // for CCandidateList::Destroy(), when inputing app exit
   void _DisposeUIWindowAll();
   void _MakeUIWindow();
 
@@ -91,5 +87,8 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   weasel::UIStyle _style;
   bool _ui_warmed_up = false;
 
+  // Exact response/composition target. UIElement callbacks and the native
+  // owner window must stay bound to this context even if thread focus changes
+  // before an asynchronous response session actually executes.
   com_ptr<ITfContext> _pContextDocument;
 };

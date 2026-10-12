@@ -7,4 +7,10 @@ constexpr bool ShouldBeginCandidateUI(bool compositionCreated,
   return compositionCreated && generationCurrent;
 }
 
+constexpr bool ShouldShowCandidateUI(bool composing,
+                                     bool hostShow,
+                                     bool targetFocused) {
+  return composing && hostShow && targetFocused;
+}
+
 }  // namespace weasel::tsf

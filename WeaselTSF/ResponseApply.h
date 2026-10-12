@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ResponseApplyState.h"
+#include "ResponseEpoch.h"
 #include <WeaselIPCData.h>
 #include <memory>
 #include <string>
@@ -13,8 +14,9 @@ struct ResponseApplySnapshot {
   std::shared_ptr<Context> context;
   Status status;
   Config config;
+  ResponseIdentity identity;
   ApplyProgress progress = ApplyProgress::BeforeCommit;
-  unsigned retry_count = 0;
+  RetryBudget retries;
 };
 
 struct ResponseApplyPlan {
@@ -33,9 +35,10 @@ inline ResponseApplySnapshot MakeResponseApplySnapshot(
     std::wstring commit,
     std::shared_ptr<Context> context,
     Status status,
-    Config config) {
+    Config config,
+    ResponseIdentity identity = {}) {
   return {std::move(commit), std::move(context), std::move(status),
-          std::move(config), ApplyProgress::BeforeCommit, 0};
+          std::move(config), identity, ApplyProgress::BeforeCommit, {}};
 }
 
 }  // namespace weasel::tsf

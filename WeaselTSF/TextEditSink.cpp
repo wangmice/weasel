@@ -41,7 +41,6 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
             _EndComposition(pContext, true);
           pRangeComposition->Release();
         }
-        // GetSelection AddRefs every returned range; release our reference.
         tfSelection.range->Release();
       }
     }
@@ -50,15 +49,14 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
   /* text modification? */
   if (pEditRecord->GetTextAndPropertyUpdates(TF_GTP_INCL_TEXT, NULL, 0,
                                              &pEnumTextChanges) == S_OK) {
-    if (pEnumTextChanges->Next(1, &pRange, NULL) == S_OK) {
+    if (pEnumTextChanges->Next(1, &pRange, NULL) == S_OK)
       pRange->Release();
-    }
     pEnumTextChanges->Release();
   }
 
-  // OnEndEdit runs after a READWRITE DoEditSession releases its lock. Only
-  // wake the FIFO when a previous scheduling/apply attempt explicitly asked
-  // to retry; unrelated edit notifications must not create a retry loop.
+  // TF_E_LOCKED is only meaningful while another text service owns this
+  // context. Retry after that READWRITE session has ended instead of burning
+  // the bounded retry budget recursively inside the same lock stack.
   if (_responseApplyQueue.ConsumeRetryRequest())
     _ScheduleNextResponseApply(false);
   return S_OK;
@@ -74,9 +72,6 @@ STDMETHODIMP WeaselTSF::OnLayoutChange(ITfContext* pContext,
     return S_OK;
 
   if (lcode == TF_LC_CHANGE) {
-    // Layout notifications can arrive after the candidate snapshot has already
-    // been consumed. Keep them bound to the response generation instead of
-    // downgrading to generation 0 and bypassing stale-position protection.
     _UpdateCompositionWindow(pContext, _pendingUIGeneration);
   }
   return S_OK;
@@ -86,8 +81,6 @@ BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
   com_ptr<ITfSource> pSource;
   BOOL fRet;
 
-  /* clear out any previous sink first: either advise may have succeeded
-   * alone, so check both cookies and only unadvise the valid ones */
   if (_dwTextEditSinkCookie != TF_INVALID_COOKIE ||
       _dwTextLayoutSinkCookie != TF_INVALID_COOKIE) {
     _pTextEditSinkContext->QueryInterface(&pSource);
@@ -111,7 +104,6 @@ BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
     return TRUE;
 
   fRet = FALSE;
-
   pSource.Release();
 
   if (_pTextEditSinkContext->QueryInterface(IID_ITfSource, (void**)&pSource) ==
@@ -127,9 +119,8 @@ BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
     } else
       _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
   }
-  if (fRet == FALSE) {
+  if (fRet == FALSE)
     _pTextEditSinkContext = nullptr;
-  }
 
   return fRet;
 }

@@ -8,11 +8,30 @@ namespace {
 
 bool ResponseApplyQueueIsSingleFlightAndFifo() {
   weasel::tsf::SerialApplyQueue<std::shared_ptr<int>> queue;
+  const auto initialEpoch = queue.CurrentEpoch();
+  if (initialEpoch == 0 || queue.LastEnqueuedSerial() != 0)
+    return false;
+  if (!queue.MarkSerialEnqueued(7) || queue.MarkSerialEnqueued(7) ||
+      queue.LastEnqueuedSerial() != 7)
+    return false;
+
   queue.Push(std::make_shared<int>(1));
   queue.Push(std::make_shared<int>(2));
 
-  // A context-handoff barrier occupies the one flight slot without consuming
-  // the response at the queue head.
+  queue.AdvanceEpoch();
+  if (queue.CurrentEpoch() == initialEpoch || queue.PendingCount() != 2 ||
+      queue.LastEnqueuedSerial() != 0)
+    return false;
+
+  const auto pauseToken = queue.Pause();
+  if (pauseToken == 0 || queue.CanSchedule() || !queue.IsPaused() ||
+      queue.PendingCount() != 2)
+    return false;
+  if (queue.Resume(pauseToken + 1) || !queue.IsPaused())
+    return false;
+  if (!queue.Resume(pauseToken) || !queue.CanSchedule() || queue.IsPaused())
+    return false;
+
   if (!queue.BeginBarrier())
     return false;
   const auto barrierToken = queue.FlightToken();
@@ -41,9 +60,9 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
   if (!second || *second != 2)
     return false;
 
-  // A RequestEditSession failure must put the exact request back at the head,
-  // ahead of work that arrived later. Retry intent is separate so OnEndEdit
-  // only wakes work that explicitly waited for the prior write lock to end.
+  // A lock-conflict retry is not run recursively inside the same lock stack.
+  // It is explicitly requested and consumed once by OnEndEdit after the
+  // competing write session releases the context.
   if (!queue.RestoreFront(std::move(second), secondToken) ||
       !queue.CanSchedule())
     return false;
@@ -56,13 +75,17 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
   if (!restored || *restored != 2)
     return false;
 
-  // Reset invalidates retry intent and the old callback. Even if re-entry
-  // starts a new flight before that old callback returns, completing the stale
-  // token must leave the new flight untouched.
+  const auto epochBeforeReset = queue.CurrentEpoch();
+  const auto stalePauseToken = queue.Pause();
   queue.RequestRetry();
   queue.Reset();
-  if (queue.ConsumeRetryRequest())
+  if (queue.CurrentEpoch() == epochBeforeReset || queue.PendingCount() != 0 ||
+      queue.LastEnqueuedSerial() != 0 || queue.IsPaused() ||
+      queue.ConsumeRetryRequest())
     return false;
+  if (queue.Resume(stalePauseToken))
+    return false;
+
   queue.Push(std::make_shared<int>(3));
   auto current = queue.TakeNext();
   const auto currentToken = queue.FlightToken();
