@@ -232,24 +232,74 @@ struct ProfileSwitchProbe {
   int fail_step = 0;
   HRESULT failure = HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
   HRESULT rollback_failure = S_OK;
+  bool initial_old_profile = true;
+  bool initial_new_profile = false;
+  bool initial_old_layout = true;
+  bool initial_new_layout = false;
+  bool old_profile = initial_old_profile;
+  bool new_profile = initial_new_profile;
+  bool old_layout = initial_old_layout;
+  bool new_layout = initial_new_layout;
   std::vector<std::string> calls;
 
-  HRESULT call(const char* name, int step) {
+  ProfileSwitchProbe() = default;
+  ProfileSwitchProbe(bool old_profile_enabled,
+                     bool new_profile_enabled,
+                     bool old_layout_enabled,
+                     bool new_layout_enabled)
+      : initial_old_profile(old_profile_enabled),
+        initial_new_profile(new_profile_enabled),
+        initial_old_layout(old_layout_enabled),
+        initial_new_layout(new_layout_enabled),
+        old_profile(old_profile_enabled),
+        new_profile(new_profile_enabled),
+        old_layout(old_layout_enabled),
+        new_layout(new_layout_enabled) {}
+
+  HRESULT forward(const char* name, int step, bool& state, bool desired) {
     calls.emplace_back(name);
-    if (fail_step == step)
-      return failure;
-    return step == 0 ? rollback_failure : S_OK;
+    // Model a pessimistic API: the failed call may already have changed state.
+    state = desired;
+    return fail_step == step ? failure : S_OK;
   }
-  HRESULT enable_new() { return call("enable_new", 1); }
-  HRESULT disable_old() { return call("disable_old", 2); }
-  HRESULT remove_old_layout() { return call("remove_old_layout", 3); }
-  HRESULT install_new_layout() { return call("install_new_layout", 4); }
-  HRESULT enable_old() { return call("enable_old", 0); }
-  HRESULT disable_new() { return call("disable_new", 0); }
-  HRESULT install_old_layout() { return call("install_old_layout", 0); }
-  HRESULT remove_new_layout() { return call("remove_new_layout", 0); }
+  HRESULT restore(const char* name, bool& state, bool initial) {
+    calls.emplace_back(name);
+    if (FAILED(rollback_failure))
+      return rollback_failure;
+    state = initial;
+    return S_OK;
+  }
+
+  HRESULT enable_new() { return forward("enable_new", 1, new_profile, true); }
+  HRESULT disable_old() {
+    return forward("disable_old", 2, old_profile, false);
+  }
+  HRESULT remove_old_layout() {
+    return forward("remove_old_layout", 3, old_layout, false);
+  }
+  HRESULT install_new_layout() {
+    return forward("install_new_layout", 4, new_layout, true);
+  }
+  HRESULT restore_new_profile() {
+    return restore("restore_new_profile", new_profile, initial_new_profile);
+  }
+  HRESULT restore_old_profile() {
+    return restore("restore_old_profile", old_profile, initial_old_profile);
+  }
+  HRESULT restore_old_layout() {
+    return restore("restore_old_layout", old_layout, initial_old_layout);
+  }
+  HRESULT restore_new_layout() {
+    return restore("restore_new_layout", new_layout, initial_new_layout);
+  }
   bool failed(HRESULT hr) const { return FAILED(hr); }
   HRESULT success() const { return S_OK; }
+  bool matches_initial_state() const {
+    return old_profile == initial_old_profile &&
+           new_profile == initial_new_profile &&
+           old_layout == initial_old_layout &&
+           new_layout == initial_new_layout;
+  }
 };
 
 static void test_profile_switch_transaction() {
@@ -260,52 +310,42 @@ static void test_profile_switch_transaction() {
   {
     ProfileSwitchProbe ops;
     check(SUCCEEDED(weasel::setup::RunProfileSwitchTransaction(ops)) &&
+              !ops.old_profile && ops.new_profile && !ops.old_layout &&
+              ops.new_layout &&
               ops.calls == std::vector<std::string>({
                                "enable_new", "disable_old",
                                "remove_old_layout", "install_new_layout"}),
-          "profile switch success runs each forward step once");
+          "profile switch success reaches the requested final state");
   }
-  {
+
+  const std::vector<std::vector<std::string>> expected_calls = {
+      {},
+      {"enable_new", "restore_new_profile"},
+      {"enable_new", "disable_old", "restore_old_profile",
+       "restore_new_profile"},
+      {"enable_new", "disable_old", "remove_old_layout",
+       "restore_old_layout", "restore_old_profile", "restore_new_profile"},
+      {"enable_new", "disable_old", "remove_old_layout",
+       "install_new_layout", "restore_new_layout", "restore_old_layout",
+       "restore_old_profile", "restore_new_profile"},
+  };
+  for (int step = 1; step <= 4; ++step) {
     ProfileSwitchProbe ops;
-    ops.fail_step = 1;
+    ops.fail_step = step;
     const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
-    check(hr == ops.failure &&
-              ops.calls == std::vector<std::string>(
-                               {"enable_new", "enable_old", "disable_new"}),
-          "enable-new failure preserves HRESULT and restores old profile");
+    check(hr == ops.failure && ops.matches_initial_state() &&
+              ops.calls == expected_calls[step],
+          "failed profile switch restores the exact pre-transaction state");
   }
+
   {
-    ProfileSwitchProbe ops;
-    ops.fail_step = 2;
-    const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
-    check(hr == ops.failure &&
-              ops.calls == std::vector<std::string>({
-                               "enable_new", "disable_old", "enable_old",
-                               "disable_new"}),
-          "disable-old failure rolls back the newly enabled profile");
-  }
-  {
-    ProfileSwitchProbe ops;
+    // A user may already have enabled the destination profile/layout manually.
+    // Rollback must preserve that pre-existing state instead of disabling it.
+    ProfileSwitchProbe ops(true, true, true, true);
     ops.fail_step = 3;
     const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
-    check(hr == ops.failure &&
-              ops.calls == std::vector<std::string>({
-                               "enable_new", "disable_old",
-                               "remove_old_layout", "enable_old",
-                               "install_old_layout", "disable_new"}),
-          "old-layout removal failure restores profile and layout state");
-  }
-  {
-    ProfileSwitchProbe ops;
-    ops.fail_step = 4;
-    const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
-    check(hr == ops.failure &&
-              ops.calls == std::vector<std::string>({
-                               "enable_new", "disable_old",
-                               "remove_old_layout", "install_new_layout",
-                               "enable_old", "install_old_layout",
-                               "remove_new_layout", "disable_new"}),
-          "new-layout install failure performs full best-effort rollback");
+    check(hr == ops.failure && ops.matches_initial_state(),
+          "rollback preserves pre-existing destination profile and layout");
   }
   {
     ProfileSwitchProbe ops;

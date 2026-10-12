@@ -28,6 +28,26 @@ static const GUID c_guidProfile = {
 #define ILOT_UNINSTALL 0x00000001
 typedef BOOL(WINAPI* PTF_INSTALLLAYOUTORTIP)(LPCWSTR psz, DWORD dwFlags);
 
+struct WeaselLayoutOrTipProfile {
+  DWORD dwProfileType;
+  LANGID langid;
+  CLSID clsid;
+  GUID guidProfile;
+  GUID catid;
+  DWORD dwSubstituteLayout;
+  DWORD dwFlags;
+  WCHAR szId[MAX_PATH];
+};
+
+constexpr DWORD kLayoutOrTipInputProcessor = 1;
+constexpr DWORD kLayoutOrTipDisabled = 0x0002;
+typedef UINT(WINAPI* PTF_ENUMENABLEDLAYOUTORTIP)(
+    LPCWSTR pszUserReg,
+    LPCWSTR pszSystemReg,
+    LPCWSTR pszSoftwareReg,
+    WeaselLayoutOrTipProfile* pLayoutOrTipProfile,
+    UINT uBufLength);
+
 #define WEASEL_WER_KEY                            \
   L"SOFTWARE\\Microsoft\\Windows\\Windows Error " \
   L"Reporting\\LocalDumps\\WeaselServer.exe"
@@ -316,54 +336,68 @@ int uninstall_ime_file(const std::wstring& ext,
 // 注册IME输入法
 // `register_ime` (IMM/.ime) support removed — TSF-only build
 
-// 启用/停用一个 profile 的 TSF 启用状态（注册条目保留，用于已安装系统
-// 切换 profile；停用≠移除，区别于卸载路径的 RemoveLanguageProfile）
-static HRESULT set_profile_enabled(const std::wstring& profile, BOOL fEnable) {
+// 修改安装只切换当前用户的 profile 启用状态。全局/default-for-all-users
+// 状态只由初始安装路径维护，不属于 per-user profile switch 事务。
+static HRESULT set_profile_enabled_for_user(const std::wstring& profile,
+                                            BOOL fEnable) {
   ITfInputProcessorProfiles* pProfiles = NULL;
   HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                                CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles,
+                                CLSCTX_INPROC_SERVER,
+                                IID_ITfInputProcessorProfiles,
                                 (LPVOID*)&pProfiles);
   if (FAILED(hr))
     return hr;
 
-  const LANGID lang_id = profile_to_lang_id(profile);
-  hr = pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
+  hr = pProfiles->EnableLanguageProfile(c_clsidTextService,
+                                        profile_to_lang_id(profile),
                                         c_guidProfile, fEnable);
-  if (SUCCEEDED(hr)) {
-    const HRESULT default_hr = pProfiles->EnableLanguageProfileByDefault(
-        c_clsidTextService, lang_id, c_guidProfile, fEnable);
-    if (FAILED(default_hr)) {
-      // Restore both flags to their previous state. The caller owns the
-      // larger old/new-profile transaction and will perform further rollback.
-      pProfiles->EnableLanguageProfileByDefault(
-          c_clsidTextService, lang_id, c_guidProfile, !fEnable);
-      pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
-                                       c_guidProfile, !fEnable);
-      hr = default_hr;
-    }
-  }
   pProfiles->Release();
   return hr;
 }
 
-// 注册/注销路径的 profile 处理：TRUE=启用（同 set_profile_enabled）；
-// FALSE=彻底移除注册条目
-void enable_profile(BOOL fEnable, const std::wstring& profile) {
-  if (fEnable) {
-    set_profile_enabled(profile, TRUE);
-    return;
-  }
+static HRESULT is_profile_enabled_for_user(const std::wstring& profile,
+                                           BOOL* enabled) {
+  if (!enabled)
+    return E_POINTER;
 
   ITfInputProcessorProfiles* pProfiles = NULL;
   HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                                CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles,
+                                CLSCTX_INPROC_SERVER,
+                                IID_ITfInputProcessorProfiles,
                                 (LPVOID*)&pProfiles);
-  if (SUCCEEDED(hr)) {
-    pProfiles->RemoveLanguageProfile(c_clsidTextService,
-                                     profile_to_lang_id(profile),
+  if (FAILED(hr))
+    return hr;
+
+  hr = pProfiles->IsEnabledLanguageProfile(
+      c_clsidTextService, profile_to_lang_id(profile), c_guidProfile, enabled);
+  pProfiles->Release();
+  return hr;
+}
+
+// 注册/注销路径保持原语义：初始安装时启用当前用户 profile，并把所选
+// profile 设为默认；卸载时彻底移除注册条目。
+void enable_profile(BOOL fEnable, const std::wstring& profile) {
+  ITfInputProcessorProfiles* pProfiles = NULL;
+  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
+                                CLSCTX_INPROC_SERVER,
+                                IID_ITfInputProcessorProfiles,
+                                (LPVOID*)&pProfiles);
+  if (FAILED(hr))
+    return;
+
+  const LANGID lang_id = profile_to_lang_id(profile);
+  if (fEnable) {
+    hr = pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
+                                          c_guidProfile, TRUE);
+    if (SUCCEEDED(hr)) {
+      pProfiles->EnableLanguageProfileByDefault(c_clsidTextService, lang_id,
+                                                c_guidProfile, TRUE);
+    }
+  } else {
+    pProfiles->RemoveLanguageProfile(c_clsidTextService, lang_id,
                                      c_guidProfile);
-    pProfiles->Release();
   }
+  pProfiles->Release();
 }
 
 // InstallLayoutOrTip
@@ -403,38 +437,134 @@ static HRESULT install_layout_or_tip(const std::wstring& profile,
   return weasel::setup::ResultFromBool(ok != FALSE, S_OK, E_FAIL);
 }
 
-// 已安装状态下切换 profile（K14）。regsvr32 的 RegisterProfiles 在安装时
-// 已注册全部五个 langid 的 profile 条目（仅选定的一个启用），因此切换只需
-// 翻转启用状态并同步用户的输入法列表，无需重跑 regsvr32。
-// 任一步失败都尽力恢复旧 profile/layout；事务内部保留首个失败 HRESULT。
+static HRESULT is_layout_or_tip_enabled(const std::wstring& profile,
+                                        bool* enabled) {
+  if (!enabled)
+    return E_POINTER;
+  *enabled = false;
+
+  HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
+  if (!hInputDLL) {
+    const DWORD error = GetLastError();
+    return HRESULT_FROM_WIN32(error ? error : ERROR_MOD_NOT_FOUND);
+  }
+
+  PTF_ENUMENABLEDLAYOUTORTIP pfnEnumEnabledLayoutOrTip =
+      (PTF_ENUMENABLEDLAYOUTORTIP)GetProcAddress(hInputDLL,
+                                                "EnumEnabledLayoutOrTip");
+  if (!pfnEnumEnabledLayoutOrTip) {
+    const DWORD error = GetLastError();
+    FreeLibrary(hInputDLL);
+    return HRESULT_FROM_WIN32(error ? error : ERROR_PROC_NOT_FOUND);
+  }
+
+  const UINT count =
+      (*pfnEnumEnabledLayoutOrTip)(NULL, NULL, NULL, NULL, 0);
+  if (count == 0) {
+    FreeLibrary(hInputDLL);
+    return S_OK;
+  }
+
+  std::vector<WeaselLayoutOrTipProfile> profiles(count);
+  const UINT copied = (*pfnEnumEnabledLayoutOrTip)(
+      NULL, NULL, NULL, profiles.data(), count);
+  FreeLibrary(hInputDLL);
+  if (copied == 0)
+    return E_FAIL;
+
+  const LANGID lang_id = profile_to_lang_id(profile);
+  const UINT limit = copied < count ? copied : count;
+  for (UINT i = 0; i < limit; ++i) {
+    const auto& item = profiles[i];
+    if ((item.dwProfileType & kLayoutOrTipInputProcessor) ==
+            kLayoutOrTipInputProcessor &&
+        (item.dwFlags & kLayoutOrTipDisabled) == 0 &&
+        item.langid == lang_id &&
+        IsEqualGUID(item.clsid, c_clsidTextService) &&
+        IsEqualGUID(item.guidProfile, c_guidProfile)) {
+      *enabled = true;
+      break;
+    }
+  }
+  return S_OK;
+}
+
+// 已安装状态下切换 profile（K14）。先快照当前用户实际状态，再只执行必要
+// 的变更。失败时按快照精确恢复，避免关闭用户原本已启用的 profile/layout。
 int switch_registered_profile(const std::wstring& old_profile,
                               const std::wstring& new_profile,
                               bool silent) {
+  BOOL old_profile_enabled = FALSE;
+  BOOL new_profile_enabled = FALSE;
+  bool old_layout_enabled = false;
+  bool new_layout_enabled = false;
+
+  HRESULT hr = is_profile_enabled_for_user(old_profile, &old_profile_enabled);
+  if (SUCCEEDED(hr))
+    hr = is_profile_enabled_for_user(new_profile, &new_profile_enabled);
+  if (SUCCEEDED(hr))
+    hr = is_layout_or_tip_enabled(old_profile, &old_layout_enabled);
+  if (SUCCEEDED(hr))
+    hr = is_layout_or_tip_enabled(new_profile, &new_layout_enabled);
+  if (FAILED(hr)) {
+    MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
+                          IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
+    return 1;
+  }
+
   struct Ops {
     const std::wstring& old_profile;
     const std::wstring& new_profile;
+    BOOL old_profile_enabled;
+    BOOL new_profile_enabled;
+    bool old_layout_enabled;
+    bool new_layout_enabled;
 
-    HRESULT enable_new() { return set_profile_enabled(new_profile, TRUE); }
-    HRESULT disable_old() { return set_profile_enabled(old_profile, FALSE); }
+    HRESULT enable_new() {
+      return new_profile_enabled
+                 ? S_OK
+                 : set_profile_enabled_for_user(new_profile, TRUE);
+    }
+    HRESULT disable_old() {
+      return old_profile_enabled
+                 ? set_profile_enabled_for_user(old_profile, FALSE)
+                 : S_OK;
+    }
     HRESULT remove_old_layout() {
-      return install_layout_or_tip(old_profile, LayoutOrTipAction::Uninstall);
+      return old_layout_enabled
+                 ? install_layout_or_tip(old_profile,
+                                         LayoutOrTipAction::Uninstall)
+                 : S_OK;
     }
     HRESULT install_new_layout() {
-      return install_layout_or_tip(new_profile, LayoutOrTipAction::Install);
+      return new_layout_enabled
+                 ? S_OK
+                 : install_layout_or_tip(new_profile,
+                                         LayoutOrTipAction::Install);
     }
-    HRESULT enable_old() { return set_profile_enabled(old_profile, TRUE); }
-    HRESULT disable_new() { return set_profile_enabled(new_profile, FALSE); }
-    HRESULT install_old_layout() {
-      return install_layout_or_tip(old_profile, LayoutOrTipAction::Install);
-    }
-    HRESULT remove_new_layout() {
-      return install_layout_or_tip(new_profile, LayoutOrTipAction::Uninstall);
-    }
-    bool failed(HRESULT hr) const { return FAILED(hr); }
-    HRESULT success() const { return S_OK; }
-  } ops{old_profile, new_profile};
 
-  const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
+    HRESULT restore_new_profile() {
+      return set_profile_enabled_for_user(new_profile, new_profile_enabled);
+    }
+    HRESULT restore_old_profile() {
+      return set_profile_enabled_for_user(old_profile, old_profile_enabled);
+    }
+    HRESULT restore_old_layout() {
+      return install_layout_or_tip(
+          old_profile, old_layout_enabled ? LayoutOrTipAction::Install
+                                          : LayoutOrTipAction::Uninstall);
+    }
+    HRESULT restore_new_layout() {
+      return install_layout_or_tip(
+          new_profile, new_layout_enabled ? LayoutOrTipAction::Install
+                                          : LayoutOrTipAction::Uninstall);
+    }
+    bool failed(HRESULT value) const { return FAILED(value); }
+    HRESULT success() const { return S_OK; }
+  } ops{old_profile, new_profile, old_profile_enabled, new_profile_enabled,
+        old_layout_enabled, new_layout_enabled};
+
+  hr = weasel::setup::RunProfileSwitchTransaction(ops);
   if (FAILED(hr)) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
