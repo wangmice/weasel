@@ -235,11 +235,15 @@ struct ProfileSwitchProbe {
   bool initial_old_profile = true;
   bool initial_new_profile = false;
   bool initial_old_layout = true;
+  bool initial_old_layout_default = true;
   bool initial_new_layout = false;
+  bool initial_new_layout_default = false;
   bool old_profile = initial_old_profile;
   bool new_profile = initial_new_profile;
   bool old_layout = initial_old_layout;
+  bool old_layout_default = initial_old_layout_default;
   bool new_layout = initial_new_layout;
+  bool new_layout_default = initial_new_layout_default;
   std::vector<std::string> calls;
 
   ProfileSwitchProbe() = default;
@@ -250,11 +254,15 @@ struct ProfileSwitchProbe {
       : initial_old_profile(old_profile_enabled),
         initial_new_profile(new_profile_enabled),
         initial_old_layout(old_layout_enabled),
+        initial_old_layout_default(old_layout_enabled),
         initial_new_layout(new_layout_enabled),
+        initial_new_layout_default(false),
         old_profile(old_profile_enabled),
         new_profile(new_profile_enabled),
         old_layout(old_layout_enabled),
-        new_layout(new_layout_enabled) {}
+        old_layout_default(old_layout_enabled),
+        new_layout(new_layout_enabled),
+        new_layout_default(false) {}
 
   HRESULT forward(const char* name, int step, bool& state, bool desired) {
     calls.emplace_back(name);
@@ -275,6 +283,7 @@ struct ProfileSwitchProbe {
     return forward("disable_old", 2, old_profile, false);
   }
   HRESULT remove_old_layout() {
+    old_layout_default = false;
     return forward("remove_old_layout", 3, old_layout, false);
   }
   HRESULT install_new_layout() {
@@ -287,10 +296,18 @@ struct ProfileSwitchProbe {
     return restore("restore_old_profile", old_profile, initial_old_profile);
   }
   HRESULT restore_old_layout() {
-    return restore("restore_old_layout", old_layout, initial_old_layout);
+    const HRESULT hr =
+        restore("restore_old_layout", old_layout, initial_old_layout);
+    if (SUCCEEDED(hr))
+      old_layout_default = initial_old_layout_default;
+    return hr;
   }
   HRESULT restore_new_layout() {
-    return restore("restore_new_layout", new_layout, initial_new_layout);
+    const HRESULT hr =
+        restore("restore_new_layout", new_layout, initial_new_layout);
+    if (SUCCEEDED(hr))
+      new_layout_default = initial_new_layout_default;
+    return hr;
   }
   bool failed(HRESULT hr) const { return FAILED(hr); }
   HRESULT success() const { return S_OK; }
@@ -298,7 +315,9 @@ struct ProfileSwitchProbe {
     return old_profile == initial_old_profile &&
            new_profile == initial_new_profile &&
            old_layout == initial_old_layout &&
-           new_layout == initial_new_layout;
+           old_layout_default == initial_old_layout_default &&
+           new_layout == initial_new_layout &&
+           new_layout_default == initial_new_layout_default;
   }
 };
 
@@ -306,6 +325,15 @@ static void test_profile_switch_transaction() {
   check(weasel::setup::ResultFromBool(TRUE != FALSE, S_OK, E_FAIL) == S_OK &&
             FAILED(weasel::setup::ResultFromBool(FALSE != FALSE, S_OK, E_FAIL)),
         "BOOL API result maps FALSE to failed HRESULT and TRUE to S_OK");
+
+  check(
+      weasel::setup::GetLayoutRestoreAction({false, false}) ==
+              weasel::setup::LayoutRestoreAction::Uninstall &&
+          weasel::setup::GetLayoutRestoreAction({true, false}) ==
+              weasel::setup::LayoutRestoreAction::Install &&
+          weasel::setup::GetLayoutRestoreAction({true, true}) ==
+              weasel::setup::LayoutRestoreAction::InstallDefault,
+      "layout rollback preserves disabled, enabled, and default state");
 
   {
     ProfileSwitchProbe ops;

@@ -2,6 +2,21 @@
 
 namespace weasel::setup {
 
+struct LayoutState {
+  bool enabled = false;
+  bool is_default = false;
+};
+
+enum class LayoutRestoreAction { Uninstall, Install, InstallDefault };
+
+constexpr LayoutRestoreAction GetLayoutRestoreAction(
+    const LayoutState& state) noexcept {
+  if (!state.enabled)
+    return LayoutRestoreAction::Uninstall;
+  return state.is_default ? LayoutRestoreAction::InstallDefault
+                          : LayoutRestoreAction::Install;
+}
+
 template <typename Result>
 constexpr Result ResultFromBool(bool ok,
                                 Result success,

@@ -26,6 +26,7 @@ static const GUID c_guidProfile = {
     {0xba, 0x20, 0x1c, 0x92, 0x67, 0x52, 0x94, 0x67}};
 
 #define ILOT_UNINSTALL 0x00000001
+#define ILOT_DEFPROFILE 0x00000002
 typedef BOOL(WINAPI* PTF_INSTALLLAYOUTORTIP)(LPCWSTR psz, DWORD dwFlags);
 
 struct WeaselLayoutOrTipProfile {
@@ -40,6 +41,7 @@ struct WeaselLayoutOrTipProfile {
 };
 
 constexpr DWORD kLayoutOrTipInputProcessor = 1;
+constexpr DWORD kLayoutOrTipDefault = 0x0001;
 constexpr DWORD kLayoutOrTipDisabled = 0x0002;
 typedef UINT(WINAPI* PTF_ENUMENABLEDLAYOUTORTIP)(
     LPCWSTR pszUserReg,
@@ -404,7 +406,7 @@ void enable_profile(BOOL fEnable, const std::wstring& profile) {
 // https://learn.microsoft.com/zh-cn/windows/win32/tsf/installlayoutortip
 // The documented function returns BOOL. The Microsoft example historically
 // shows an HRESULT typedef, but using that would turn FALSE (0) into S_OK.
-enum class LayoutOrTipAction { Install, Uninstall };
+enum class LayoutOrTipAction { Install, InstallDefault, Uninstall };
 
 // 把 profile 对应的输入布局加入/移出当前用户的输入法列表。helper 对外统一
 // 使用 HRESULT；InstallLayoutOrTip 本身只有 BOOL，FALSE 映射为 E_FAIL。
@@ -430,18 +432,23 @@ static HRESULT install_layout_or_tip(const std::wstring& profile,
     return E_INVALIDARG;
   }
 
-  const BOOL ok = (*pfnInstallLayoutOrTip)(
-      title.c_str(),
-      action == LayoutOrTipAction::Uninstall ? ILOT_UNINSTALL : 0);
+  DWORD flags = 0;
+  if (action == LayoutOrTipAction::Uninstall)
+    flags = ILOT_UNINSTALL;
+  else if (action == LayoutOrTipAction::InstallDefault)
+    flags = ILOT_DEFPROFILE;
+
+  const BOOL ok = (*pfnInstallLayoutOrTip)(title.c_str(), flags);
   FreeLibrary(hInputDLL);
   return weasel::setup::ResultFromBool(ok != FALSE, S_OK, E_FAIL);
 }
 
-static HRESULT is_layout_or_tip_enabled(const std::wstring& profile,
-                                        bool* enabled) {
-  if (!enabled)
+static HRESULT get_layout_or_tip_state(
+    const std::wstring& profile,
+    weasel::setup::LayoutState* state) {
+  if (!state)
     return E_POINTER;
-  *enabled = false;
+  *state = {};
 
   HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
   if (!hInputDLL) {
@@ -478,15 +485,29 @@ static HRESULT is_layout_or_tip_enabled(const std::wstring& profile,
     const auto& item = profiles[i];
     if ((item.dwProfileType & kLayoutOrTipInputProcessor) ==
             kLayoutOrTipInputProcessor &&
-        (item.dwFlags & kLayoutOrTipDisabled) == 0 &&
         item.langid == lang_id &&
         IsEqualGUID(item.clsid, c_clsidTextService) &&
         IsEqualGUID(item.guidProfile, c_guidProfile)) {
-      *enabled = true;
+      state->enabled = (item.dwFlags & kLayoutOrTipDisabled) == 0;
+      state->is_default = (item.dwFlags & kLayoutOrTipDefault) != 0;
       break;
     }
   }
   return S_OK;
+}
+
+static HRESULT restore_layout_or_tip(
+    const std::wstring& profile,
+    const weasel::setup::LayoutState& state) {
+  switch (weasel::setup::GetLayoutRestoreAction(state)) {
+    case weasel::setup::LayoutRestoreAction::Uninstall:
+      return install_layout_or_tip(profile, LayoutOrTipAction::Uninstall);
+    case weasel::setup::LayoutRestoreAction::InstallDefault:
+      return install_layout_or_tip(profile, LayoutOrTipAction::InstallDefault);
+    case weasel::setup::LayoutRestoreAction::Install:
+      return install_layout_or_tip(profile, LayoutOrTipAction::Install);
+  }
+  return E_UNEXPECTED;
 }
 
 // 已安装状态下切换 profile（K14）。先快照当前用户实际状态，再只执行必要
@@ -496,16 +517,16 @@ int switch_registered_profile(const std::wstring& old_profile,
                               bool silent) {
   BOOL old_profile_enabled = FALSE;
   BOOL new_profile_enabled = FALSE;
-  bool old_layout_enabled = false;
-  bool new_layout_enabled = false;
+  weasel::setup::LayoutState old_layout_state;
+  weasel::setup::LayoutState new_layout_state;
 
   HRESULT hr = is_profile_enabled_for_user(old_profile, &old_profile_enabled);
   if (SUCCEEDED(hr))
     hr = is_profile_enabled_for_user(new_profile, &new_profile_enabled);
   if (SUCCEEDED(hr))
-    hr = is_layout_or_tip_enabled(old_profile, &old_layout_enabled);
+    hr = get_layout_or_tip_state(old_profile, &old_layout_state);
   if (SUCCEEDED(hr))
-    hr = is_layout_or_tip_enabled(new_profile, &new_layout_enabled);
+    hr = get_layout_or_tip_state(new_profile, &new_layout_state);
   if (FAILED(hr)) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
@@ -517,8 +538,8 @@ int switch_registered_profile(const std::wstring& old_profile,
     const std::wstring& new_profile;
     BOOL old_profile_enabled;
     BOOL new_profile_enabled;
-    bool old_layout_enabled;
-    bool new_layout_enabled;
+    weasel::setup::LayoutState old_layout_state;
+    weasel::setup::LayoutState new_layout_state;
 
     HRESULT enable_new() {
       return new_profile_enabled
@@ -531,13 +552,13 @@ int switch_registered_profile(const std::wstring& old_profile,
                  : S_OK;
     }
     HRESULT remove_old_layout() {
-      return old_layout_enabled
+      return old_layout_state.enabled
                  ? install_layout_or_tip(old_profile,
                                          LayoutOrTipAction::Uninstall)
                  : S_OK;
     }
     HRESULT install_new_layout() {
-      return new_layout_enabled
+      return new_layout_state.enabled
                  ? S_OK
                  : install_layout_or_tip(new_profile,
                                          LayoutOrTipAction::Install);
@@ -550,19 +571,15 @@ int switch_registered_profile(const std::wstring& old_profile,
       return set_profile_enabled_for_user(old_profile, old_profile_enabled);
     }
     HRESULT restore_old_layout() {
-      return install_layout_or_tip(
-          old_profile, old_layout_enabled ? LayoutOrTipAction::Install
-                                          : LayoutOrTipAction::Uninstall);
+      return restore_layout_or_tip(old_profile, old_layout_state);
     }
     HRESULT restore_new_layout() {
-      return install_layout_or_tip(
-          new_profile, new_layout_enabled ? LayoutOrTipAction::Install
-                                          : LayoutOrTipAction::Uninstall);
+      return restore_layout_or_tip(new_profile, new_layout_state);
     }
     bool failed(HRESULT value) const { return FAILED(value); }
     HRESULT success() const { return S_OK; }
   } ops{old_profile, new_profile, old_profile_enabled, new_profile_enabled,
-        old_layout_enabled, new_layout_enabled};
+        old_layout_state, new_layout_state};
 
   hr = weasel::setup::RunProfileSwitchTransaction(ops);
   if (FAILED(hr)) {
