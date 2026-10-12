@@ -13,6 +13,7 @@
 #include <chrono>
 #include <iomanip>
 
+#include "../../WeaselSetup/ProfileSwitchTransaction.h"
 #include "../../WeaselSetup/SetupUtil.h"
 #include <WeaselUtility.h>
 
@@ -227,11 +228,101 @@ static void test_reg_get_string_value() {
         "private utility test key removed");
 }
 
+struct ProfileSwitchProbe {
+  int fail_step = 0;
+  HRESULT failure = HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+  HRESULT rollback_failure = S_OK;
+  std::vector<std::string> calls;
+
+  HRESULT call(const char* name, int step) {
+    calls.emplace_back(name);
+    if (fail_step == step)
+      return failure;
+    return step == 0 ? rollback_failure : S_OK;
+  }
+  HRESULT enable_new() { return call("enable_new", 1); }
+  HRESULT disable_old() { return call("disable_old", 2); }
+  HRESULT remove_old_layout() { return call("remove_old_layout", 3); }
+  HRESULT install_new_layout() { return call("install_new_layout", 4); }
+  HRESULT enable_old() { return call("enable_old", 0); }
+  HRESULT disable_new() { return call("disable_new", 0); }
+  HRESULT install_old_layout() { return call("install_old_layout", 0); }
+  HRESULT remove_new_layout() { return call("remove_new_layout", 0); }
+  bool failed(HRESULT hr) const { return FAILED(hr); }
+  HRESULT success() const { return S_OK; }
+};
+
+static void test_profile_switch_transaction() {
+  check(weasel::setup::ResultFromBool(TRUE != FALSE, S_OK, E_FAIL) == S_OK &&
+            FAILED(weasel::setup::ResultFromBool(FALSE != FALSE, S_OK, E_FAIL)),
+        "BOOL API result maps FALSE to failed HRESULT and TRUE to S_OK");
+
+  {
+    ProfileSwitchProbe ops;
+    check(SUCCEEDED(weasel::setup::RunProfileSwitchTransaction(ops)) &&
+              ops.calls == std::vector<std::string>({
+                               "enable_new", "disable_old",
+                               "remove_old_layout", "install_new_layout"}),
+          "profile switch success runs each forward step once");
+  }
+  {
+    ProfileSwitchProbe ops;
+    ops.fail_step = 1;
+    const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
+    check(hr == ops.failure &&
+              ops.calls == std::vector<std::string>(
+                               {"enable_new", "enable_old", "disable_new"}),
+          "enable-new failure preserves HRESULT and restores old profile");
+  }
+  {
+    ProfileSwitchProbe ops;
+    ops.fail_step = 2;
+    const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
+    check(hr == ops.failure &&
+              ops.calls == std::vector<std::string>({
+                               "enable_new", "disable_old", "enable_old",
+                               "disable_new"}),
+          "disable-old failure rolls back the newly enabled profile");
+  }
+  {
+    ProfileSwitchProbe ops;
+    ops.fail_step = 3;
+    const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
+    check(hr == ops.failure &&
+              ops.calls == std::vector<std::string>({
+                               "enable_new", "disable_old",
+                               "remove_old_layout", "enable_old",
+                               "install_old_layout", "disable_new"}),
+          "old-layout removal failure restores profile and layout state");
+  }
+  {
+    ProfileSwitchProbe ops;
+    ops.fail_step = 4;
+    const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
+    check(hr == ops.failure &&
+              ops.calls == std::vector<std::string>({
+                               "enable_new", "disable_old",
+                               "remove_old_layout", "install_new_layout",
+                               "enable_old", "install_old_layout",
+                               "remove_new_layout", "disable_new"}),
+          "new-layout install failure performs full best-effort rollback");
+  }
+  {
+    ProfileSwitchProbe ops;
+    ops.fail_step = 4;
+    ops.rollback_failure = E_OUTOFMEMORY;
+    const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
+    check(hr == ops.failure,
+          "rollback failures do not overwrite the original HRESULT");
+  }
+}
+
 int main() {
   test_unquote_argument();
   test_read_reg_sz();
   test_delete_reg_tree();
   test_reg_get_string_value();
+  test_profile_switch_transaction();
 
   if (g_failures) {
     printf("%d failure(s)\n", g_failures);

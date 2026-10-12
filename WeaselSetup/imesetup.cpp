@@ -9,6 +9,7 @@
 #include "InstallOptionsDlg.h"
 #include "PerUserReg.h"
 #include "SetupUtil.h"
+#include "ProfileSwitchTransaction.h"
 
 // {A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}
 static const GUID c_clsidTextService = {
@@ -25,7 +26,7 @@ static const GUID c_guidProfile = {
     {0xba, 0x20, 0x1c, 0x92, 0x67, 0x52, 0x94, 0x67}};
 
 #define ILOT_UNINSTALL 0x00000001
-typedef HRESULT(WINAPI* PTF_INSTALLLAYOUTORTIP)(LPCWSTR psz, DWORD dwFlags);
+typedef BOOL(WINAPI* PTF_INSTALLLAYOUTORTIP)(LPCWSTR psz, DWORD dwFlags);
 
 #define WEASEL_WER_KEY                            \
   L"SOFTWARE\\Microsoft\\Windows\\Windows Error " \
@@ -317,23 +318,32 @@ int uninstall_ime_file(const std::wstring& ext,
 
 // 启用/停用一个 profile 的 TSF 启用状态（注册条目保留，用于已安装系统
 // 切换 profile；停用≠移除，区别于卸载路径的 RemoveLanguageProfile）
-static BOOL set_profile_enabled(const std::wstring& profile, BOOL fEnable) {
+static HRESULT set_profile_enabled(const std::wstring& profile, BOOL fEnable) {
   ITfInputProcessorProfiles* pProfiles = NULL;
   HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
                                 CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfiles,
                                 (LPVOID*)&pProfiles);
   if (FAILED(hr))
-    return FALSE;
+    return hr;
 
-  LANGID lang_id = profile_to_lang_id(profile);
+  const LANGID lang_id = profile_to_lang_id(profile);
   hr = pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
                                         c_guidProfile, fEnable);
-  if (fEnable) {
-    pProfiles->EnableLanguageProfileByDefault(c_clsidTextService, lang_id,
-                                              c_guidProfile, fEnable);
+  if (SUCCEEDED(hr)) {
+    const HRESULT default_hr = pProfiles->EnableLanguageProfileByDefault(
+        c_clsidTextService, lang_id, c_guidProfile, fEnable);
+    if (FAILED(default_hr)) {
+      // Restore both flags to their previous state. The caller owns the
+      // larger old/new-profile transaction and will perform further rollback.
+      pProfiles->EnableLanguageProfileByDefault(
+          c_clsidTextService, lang_id, c_guidProfile, !fEnable);
+      pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
+                                       c_guidProfile, !fEnable);
+      hr = default_hr;
+    }
   }
   pProfiles->Release();
-  return SUCCEEDED(hr) ? TRUE : FALSE;
+  return hr;
 }
 
 // 注册/注销路径的 profile 处理：TRUE=启用（同 set_profile_enabled）；
@@ -358,45 +368,78 @@ void enable_profile(BOOL fEnable, const std::wstring& profile) {
 
 // InstallLayoutOrTip
 // https://learn.microsoft.com/zh-cn/windows/win32/tsf/installlayoutortip
-// example in ref page not right with "*PTF_ INSTALLLAYOUTORTIP"
-// space inside should be removed
+// The documented function returns BOOL. The Microsoft example historically
+// shows an HRESULT typedef, but using that would turn FALSE (0) into S_OK.
 enum class LayoutOrTipAction { Install, Uninstall };
 
-// 把 profile 对应的输入布局加入/移出当前用户的输入法列表
-static void install_layout_or_tip(const std::wstring& profile,
-                                  LayoutOrTipAction action) {
+// 把 profile 对应的输入布局加入/移出当前用户的输入法列表。helper 对外统一
+// 使用 HRESULT；InstallLayoutOrTip 本身只有 BOOL，FALSE 映射为 E_FAIL。
+static HRESULT install_layout_or_tip(const std::wstring& profile,
+                                     LayoutOrTipAction action) {
   HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
-  if (!hInputDLL)
-    return;
+  if (!hInputDLL) {
+    const DWORD error = GetLastError();
+    return HRESULT_FROM_WIN32(error ? error : ERROR_MOD_NOT_FOUND);
+  }
+
   PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip =
       (PTF_INSTALLLAYOUTORTIP)GetProcAddress(hInputDLL, "InstallLayoutOrTip");
-  if (pfnInstallLayoutOrTip) {
-    std::wstring title = profile_to_title(profile);
-    if (!title.empty())
-      (*pfnInstallLayoutOrTip)(
-          title.c_str(),
-          action == LayoutOrTipAction::Uninstall ? ILOT_UNINSTALL : 0);
+  if (!pfnInstallLayoutOrTip) {
+    const DWORD error = GetLastError();
+    FreeLibrary(hInputDLL);
+    return HRESULT_FROM_WIN32(error ? error : ERROR_PROC_NOT_FOUND);
   }
+
+  const std::wstring title = profile_to_title(profile);
+  if (title.empty()) {
+    FreeLibrary(hInputDLL);
+    return E_INVALIDARG;
+  }
+
+  const BOOL ok = (*pfnInstallLayoutOrTip)(
+      title.c_str(),
+      action == LayoutOrTipAction::Uninstall ? ILOT_UNINSTALL : 0);
   FreeLibrary(hInputDLL);
+  return weasel::setup::ResultFromBool(ok != FALSE, S_OK, E_FAIL);
 }
 
 // 已安装状态下切换 profile（K14）。regsvr32 的 RegisterProfiles 在安装时
 // 已注册全部五个 langid 的 profile 条目（仅选定的一个启用），因此切换只需
 // 翻转启用状态并同步用户的输入法列表，无需重跑 regsvr32。
-// 先启用新 profile，失败时旧 profile 原样保留，系统保持一致可用。
+// 任一步失败都尽力恢复旧 profile/layout；事务内部保留首个失败 HRESULT。
 int switch_registered_profile(const std::wstring& old_profile,
                               const std::wstring& new_profile,
                               bool silent) {
-  const BOOL switched =
-      set_profile_enabled(new_profile, TRUE) &&
-      set_profile_enabled(old_profile, FALSE);
-  if (!switched) {
+  struct Ops {
+    const std::wstring& old_profile;
+    const std::wstring& new_profile;
+
+    HRESULT enable_new() { return set_profile_enabled(new_profile, TRUE); }
+    HRESULT disable_old() { return set_profile_enabled(old_profile, FALSE); }
+    HRESULT remove_old_layout() {
+      return install_layout_or_tip(old_profile, LayoutOrTipAction::Uninstall);
+    }
+    HRESULT install_new_layout() {
+      return install_layout_or_tip(new_profile, LayoutOrTipAction::Install);
+    }
+    HRESULT enable_old() { return set_profile_enabled(old_profile, TRUE); }
+    HRESULT disable_new() { return set_profile_enabled(new_profile, FALSE); }
+    HRESULT install_old_layout() {
+      return install_layout_or_tip(old_profile, LayoutOrTipAction::Install);
+    }
+    HRESULT remove_new_layout() {
+      return install_layout_or_tip(new_profile, LayoutOrTipAction::Uninstall);
+    }
+    bool failed(HRESULT hr) const { return FAILED(hr); }
+    HRESULT success() const { return S_OK; }
+  } ops{old_profile, new_profile};
+
+  const HRESULT hr = weasel::setup::RunProfileSwitchTransaction(ops);
+  if (FAILED(hr)) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
     return 1;
   }
-  install_layout_or_tip(old_profile, LayoutOrTipAction::Uninstall);
-  install_layout_or_tip(new_profile, LayoutOrTipAction::Install);
   return 0;
 }
 
