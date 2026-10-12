@@ -1,8 +1,8 @@
 #pragma once
-#include <logging.h>
 #include <string>
 #include <memory>
 #include <windows.h>
+#include <WeaselUtility.h>
 #include <boost/interprocess/streams/bufferstream.hpp>
 #include <boost/thread.hpp>
 #include <boost/thread/tss.hpp>
@@ -191,10 +191,6 @@ class PipeChannel : public PipeChannelBase {
 
   template <typename _TyHandler>
   bool HandleResponseData(_TyHandler const& handler) {
-    if (!handler) {
-      return false;
-    }
-
     // Use whole buffer to receive data in client
     return handler((LPWSTR)_GetContext()->buffer.get(),
                    (UINT)(buff_size * sizeof(char) / sizeof(wchar_t)));
