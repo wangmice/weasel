@@ -55,6 +55,12 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
     }
     pEnumTextChanges->Release();
   }
+
+  // OnEndEdit runs after a READWRITE DoEditSession releases its lock. Only
+  // wake the FIFO when a previous scheduling/apply attempt explicitly asked
+  // to retry; unrelated edit notifications must not create a retry loop.
+  if (_responseApplyQueue.ConsumeRetryRequest())
+    _ScheduleNextResponseApply(false);
   return S_OK;
 }
 

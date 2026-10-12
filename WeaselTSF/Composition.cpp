@@ -5,6 +5,18 @@
 #include "CandidateList.h"
 #include "AsyncUiPolicy.h"
 
+namespace {
+
+weasel::tsf::ApplyFailureClass ClassifyApplyFailure(HRESULT hr) {
+  if (hr == TF_E_DISCONNECTED || hr == TS_E_READONLY ||
+      hr == E_INVALIDARG || hr == E_OUTOFMEMORY) {
+    return weasel::tsf::ApplyFailureClass::Terminal;
+  }
+  return weasel::tsf::ApplyFailureClass::Retryable;
+}
+
+}  // namespace
+
 /* Start Composition */
 HRESULT WeaselTSF::_StartCompositionLocked(TfEditCookie ec,
                                            com_ptr<ITfContext> pContext,
@@ -18,18 +30,10 @@ HRESULT WeaselTSF::_StartCompositionLocked(TfEditCookie ec,
     return S_OK;
 
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
-  com_ptr<ITfRange> pRangeSelection;
   com_ptr<ITfRange> pRangeComposition;
   if (FAILED(pContext->QueryInterface(IID_ITfInsertAtSelection,
                                       (LPVOID*)&pInsertAtSelection)))
     return E_FAIL;
-  if (FAILED(pInsertAtSelection->InsertTextAtSelection(
-          ec, TF_IAS_QUERYONLY, NULL, 0, &pRangeSelection)))
-    return E_FAIL;
-
-  // Typing replaces the selection: delete it and re-query the collapsed
-  // insertion point. Keep the historical best-effort deletion behavior.
-  pRangeSelection->SetText(ec, 0, L"", 0);
   if (FAILED(pInsertAtSelection->InsertTextAtSelection(
           ec, TF_IAS_QUERYONLY, NULL, 0, &pRangeComposition)))
     return E_FAIL;
@@ -46,13 +50,23 @@ HRESULT WeaselTSF::_StartCompositionLocked(TfEditCookie ec,
 
   // StartComposition can re-enter TSF code. If a later response generation was
   // already applied, discard the just-created stale composition before it can
-  // own UI or document state.
+  // own UI or document state. Crucially, the selected text is still untouched
+  // until the host has accepted this composition.
   const bool generationCurrent =
       pendingUIGeneration == 0 ||
       _IsPendingUIGenerationCurrent(pendingUIGeneration);
   if (!generationCurrent) {
     pComposition->EndComposition(ec);
     return S_OK;
+  }
+
+  // Typing replaces the current selection. Do this only after StartComposition
+  // succeeds so a host rejection cannot delete user text without creating the
+  // corresponding composition.
+  hr = pRangeComposition->SetText(ec, 0, L"", 0);
+  if (FAILED(hr)) {
+    pComposition->EndComposition(ec);
+    return hr;
   }
 
   _SetComposition(pComposition, pContext);
@@ -118,14 +132,23 @@ HRESULT WeaselTSF::_EndCompositionLocked(TfEditCookie ec,
   _ClearCompositionDisplayAttributes(ec, pContext, pComposition);
 
   com_ptr<ITfRange> pCompositionRange;
-  if (clear && SUCCEEDED(pComposition->GetRange(&pCompositionRange)))
-    pCompositionRange->SetText(ec, 0, L"", 0);
+  if (clear && SUCCEEDED(pComposition->GetRange(&pCompositionRange))) {
+    const HRESULT clearHr = pCompositionRange->SetText(ec, 0, L"", 0);
+    if (FAILED(clearHr))
+      return clearHr;
+  }
 
-  // Release local ownership before EndComposition: hosts may notify
-  // OnCompositionTerminated synchronously from this call.
-  if (_IsCurrentComposition(pComposition))
+  // Drop ownership during EndComposition so a synchronous termination callback
+  // cannot mistake this normal teardown for an external abort. If the host
+  // rejects the end operation, restore ownership rather than leaving TSF and
+  // our local state disagreeing about whether the composition is alive.
+  const bool wasCurrent = _IsCurrentComposition(pComposition);
+  if (wasCurrent)
     _FinalizeComposition();
-  return pComposition->EndComposition(ec);
+  const HRESULT hr = pComposition->EndComposition(ec);
+  if (FAILED(hr) && wasCurrent && !_IsComposing())
+    _SetComposition(pComposition, pContext);
+  return hr;
 }
 
 class CEndCompositionEditSession : public CEditSession {
@@ -154,9 +177,8 @@ void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext,
   com_ptr<ITfComposition> pComposition =
       _IsComposingInContext(pContext) ? _pComposition : nullptr;
 
-  if (endUI) {
+  if (endUI)
     _EndUI();
-  }
 
   CEndCompositionEditSession* pEditSession =
       new CEndCompositionEditSession(this, pContext, pComposition, clear);
@@ -167,9 +189,12 @@ void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext,
   const HRESULT requestHr = pContext->RequestEditSession(
       _tfClientId, pEditSession, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE,
       &sessionHr);
-  // Once TSF accepts the end request, prevent a later context from overwriting
-  // this composition while its physical EndComposition is still queued.
-  if (SUCCEEDED(requestHr) && _IsCurrentComposition(pComposition))
+
+  // DoEditSession itself owns normal finalization. If the context is already
+  // disconnected there can be no future edit session, so only then drop the
+  // local ownership immediately. S_OK/TF_S_ASYNC and S_OK/TS_E_READONLY must
+  // not make the host composition look ended before it really executes.
+  if (requestHr == TF_E_DISCONNECTED && _IsCurrentComposition(pComposition))
     _FinalizeComposition();
   pEditSession->Release();
 }
@@ -203,6 +228,11 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
       !_pTextService->_IsPendingUIGenerationCurrent(_pendingUIGeneration))
     return S_OK;
 
+  auto flushWithoutPosition = [&]() {
+    if (_pendingUIGeneration != 0)
+      _pTextService->_FlushPendingUI(_pendingUIGeneration);
+  };
+
   com_ptr<ITfInsertAtSelection> pInsertAtSelection;
   ITfRange* pRange = nullptr;
   RECT rc;
@@ -211,12 +241,16 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
   ULONG nSelection = 0;
 
   if (FAILED(_pContext->QueryInterface(IID_ITfInsertAtSelection,
-                                       (LPVOID*)&pInsertAtSelection)))
+                                       (LPVOID*)&pInsertAtSelection))) {
+    flushWithoutPosition();
     return E_FAIL;
+  }
   if (FAILED(_pContext->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection,
                                      &nSelection)) ||
-      nSelection != 1 || selection.range == nullptr)
+      nSelection != 1 || selection.range == nullptr) {
+    flushWithoutPosition();
     return E_FAIL;
+  }
 
   if (_pComposition != nullptr && SUCCEEDED(_pComposition->GetRange(&pRange))) {
     pRange->Collapse(ec, TF_ANCHOR_START);
@@ -225,6 +259,7 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
     pRange = selection.range;
   }
 
+  bool positioned = false;
   if (SUCCEEDED(_pContextView->GetTextExt(ec, pRange, &rc, &fClipped)) &&
       (rc.left != 0 || rc.top != 0)) {
     if (_enhancedPosition) {
@@ -247,8 +282,11 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
       }
     }
     _pTextService->_SetCompositionPosition(rc, _pendingUIGeneration);
+    positioned = true;
   }
   pRange->Release();
+  if (!positioned)
+    flushWithoutPosition();
   return S_OK;
 }
 
@@ -257,9 +295,16 @@ BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext,
   if (pendingUIGeneration == 0 && _IsComposingInContext(pContext))
     pendingUIGeneration = _pendingUIGeneration;
 
+  auto flushWithoutPosition = [&]() {
+    if (pendingUIGeneration != 0)
+      _FlushPendingUI(pendingUIGeneration);
+  };
+
   com_ptr<ITfContextView> pContextView;
-  if (!pContext || pContext->GetActiveView(&pContextView) != S_OK)
+  if (!pContext || pContext->GetActiveView(&pContextView) != S_OK) {
+    flushWithoutPosition();
     return FALSE;
+  }
 
   com_ptr<ITfComposition> pComposition =
       _IsComposingInContext(pContext) ? _pComposition : nullptr;
@@ -267,13 +312,19 @@ BOOL WeaselTSF::_UpdateCompositionWindow(com_ptr<ITfContext> pContext,
   pEditSession.Attach(new CGetTextExtentEditSession(
       this, pContext, pContextView, pComposition,
       _cand->style().enhanced_position, pendingUIGeneration));
-  if (!pEditSession)
+  if (!pEditSession) {
+    flushWithoutPosition();
     return FALSE;
+  }
 
   HRESULT hr = E_FAIL;
   const HRESULT requestHr = pContext->RequestEditSession(
       _tfClientId, pEditSession, TF_ES_ASYNCDONTCARE | TF_ES_READ, &hr);
-  return SUCCEEDED(requestHr);
+  if (FAILED(requestHr) || (hr != TF_S_ASYNC && FAILED(hr))) {
+    flushWithoutPosition();
+    return FALSE;
+  }
+  return TRUE;
 }
 
 void WeaselTSF::_SetCompositionPosition(const RECT& rc,
@@ -286,6 +337,8 @@ void WeaselTSF::_SetCompositionPosition(const RECT& rc,
     _fCUASWorkaroundTested = TRUE;
     if (rc.top == rc.bottom) {
       _fCUASWorkaroundEnabled = TRUE;
+      if (pendingUIGeneration != 0)
+        _FlushPendingUI(pendingUIGeneration);
       return;
     }
   }
@@ -543,7 +596,13 @@ class CApplyResponseEditSession : public CEditSession {
         _flightToken(flightToken),
         _queue(queue) {}
 
-  ~CApplyResponseEditSession() override { _CompleteFlight(); }
+  ~CApplyResponseEditSession() override {
+    if (_resetOnDispose && _queue && _queue->InFlight() &&
+        _queue->FlightToken() == _flightToken) {
+      _pTextService->_AbortComposition();
+    }
+    _CompleteFlight();
+  }
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
     // Deactivate/reset can invalidate a queued TSF session before the host
@@ -552,14 +611,39 @@ class CApplyResponseEditSession : public CEditSession {
         _queue->FlightToken() != _flightToken)
       return S_OK;
 
+    _executed = true;
     HRESULT hr = E_FAIL;
     if (_request && _request->context) {
+      // Pass a copy. A failure returned from _ApplyResponseSnapshot occurs only
+      // before commit reaches the document; keeping the original snapshot
+      // makes the bounded retry safe. Post-commit failures recover internally.
       hr = _pTextService->_ApplyResponseSnapshot(
-          ec, _request->context, std::move(_request->snapshot));
+          ec, _request->context, _request->snapshot);
     }
+
+    if (FAILED(hr) && _request) {
+      const auto failure = ClassifyApplyFailure(hr);
+      if (weasel::tsf::CanRetryApplyFailure(
+              _request->snapshot.progress, failure,
+              _request->snapshot.retry_count)) {
+        ++_request->snapshot.retry_count;
+        if (_queue->RestoreFront(_request, _flightToken)) {
+          _queue->RequestRetry();
+          return hr;
+        }
+      }
+      // Keep this token in-flight until destruction. The destructor runs after
+      // the edit session has left its write lock, aborts the divergent engine/
+      // composition state, then completes exactly this flight.
+      _resetOnDispose = true;
+      return hr;
+    }
+
     _CompleteFlight();
     return hr;
   }
+
+  bool Executed() const { return _executed; }
 
  private:
   void _CompleteFlight() {
@@ -570,17 +654,22 @@ class CApplyResponseEditSession : public CEditSession {
   std::shared_ptr<WeaselTSF::ResponseApplyRequest> _request;
   UINT64 _flightToken;
   ResponseApplyQueue* _queue;
+  bool _executed = false;
+  bool _resetOnDispose = false;
 };
 
 class CContextHandoffEditSession : public CEditSession {
  public:
-  CContextHandoffEditSession(com_ptr<WeaselTSF> pTextService,
-                             com_ptr<ITfContext> pContext,
-                             com_ptr<ITfComposition> pComposition,
-                             UINT64 flightToken,
-                             ResponseApplyQueue* queue)
+  CContextHandoffEditSession(
+      com_ptr<WeaselTSF> pTextService,
+      com_ptr<ITfContext> pContext,
+      com_ptr<ITfComposition> pComposition,
+      const std::shared_ptr<WeaselTSF::ResponseApplyRequest>& request,
+      UINT64 flightToken,
+      ResponseApplyQueue* queue)
       : CEditSession(pTextService, pContext),
         _pComposition(pComposition),
+        _request(request),
         _flightToken(flightToken),
         _queue(queue) {}
 
@@ -592,6 +681,23 @@ class CContextHandoffEditSession : public CEditSession {
       return S_OK;
     const HRESULT hr = _pTextService->_EndCompositionLocked(
         ec, _pContext, _pComposition, TRUE, TRUE);
+    if (FAILED(hr)) {
+      if (_request &&
+          _request->snapshot.retry_count < weasel::tsf::kMaxApplyRetries) {
+        ++_request->snapshot.retry_count;
+        _queue->RequestRetry();
+      } else {
+        // The old host composition cannot be ended after bounded attempts.
+        // Abandon only its local ownership/UI so the already-queued response
+        // for the newly focused context can continue instead of growing an
+        // unbounded FIFO behind a dead handoff.
+        _pTextService->_EndUI();
+        if (_pTextService->_IsCurrentComposition(_pComposition))
+          _pTextService->_FinalizeComposition();
+      }
+      _queue->Complete(_flightToken);
+      return hr;
+    }
     _CompleteFlight();
     return hr;
   }
@@ -603,6 +709,7 @@ class CContextHandoffEditSession : public CEditSession {
   }
 
   com_ptr<ITfComposition> _pComposition;
+  std::shared_ptr<WeaselTSF::ResponseApplyRequest> _request;
   UINT64 _flightToken;
   ResponseApplyQueue* _queue;
 };
@@ -643,7 +750,7 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
     const UINT64 flightToken = _responseApplyQueue.FlightToken();
     com_ptr<CContextHandoffEditSession> session;
     session.Attach(new CContextHandoffEditSession(
-        this, previousContext, previousComposition, flightToken,
+        this, previousContext, previousComposition, next, flightToken,
         &_responseApplyQueue));
     if (!session) {
       _responseApplyQueue.Complete(flightToken);
@@ -654,22 +761,54 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
     const HRESULT requestHr = previousContext->RequestEditSession(
         _tfClientId, session, scheduleFlag | TF_ES_READWRITE, &sessionHr);
     if (FAILED(requestHr)) {
-      if (_responseApplyQueue.Complete(flightToken) &&
-          requestHr == TF_E_DISCONNECTED &&
-          _IsCurrentComposition(previousComposition)) {
+      if (requestHr == TF_E_DISCONNECTED) {
+        if (_responseApplyQueue.Complete(flightToken) &&
+            _IsCurrentComposition(previousComposition)) {
+          _EndUI();
+          _FinalizeComposition();
+          _ScheduleNextResponseApply(false);
+        }
+      } else if (requestHr == TF_E_LOCKED &&
+                 next->snapshot.retry_count <
+                     weasel::tsf::kMaxApplyRetries) {
+        ++next->snapshot.retry_count;
+        _responseApplyQueue.Complete(flightToken);
+        _responseApplyQueue.RequestRetry();
+      } else {
+        _responseApplyQueue.Complete(flightToken);
         _EndUI();
-        _FinalizeComposition();
+        if (_IsCurrentComposition(previousComposition))
+          _FinalizeComposition();
         _ScheduleNextResponseApply(false);
       }
       return;
     }
 
-    // ASYNCDONTCARE can return successfully without running DoEditSession
-    // (for example a read-only context). Only clear this exact flight; a
-    // synchronous completion may already have started the next token.
-    if (sessionHr != TF_S_ASYNC && _responseApplyQueue.InFlight() &&
+    if (sessionHr == TS_E_READONLY && _responseApplyQueue.InFlight() &&
         _responseApplyQueue.FlightToken() == flightToken) {
       _responseApplyQueue.Complete(flightToken);
+      _EndUI();
+      if (_IsCurrentComposition(previousComposition))
+        _FinalizeComposition();
+      _ScheduleNextResponseApply(false);
+      return;
+    }
+
+    // ASYNCDONTCARE can return successfully without running DoEditSession.
+    // Bound unexplained refusals using the same request retry budget.
+    if (sessionHr != TF_S_ASYNC && _responseApplyQueue.InFlight() &&
+        _responseApplyQueue.FlightToken() == flightToken) {
+      if (next->snapshot.retry_count < weasel::tsf::kMaxApplyRetries) {
+        ++next->snapshot.retry_count;
+        _responseApplyQueue.Complete(flightToken);
+        _responseApplyQueue.RequestRetry();
+      } else {
+        _responseApplyQueue.Complete(flightToken);
+        _EndUI();
+        if (_IsCurrentComposition(previousComposition))
+          _FinalizeComposition();
+        _ScheduleNextResponseApply(false);
+      }
     }
     return;
   }
@@ -691,21 +830,45 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
   const HRESULT requestHr = request->context->RequestEditSession(
       _tfClientId, session, scheduleFlag | TF_ES_READWRITE, &sessionHr);
   if (FAILED(requestHr)) {
-    if (requestHr == TF_E_DISCONNECTED) {
-      if (_responseApplyQueue.Complete(flightToken))
-        _ScheduleNextResponseApply(false);
-    } else {
-      _responseApplyQueue.RestoreFront(std::move(request), flightToken);
+    const auto action = weasel::tsf::ClassifyScheduleFailure(
+        requestHr == TF_E_DISCONNECTED, false, requestHr == TF_E_LOCKED);
+    if (action == weasel::tsf::ScheduleFailureAction::RetryLater &&
+        request->snapshot.retry_count < weasel::tsf::kMaxApplyRetries) {
+      ++request->snapshot.retry_count;
+      if (_responseApplyQueue.RestoreFront(std::move(request), flightToken)) {
+        _responseApplyQueue.RequestRetry();
+        return;
+      }
+    }
+
+    // Disconnected, allocation/argument failures, or exhausted lock retries
+    // cannot safely pin later responses. Drop this unapplied snapshot and
+    // resynchronize the engine/composition before continuing.
+    if (_responseApplyQueue.Complete(flightToken)) {
+      _AbortComposition();
+      _ScheduleNextResponseApply(false);
     }
     return;
   }
 
-  // If a synchronous session ran, it already completed this token (and may
-  // have started another). If it did not run, put the untouched request back
-  // at the head for a later retry.
-  if (sessionHr != TF_S_ASYNC && _responseApplyQueue.InFlight() &&
+  if (!session->Executed() && sessionHr == TS_E_READONLY &&
+      _responseApplyQueue.InFlight() &&
       _responseApplyQueue.FlightToken() == flightToken) {
-    _responseApplyQueue.RestoreFront(std::move(request), flightToken);
+    _responseApplyQueue.Complete(flightToken);
+    _AbortComposition();
+    _ScheduleNextResponseApply(false);
+    return;
+  }
+
+  // If a synchronous session ran, it settled (or deliberately kept) this
+  // token itself. Any other non-async/no-execution result is terminal for this
+  // snapshot; restoring it would let an unexplained refusal pin the FIFO.
+  if (!session->Executed() && sessionHr != TF_S_ASYNC &&
+      _responseApplyQueue.InFlight() &&
+      _responseApplyQueue.FlightToken() == flightToken) {
+    _responseApplyQueue.Complete(flightToken);
+    _AbortComposition();
+    _ScheduleNextResponseApply(false);
   }
 }
 

@@ -42,19 +42,27 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
     return false;
 
   // A RequestEditSession failure must put the exact request back at the head,
-  // ahead of work that arrived later.
+  // ahead of work that arrived later. Retry intent is separate so OnEndEdit
+  // only wakes work that explicitly waited for the prior write lock to end.
   if (!queue.RestoreFront(std::move(second), secondToken) ||
       !queue.CanSchedule())
     return false;
+  queue.RequestRetry();
+  if (!queue.ConsumeRetryRequest() || queue.ConsumeRetryRequest())
+    return false;
+
   auto restored = queue.TakeNext();
   const auto restoredToken = queue.FlightToken();
   if (!restored || *restored != 2)
     return false;
 
-  // Reset invalidates the old callback. Even if re-entry starts a new flight
-  // before that old callback returns, completing the stale token must leave the
-  // new flight untouched.
+  // Reset invalidates retry intent and the old callback. Even if re-entry
+  // starts a new flight before that old callback returns, completing the stale
+  // token must leave the new flight untouched.
+  queue.RequestRetry();
   queue.Reset();
+  if (queue.ConsumeRetryRequest())
+    return false;
   queue.Push(std::make_shared<int>(3));
   auto current = queue.TakeNext();
   const auto currentToken = queue.FlightToken();

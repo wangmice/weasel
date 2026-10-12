@@ -51,9 +51,18 @@ class SerialApplyQueue {
     return true;
   }
 
+  void RequestRetry() { retry_pending_ = true; }
+
+  bool ConsumeRetryRequest() {
+    const bool requested = retry_pending_;
+    retry_pending_ = false;
+    return requested;
+  }
+
   void Reset() {
     pending_.clear();
     in_flight_ = false;
+    retry_pending_ = false;
     AdvanceFlightToken();
   }
 
@@ -66,6 +75,7 @@ class SerialApplyQueue {
 
   std::deque<T> pending_;
   bool in_flight_ = false;
+  bool retry_pending_ = false;
   std::uint64_t flight_token_ = 0;
 };
 
