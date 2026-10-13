@@ -62,12 +62,21 @@ class UiThread {
   UiThread() {
     m_ready = CreateEvent(NULL, TRUE, FALSE, NULL);
     m_stop = CreateEvent(NULL, TRUE, FALSE, NULL);
+    m_pause = CreateEvent(NULL, TRUE, FALSE, NULL);
+    m_paused = CreateEvent(NULL, TRUE, FALSE, NULL);
+    m_resume = CreateEvent(NULL, FALSE, FALSE, NULL);
   }
   ~UiThread() {
     if (m_ready)
       CloseHandle(m_ready);
     if (m_stop)
       CloseHandle(m_stop);
+    if (m_pause)
+      CloseHandle(m_pause);
+    if (m_paused)
+      CloseHandle(m_paused);
+    if (m_resume)
+      CloseHandle(m_resume);
   }
 
   weasel::UI ui;
@@ -90,6 +99,17 @@ class UiThread {
     SetEvent(m_ready);
     // pump until asked to stop
     while (WaitForSingleObject(m_stop, 0) != WAIT_OBJECT_0) {
+      if (WaitForSingleObject(m_pause, 0) == WAIT_OBJECT_0) {
+        SetEvent(m_paused);
+        HANDLE waits[] = {m_stop, m_resume};
+        const DWORD wait =
+            WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        ResetEvent(m_pause);
+        ResetEvent(m_paused);
+        if (wait == WAIT_OBJECT_0)
+          break;
+        continue;
+      }
       MSG msg;
       while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
         TranslateMessage(&msg);
@@ -108,11 +128,43 @@ class UiThread {
 
   void NotifyReady() { WaitForSingleObject(m_ready, INFINITE); }
   void RequestStop() { SetEvent(m_stop); }
+  void PausePumping() {
+    SetEvent(m_pause);
+    WaitForSingleObject(m_paused, INFINITE);
+  }
+  void ResumePumping() { SetEvent(m_resume); }
 
  private:
   HANDLE m_ready = NULL;
   HANDLE m_stop = NULL;
+  HANDLE m_pause = NULL;
+  HANDLE m_paused = NULL;
+  HANDLE m_resume = NULL;
 };
+
+/* B1: a queued timeout must be observable before the UI thread consumes its
+ * WM_WEASEL_SHOW. Otherwise a following server update can enqueue Hide and
+ * collapse the notification into a flash. */
+static void test_pending_timeout_visible_before_ui_apply(UiThread& t) {
+  t.ui.Hide();
+  check(wait_until([&] { return !t.ui.IsShown(); }, 3000),
+        "B1: pending-timeout test starts hidden");
+
+  t.PausePumping();
+  check(!t.ui.IsCountingDown(), "B1: pending-timeout baseline is idle");
+  t.ui.ShowWithTimeout(60000);
+  check(t.ui.IsCountingDown(),
+        "B1: queued ShowWithTimeout is visible before UI apply");
+  t.ResumePumping();
+
+  check(wait_until([&] { return t.ui.IsShown() && t.ui.IsCountingDown(); },
+                   3000),
+        "B1: queued timeout becomes an active timer");
+  t.ui.Hide();
+  check(wait_until([&] { return !t.ui.IsShown() && !t.ui.IsCountingDown(); },
+                   3000),
+        "B1: explicit Hide clears the active timeout");
+}
 
 /* B1: a non-UI thread calling Show/Hide must observe the state flip once the
  * UI thread processes the posted command (no direct cross-thread ShowWindow) */
@@ -442,6 +494,7 @@ int main() {
 
   test_cross_thread_show_hide(t);
   test_show_with_timeout(t);
+  test_pending_timeout_visible_before_ui_apply(t);
   test_update_cancels_countdown(t);
   test_highlighted_clamped(t);
   test_hr_tolerates_s_false();

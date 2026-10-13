@@ -1,5 +1,6 @@
 #pragma once
 #include <WeaselUI.h>
+#include <WeaselInteractionPolicy.h>
 
 #include "Layout.h"
 #include "d2d.h"
@@ -162,6 +163,7 @@ class WeaselPanel {
   int m_lastWindowHeight = -1;
   std::atomic<bool> m_shown{false};
   std::atomic<bool> m_autohide_counting{false};
+  interaction_policy::PendingAutoHideState m_pending_autohide;
   bool m_layout_ready = false;
   static constexpr BYTE MAX_PAINT_RECOVERY = 2;
   BYTE m_paint_recovery_left = MAX_PAINT_RECOVERY;

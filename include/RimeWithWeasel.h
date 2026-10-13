@@ -100,15 +100,13 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                                    const std::string& schema_id);
   void _LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
                                 bool ignore_app_name = false);
-  bool _ShowMessage(weasel::Context& ctx,
-                    weasel::Status& status,
-                    bool notification_scheduled);
+  bool _ShowMessage(weasel::Context& ctx, weasel::Status& status);
   bool _Respond(WeaselSessionId ipc_id,
                 EatLine eat,
                 RespondContext* rc = nullptr);
   void _ReadClientInfo(WeaselSessionId ipc_id, LPWSTR buffer);
   void _GetCandidateInfo(weasel::CandidateInfo& cinfo, RimeContext& ctx);
-  bool _GetStatus(weasel::Status& stat,
+  void _GetStatus(weasel::Status& stat,
                   WeaselSessionId ipc_id,
                   weasel::Context& ctx,
                   const RespondContext* rc = nullptr);

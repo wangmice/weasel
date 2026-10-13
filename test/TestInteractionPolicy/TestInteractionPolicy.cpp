@@ -30,12 +30,23 @@ int main() {
   check(!NeedsRimeSessionValidation(2, 2),
         "matching cleanup epoch keeps the key fast path");
 
-  check(KeepNotificationVisible(true, false),
-        "a queued notification keeps the panel visible before UI apply");
-  check(KeepNotificationVisible(false, true),
-        "an active UI timer keeps the panel visible");
-  check(!KeepNotificationVisible(false, false),
-        "idle panel can still be hidden");
+  PendingAutoHideState pending;
+  check(!pending.Pending(), "auto-hide state starts idle");
+  pending.OnPost();
+  check(pending.Pending(), "posted timeout is visible before UI apply");
+  pending.OnPost();
+  pending.OnApplied();
+  check(pending.Pending(), "one of two queued timeouts remains pending");
+  pending.OnApplied();
+  check(!pending.Pending(), "all applied timeouts clear pending state");
+  pending.OnApplied();
+  check(!pending.Pending(), "extra consume cannot underflow pending state");
+  pending.OnPost();
+  pending.OnPostFailed();
+  check(!pending.Pending(), "failed PostMessage rolls back pending state");
+  pending.OnPost();
+  pending.Reset();
+  check(!pending.Pending(), "destroy/reset clears queued timeout state");
 
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 namespace weasel::interaction_policy {
@@ -15,9 +16,32 @@ constexpr bool NeedsRimeSessionValidation(std::uint64_t validated_epoch,
   return validated_epoch != cleanup_epoch;
 }
 
-constexpr bool KeepNotificationVisible(bool notification_scheduled,
-                                       bool counting_down) {
-  return notification_scheduled || counting_down;
-}
+class PendingAutoHideState {
+ public:
+  void OnPost() noexcept {
+    pending_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void OnPostFailed() noexcept { ConsumeOne(); }
+  void OnApplied() noexcept { ConsumeOne(); }
+
+  bool Pending() const noexcept {
+    return pending_.load(std::memory_order_relaxed) != 0;
+  }
+
+  void Reset() noexcept { pending_.store(0, std::memory_order_relaxed); }
+
+ private:
+  void ConsumeOne() noexcept {
+    auto current = pending_.load(std::memory_order_relaxed);
+    while (current != 0 &&
+           !pending_.compare_exchange_weak(current, current - 1,
+                                           std::memory_order_relaxed,
+                                           std::memory_order_relaxed)) {
+    }
+  }
+
+  std::atomic<std::uint32_t> pending_{0};
+};
 
 }  // namespace weasel::interaction_policy

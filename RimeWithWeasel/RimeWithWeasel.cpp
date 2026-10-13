@@ -616,8 +616,7 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id,
     weasel_status.disabled = m_disabled;
 
   // rc 携带 _Respond 本键已取得的状态快照时，_GetStatus 不再第二次 get_status
-  const bool notification_scheduled =
-    _GetStatus(weasel_status, ipc_id, weasel_context, rc);
+  _GetStatus(weasel_status, ipc_id, weasel_context, rc);
 
   // 仅已知会话刷新 client_caps；维护路径（ipc_id=0）与未知会话直接跳过，
   // 不再向会话表插入死条目
@@ -628,8 +627,7 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id,
       session_status->style.client_caps &= ~INLINE_PREEDIT_CAPABLE;
   }
 
-  if (!_ShowMessage(weasel_context, weasel_status,
-                    notification_scheduled)) {
+  if (!_ShowMessage(weasel_context, weasel_status)) {
     m_ui->Hide();
     m_ui->Update(weasel_context, weasel_status);
   }
@@ -765,12 +763,9 @@ void RimeWithWeaselHandler::_LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
     _UpdateInlinePreeditStatus(ipc_id);
 }
 
-bool RimeWithWeaselHandler::_ShowMessage(Context& ctx,
-                                         Status& status,
-                                         bool notification_scheduled) {
+bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
   std::lock_guard<std::mutex> lock(m_notifier_mutex);
-  const bool counter = weasel::interaction_policy::KeepNotificationVisible(
-      notification_scheduled, m_ui->IsCountingDown());
+  const bool counter = m_ui->IsCountingDown();
   if (m_message_type.empty() || m_message_value.empty())
     return counter;
   // show as auxiliary string
@@ -1560,7 +1555,7 @@ static void _LoadAppOptions(RimeConfig* config,
       });
 }
 
-bool RimeWithWeaselHandler::_GetStatus(Status& stat,
+void RimeWithWeaselHandler::_GetStatus(Status& stat,
                                        WeaselSessionId ipc_id,
                                        Context& ctx,
                                        const RespondContext* rc) {
@@ -1599,13 +1594,12 @@ bool RimeWithWeaselHandler::_GetStatus(Status& stat,
     }
   }
   if (!status_valid)
-    return false;
+    return;
   // 状态有效必源于表内真实会话（to_session_id 非 0 才可能取到状态）；
   // 未知会话无样式可同步，早退且不向会话表插入条目
   SessionStatus* session_status = find_session_status(ipc_id);
   if (!session_status)
-    return false;
-  bool notification_scheduled = false;
+    return;
   if (schema_id != m_last_schema_id) {
     session_status->__synced = false;
     m_last_schema_id = schema_id;
@@ -1624,11 +1618,9 @@ bool RimeWithWeaselHandler::_GetStatus(Status& stat,
         ctx.aux.str = stat.schema_name;
         m_ui->Update(ctx, stat);
         m_ui->ShowWithTimeout(m_show_notifications_time);
-        notification_scheduled = true;
       }
     }
   }
-  return notification_scheduled;
 }
 
 void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
