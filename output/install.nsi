@@ -5,6 +5,22 @@
 !include x64.nsh
 !include winVer.nsh
 
+; ARM64 setup needs the native DLL, the ARM64X redirector, and the ARM32 DLL
+; for Windows versions that still support ARM32 WOW. Partial payloads must
+; never reach Setup or the upgrade's old-version removal path.
+!if /FileExists "weaselARM.dll"
+  !if /FileExists "weaselARM64.dll"
+    !if /FileExists "weaselARM64X.dll"
+      !define WEASEL_HAS_ARM64_PAYLOAD
+    !endif
+  !endif
+!endif
+!ifdef WEASEL_HAS_ARM64_PAYLOAD
+  !echo "Installer targets: x86, x64, ARM64"
+!else
+  !echo "Installer targets: x86, x64 only (ARM64 payload incomplete)"
+!endif
+
 Unicode true
 
 ;--------------------------------
@@ -78,6 +94,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_TRADCHINESE} "您的系统不被支持，�
 LangString AUTOCHKUPDATE ${LANG_TRADCHINESE} "自動檢查版本更新？"
 LangString SETUPCANCELLED ${LANG_TRADCHINESE} "已取消安裝，不會繼續部署或啟動服務。"
 LangString SETUPFAILED ${LANG_TRADCHINESE} "輸入法安裝失敗，不會繼續部署或啟動服務。"
+LangString ARM64NOTSUPPORTED ${LANG_TRADCHINESE} "此安裝包僅支援 x86/x64 Windows。請使用包含完整 ARM64 元件的小狼毫安裝包；現有安裝尚未變更。"
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
 LangString DISPLAYNAME ${LANG_SIMPCHINESE} "小狼毫输入法"
@@ -97,6 +114,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_SIMPCHINESE} "您的系統不被支持，�
 LangString AUTOCHKUPDATE ${LANG_SIMPCHINESE} "自动检查版本更新？"
 LangString SETUPCANCELLED ${LANG_SIMPCHINESE} "已取消安装，不会继续部署或启动服务。"
 LangString SETUPFAILED ${LANG_SIMPCHINESE} "输入法安装失败，不会继续部署或启动服务。"
+LangString ARM64NOTSUPPORTED ${LANG_SIMPCHINESE} "此安装包仅支持 x86/x64 Windows。请使用包含完整 ARM64 组件的小狼毫安装包；现有安装尚未更改。"
 
 !insertmacro MUI_LANGUAGE "English"
 LangString DISPLAYNAME ${LANG_ENGLISH} "Weasel"
@@ -116,10 +134,21 @@ LangString SYSTEMVERSIONNOTOK ${LANG_ENGLISH} "Your system not supported, minimi
 LangString AUTOCHKUPDATE ${LANG_ENGLISH} "Automatically check for updates?"
 LangString SETUPCANCELLED ${LANG_ENGLISH} "Installation cancelled. Deployment and service startup will not continue."
 LangString SETUPFAILED ${LANG_ENGLISH} "Input method setup failed. Deployment and service startup will not continue."
+LangString ARM64NOTSUPPORTED ${LANG_ENGLISH} "This package supports x86/x64 Windows only. Please use a Weasel installer with the complete ARM64 components. Your existing installation has not been changed."
 
 ;--------------------------------
 
 Function .onInit
+!ifndef WEASEL_HAS_ARM64_PAYLOAD
+  ; Reject before reading/removing an existing installation or copying files.
+  ${If} ${IsNativeARM64}
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(ARM64NOTSUPPORTED)"
+    SetErrorLevel 1633 ; ERROR_INSTALL_PLATFORM_UNSUPPORTED (also in /S mode)
+    Quit
+  ${EndIf}
+!endif
+
   ; if not version >= 8.1, quit and MessageBox(if not silent)
   ${IfNot} ${AtLeastWin8.1}
     IfSilent toquit
@@ -256,9 +285,11 @@ program_files:
     File "weaselx64.dll"
   ${EndIf}
   ${If} ${IsNativeARM64}
-    File /nonfatal "weaselARM.dll"
-    File /nonfatal "weaselARM64.dll"
-    File /nonfatal "weaselARM64X.dll"
+!ifdef WEASEL_HAS_ARM64_PAYLOAD
+    File "weaselARM.dll"
+    File "weaselARM64.dll"
+    File "weaselARM64X.dll"
+!endif
   ${EndIf}
   ; install x64 build for NativeARM64_WINDOWS11 and NativeAMD64_WINDOWS11
   ${If} ${AtLeastWin11} ; Windows 11 and above

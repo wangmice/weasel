@@ -16,7 +16,11 @@
 #   plum 数据拉取需要 bash (Git for Windows) 和网络
 #
 # 产物: output\archives\weasel-<PRODUCT_VERSION>-installer.exe
-# 不含 ARM64 专属 DLL（install.nsi 中为 /nonfatal，ARM64 机器上仍可用 x64 二进制运行）
+# -Build 仅编译 x64/x86；缺少完整 ARM 组件的包只支持 x86/x64 Windows。
+# ARM64 包还需 output 下的 weaselARM.dll、weaselARM64.dll、weaselARM64X.dll
+# （可在准备好 ARM 工具链和 Boost 后，在 Developer Command Prompt 运行 xbuild.bat arm64）。
+# NSIS 根据这三个文件是否齐全选择支持的平台；不完整的包会在 ARM64 上先退出，
+# 不卸载旧版、不复制文件，静默安装返回 1633。x64 进程仿真不能替代原生输入法 DLL。
 
 param(
   [switch]$Build,
