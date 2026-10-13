@@ -23,6 +23,12 @@ namespace weasel {
 
 typedef ComPtr<IDWriteTextFormat1> PtTextFormat;
 
+constexpr D2D1_DEBUG_LEVEL SelectD2DDebugLevel(
+    bool enable_debug_layer) noexcept {
+  return enable_debug_layer ? D2D1_DEBUG_LEVEL_INFORMATION
+                            : D2D1_DEBUG_LEVEL_NONE;
+}
+
 template <typename T>
 void SafeRelease(ComPtr<T>& t) {
   if (t) {

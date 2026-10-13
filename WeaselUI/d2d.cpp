@@ -65,7 +65,19 @@ HRESULT DeviceResources::EnsureInitialized() {
       reinterpret_cast<void**>(dxFactory.ReleaseAndGetAddressOf()));
   if (FAILED(hr))
     return hr;
-  D2D1_FACTORY_OPTIONS const options = {D2D1_DEBUG_LEVEL_INFORMATION};
+
+  // WeaselUI is linked into the TSF DLL and therefore executes inside arbitrary
+  // host processes. Never opt those hosts into the Direct2D debug layer by
+  // default: validation failures may call DebugBreak and terminate the host
+  // when no debugger is attached. Developers can opt in explicitly for a
+  // debugger session.
+#if defined(WEASEL_ENABLE_D2D_DEBUG_LAYER)
+  constexpr bool kEnableD2DDebugLayer = true;
+#else
+  constexpr bool kEnableD2DDebugLayer = false;
+#endif
+  D2D1_FACTORY_OPTIONS const options = {
+      SelectD2DDebugLevel(kEnableD2DDebugLayer)};
   hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, options,
                          d2Factory.ReleaseAndGetAddressOf());
   if (FAILED(hr))

@@ -3,6 +3,7 @@
 //	WTL MessageLoop 封装了消息循环. 实现了 getmessage/dispatchmessage....
 
 #include "stdafx.h"
+#include "../WeaselUI/d2d.h"
 #include "resource.h"
 #include "WeaselServerApp.h"
 #include <WeaselIPC.h>
@@ -30,7 +31,7 @@ struct RuntimeCleanup {
     // still initialized; otherwise their static-destructor Release() can run
     // after those modules have been unloaded.
     if (release_ui_shared_resources)
-      weasel::ShutdownSharedResources();
+      weasel::DeviceResources::Get().Reset();
     if (module_initialized)
       _Module.Term();
     if (com_initialized)

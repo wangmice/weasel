@@ -1,12 +1,7 @@
 #include "WeaselPanel.h"
-#include "d2d.h"
 #include <WeaselUI.h>
 
 namespace weasel {
-
-void ShutdownSharedResources() {
-  DeviceResources::Get().Reset();
-}
 
 // ----------------------------------------------------------------------------
 class UIImpl {

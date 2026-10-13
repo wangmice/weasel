@@ -22,10 +22,6 @@ enum ClientCapabilities {
   INLINE_PREEDIT_CAPABLE = 1,
 };
 
-// Release process-wide graphics/WIC COM resources before the owning COM
-// apartment is torn down. Safe to call repeatedly.
-void ShutdownSharedResources();
-
 class UIImpl;
 class UI {
  public:

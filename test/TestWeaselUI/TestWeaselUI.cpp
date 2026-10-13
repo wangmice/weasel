@@ -120,10 +120,10 @@ class UiThread {
     }
     // destroy the window on its owning thread
     ui.Destroy(true);
-    // Exercise the same public shutdown path as WeaselServer.exe. In
-    // particular, WIC must be released before CoUninitialize so its COM
-    // vtable cannot outlive windowscodecs.dll.
-    weasel::ShutdownSharedResources();
+    // WeaselServer.exe uses the same internal DeviceResources reset before
+    // CoUninitialize. Keep the TSF-facing WeaselUI API free of process-shutdown
+    // hooks while still verifying the COM teardown invariant here.
+    weasel::DeviceResources::Get().Reset();
     shared_resources_released_before_com_uninit =
         !weasel::DeviceResources::Get().wicFactory &&
         !weasel::DeviceResources::Get().m_pWriteFactory;
@@ -486,6 +486,14 @@ static void test_label_text_format_bounded() {
         "B23: formatting never raises the CRT invalid parameter");
 }
 
+static void test_d2d_debug_layer_policy() {
+  check(weasel::SelectD2DDebugLevel(false) == D2D1_DEBUG_LEVEL_NONE,
+        "P1: default/release policy disables the D2D debug layer");
+  check(weasel::SelectD2DDebugLevel(true) ==
+            D2D1_DEBUG_LEVEL_INFORMATION,
+        "P1: explicit opt-in enables D2D debug diagnostics");
+}
+
 int main() {
   _set_invalid_parameter_handler(count_invalid_parameter);
   UiThread t;
@@ -508,6 +516,7 @@ int main() {
   test_max_candidates_round_info(t);
   test_missing_status_icon_files(t);
   test_candidate_abbreviation_surrogate_safe();
+  test_d2d_debug_layer_policy();
   test_label_text_format_bounded();
 
   t.RequestStop();
