@@ -825,6 +825,28 @@ static void test_thread_exit_closes_pipe_handle() {
   delete server;
 }
 
+/* B16: stopping a listener must not depend on one successful self-connect.
+ * StopListener repeatedly cancels synchronous ConnectNamedPipe and retries
+ * WakeListener until the listening thread has actually exited. */
+static void test_listener_stop_cancels_blocked_accept() {
+  std::wstring name = unique_pipe_name(L"listener_stop");
+  ExposedServer server{std::wstring(name)};
+  auto handler = [](weasel::PipeMessage msg,
+                    weasel::PipeServer::Respond resp) { resp(msg.wParam); };
+  boost::thread listener([&] { server.Listen(handler); });
+
+  // Let the listener reach its synchronous accept with no real client.
+  Sleep(50);
+  const ULONGLONG started = ::GetTickCount64();
+  server.StopListener(listener);
+  const ULONGLONG elapsed = ::GetTickCount64() - started;
+
+  check(!listener.joinable(), "B16: listener joined after stop");
+  check(elapsed < 2000,
+        "B16: blocked ConnectNamedPipe cannot pin shutdown indefinitely");
+  server.DrainWorkers();
+}
+
 int main() {
   test_roundtrip();
   test_pipe_connected_race();
@@ -840,6 +862,7 @@ int main() {
   test_oversized_body_fails_loudly();
   test_failed_transact_leaves_no_staged_body();
   test_thread_exit_closes_pipe_handle();
+  test_listener_stop_cancels_blocked_accept();
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
   // The listener threads are still blocked in ConnectNamedPipe on purpose;

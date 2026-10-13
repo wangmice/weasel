@@ -2,6 +2,7 @@
 #include <RimeWithWeasel.h>
 #include <StringAlgorithm.hpp>
 #include <WeaselConstants.h>
+#include <WeaselInteractionPolicy.h>
 #include <WeaselSessionIdAllocator.h>
 #include <WeaselStyleColor.h>
 #include <WeaselUtility.h>
@@ -151,13 +152,35 @@ void RimeWithWeaselHandler::Finalize() {
   rime_api->finalize();
 }
 
+bool RimeWithWeaselHandler::_ValidateRimeSession(WeaselSessionId ipc_id,
+                                                 bool force) {
+  auto it = m_session_status_map.find(ipc_id);
+  if (it == m_session_status_map.end())
+    return false;
+
+  SessionStatus& session_status = it->second;
+  if (!force &&
+      !weasel::interaction_policy::NeedsRimeSessionValidation(
+          session_status.validated_cleanup_epoch, m_cleanup_epoch))
+    return true;
+
+  if (rime_api->find_session(session_status.session_id)) {
+    session_status.validated_cleanup_epoch = m_cleanup_epoch;
+    return true;
+  }
+
+  DLOG(INFO) << "Rime session expired: ipc_id = " << ipc_id
+             << ", session_id = " << session_status.session_id;
+  if (m_active_session == ipc_id)
+    m_active_session = 0;
+  m_session_status_map.erase(it);
+  return false;
+}
+
 DWORD RimeWithWeaselHandler::FindSession(WeaselSessionId ipc_id) {
-  if (m_disabled)
+  if (m_disabled || !_ValidateRimeSession(ipc_id, true))
     return 0;
-  Bool found = rime_api->find_session(to_session_id(ipc_id));
-  DLOG(INFO) << "Find session: session_id = " << to_session_id(ipc_id)
-             << ", found = " << found;
-  return found ? (ipc_id) : 0;
+  return ipc_id;
 }
 
 DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
@@ -199,6 +222,7 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
   SessionStatus& session_status = new_session_status(ipc_id);
   session_status.style = m_base_style;
   session_status.session_id = session_id;
+  session_status.validated_cleanup_epoch = m_cleanup_epoch;
   _ReadClientInfo(ipc_id, buffer);
 
   RIME_STRUCT(RimeStatus, status);
@@ -287,10 +311,11 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
   DLOG(INFO) << "Process key event: keycode = " << keyEvent.keycode
              << ", mask = " << keyEvent.mask << ", ipc_id = " << ipc_id;
 
-  // Maintenance can clear server sessions while the named pipe stays alive.
-  // Reject a stale key before it reaches librime. The scalar reply remains
-  // FALSE for compatibility; new clients inspect the response field below.
-  if (m_disabled || !find_session_status(ipc_id)) {
+  // Maintenance and cleanup_stale_sessions() can invalidate the underlying
+  // librime session while the pipe and Weasel IPC mapping survive. Validate
+  // once per cleanup epoch before the key reaches librime; healthy typing
+  // keeps the no-Echo/no-find_session fast path.
+  if (m_disabled || !_ValidateRimeSession(ipc_id, false)) {
     if (eat) {
       std::wstring response = L"action=noop\n";
       response.append(kInvalidSessionResponseField).append(L"\n.\n");
@@ -403,8 +428,12 @@ void RimeWithWeaselHandler::FocusOut(DWORD param, WeaselSessionId ipc_id) {
   if (m_ui)
     m_ui->Hide();
   m_active_session = 0;
-  if (!m_disabled && RIME_API_AVAILABLE(rime_api, cleanup_stale_sessions))
+  if (!m_disabled && RIME_API_AVAILABLE(rime_api, cleanup_stale_sessions)) {
     rime_api->cleanup_stale_sessions();
+    // Existing Weasel mappings may now refer to sessions librime reclaimed.
+    // Defer validation until each session becomes active again.
+    ++m_cleanup_epoch;
+  }
 }
 
 void RimeWithWeaselHandler::UpdateInputPosition(RECT const& rc,
@@ -736,8 +765,9 @@ void RimeWithWeaselHandler::_LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
 
 bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
   std::lock_guard<std::mutex> lock(m_notifier_mutex);
+  const bool counter = m_ui->IsCountingDown();
   if (m_message_type.empty() || m_message_value.empty())
-    return m_ui->IsCountingDown();
+    return counter;
   // show as auxiliary string
   std::wstring& tips(ctx.aux.str);
   bool show_icon = false;
@@ -778,7 +808,6 @@ bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
     if (m_message_value == "full_shape" || m_message_value == "!full_shape")
       status.type = FULL_SHAPE;
   }
-  auto counter = m_ui->IsCountingDown();
   if (!show_icon && counter)
     return counter;
   auto foption = m_show_notifications.find(m_option_name);
@@ -794,7 +823,7 @@ bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
       m_ui->ShowWithTimeout(m_show_notifications_time);
     return true;
   } else {
-    return m_ui->IsCountingDown();
+    return counter;
   }
 }
 inline std::string _GetLabelText(const std::vector<Text>& labels,

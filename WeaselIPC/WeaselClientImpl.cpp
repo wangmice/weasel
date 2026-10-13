@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include "WeaselClientImpl.h"
 #include <StringAlgorithm.hpp>
+#include <WeaselInteractionPolicy.h>
 
 using namespace weasel;
 
@@ -213,11 +214,14 @@ void ClientImpl::EndMaintenance() {
 }
 
 bool ClientImpl::Echo() {
-  if (!_Active())
+  const UINT expected_session = _SessionId();
+  if (!_Connected() || expected_session == 0)
     return false;
 
-  UINT serverEcho = _SendMessage(WEASEL_IPC_ECHO, 0, _SessionId());
-  return (serverEcho == _SessionId());
+  const UINT server_echo =
+      _SendMessage(WEASEL_IPC_ECHO, 0, expected_session);
+  return weasel::interaction_policy::EchoConfirmsSession(
+      expected_session, _SessionId(), server_echo);
 }
 
 bool ClientImpl::GetResponseData(ResponseHandler const& handler) {

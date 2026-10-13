@@ -1,6 +1,7 @@
 #pragma once
 #include <WeaselIPC.h>
 #include <WeaselUI.h>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <mutex>
@@ -33,6 +34,9 @@ struct SessionStatus {
   // 客户端应用名（小写，_ReadClientInfo 于建会话时解析）：会话期内不变，
   // 供应用选项匹配与托盘刷新使用，避免每键 get_property 交叉查询
   std::string client_app;
+  // cleanup_stale_sessions() 后只在该会话下一次使用时重新验证一次，避免
+  // 把 find_session() 重新放回健康状态下的每键热路径。
+  std::uint64_t validated_cleanup_epoch = 0;
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;
@@ -110,6 +114,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   void _UpdateShowNotifications(RimeConfig* config, bool initialize = false);
 
   void _UpdateInlinePreeditStatus(WeaselSessionId ipc_id);
+  bool _ValidateRimeSession(WeaselSessionId ipc_id, bool force);
 
   // 会话表查询：未知/已失效会话一律返回 0（librime 的无效会话号，
   // 相应 API 调用安全落空），绝不向表内插入条目
@@ -163,4 +168,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   // Process-lifetime high-water mark. Maintenance clears active sessions but
   // must never make a stale client ID eligible for immediate reuse.
   WeaselSessionId m_next_ipc_session_id = 1;
+  // Incremented after each librime stale-session cleanup. A session whose
+  // validated epoch lags this value is checked once before its next key.
+  std::uint64_t m_cleanup_epoch = 0;
 };

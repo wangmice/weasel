@@ -230,10 +230,7 @@ int ServerImpl::Run() {
 void ServerImpl::_StopPipeServer() {
   if (!pipeThread)
     return;
-  pipeThread->interrupt();
-  channel->WakeListener();
-  if (pipeThread->joinable())
-    pipeThread->join();
+  channel->StopListener(*pipeThread);
   channel->DrainWorkers();
   pipeThread.reset();
 }
@@ -505,6 +502,25 @@ void PipeServer::WakeListener() {
                               NULL, OPEN_EXISTING, 0, NULL);
   if (wake != INVALID_HANDLE_VALUE)
     ::CloseHandle(wake);
+}
+
+void PipeServer::StopListener(boost::thread& listener) {
+  listener.interrupt();
+
+  // interrupt() is cooperative and cannot itself cancel a synchronous
+  // ConnectNamedPipe(). A single self-connect is also racy: it can happen
+  // before the listener creates its next pipe instance. Retry until the
+  // listener actually exits, cancelling whichever synchronous call is
+  // current on each pass.
+  while (listener.joinable()) {
+    WakeListener();
+    const auto native_thread = listener.native_handle();
+    if (native_thread)
+      ::CancelSynchronousIo(native_thread);
+
+    if (listener.timed_join(boost::posix_time::milliseconds(50)))
+      break;
+  }
 }
 
 void PipeServer::DrainWorkers() {

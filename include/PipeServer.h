@@ -27,6 +27,10 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   ServerRunner GetServerRunner(ServerHandler const& handler);
   /* Unblock a listener blocked in ConnectNamedPipe (self-connection) */
   void WakeListener();
+  /* Interrupt and join a thread running Listen(). Repeats both self-wake and
+   * synchronous-I/O cancellation so shutdown cannot miss the window between
+   * an interruption point and the next blocking ConnectNamedPipe(). */
+  void StopListener(boost::thread& listener);
   /* Cancel and join every live connection worker; call only after the
    * listener thread has been joined so no new workers can appear */
   void DrainWorkers();

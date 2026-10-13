@@ -178,7 +178,8 @@ void WeaselPanel::ShowWithTimeout(size_t millisec) {
 }
 
 bool WeaselPanel::IsCountingDown() const {
-  return m_autohide_counting.load();
+  return m_pending_autohide.Pending() ||
+         m_autohide_counting.load(std::memory_order_relaxed);
 }
 
 void WeaselPanel::ShowWindow(int nCmdShow) {
@@ -190,8 +191,14 @@ void WeaselPanel::_SetVisibility(PanelVisibility cmd, size_t millisec) {
   if (!IsWindow())
     return;
   if (!_IsUiThread()) {
-    ::PostMessage(m_hWnd, WM_WEASEL_SHOW, static_cast<WPARAM>(cmd),
-                  static_cast<LPARAM>(millisec));
+    const bool tracks_timeout = cmd == PanelVisibility::ShowWithTimeout;
+    if (tracks_timeout)
+      m_pending_autohide.OnPost();
+    if (!::PostMessage(m_hWnd, WM_WEASEL_SHOW, static_cast<WPARAM>(cmd),
+                       static_cast<LPARAM>(millisec)) &&
+        tracks_timeout) {
+      m_pending_autohide.OnPostFailed();
+    }
     return;
   }
   _ApplyVisibility(cmd, millisec);
@@ -1129,6 +1136,7 @@ void WeaselPanel::OnDestroy() {
   }
   // ensure timers are cleared and then reset state
   _ClearTimers();
+  m_pending_autohide.Reset();
   if (GetCapture() == m_hWnd)
     ReleaseCapture();
 
@@ -1416,10 +1424,15 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
         ApplyStyle(*style);
       return 0;
     }
-    case WM_WEASEL_SHOW:
-      _ApplyVisibility(static_cast<PanelVisibility>(wParam),
-                       static_cast<size_t>(lParam));
+    case WM_WEASEL_SHOW: {
+      const auto cmd = static_cast<PanelVisibility>(wParam);
+      _ApplyVisibility(cmd, static_cast<size_t>(lParam));
+      // Keep pending=true until the timeout timer has actually been armed.
+      // This closes the cross-request gap between PostMessage and UI apply.
+      if (cmd == PanelVisibility::ShowWithTimeout)
+        m_pending_autohide.OnApplied();
       return 0;
+    }
     case WM_WEASEL_PREVIEW:
       RepositionPreview();
       return 0;
@@ -1432,6 +1445,7 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
       return 0;
     case WM_NCDESTROY:
       SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+      m_pending_autohide.Reset();
       m_hWnd = nullptr;
       return DefWindowProc(hwnd, uMsg, wParam, lParam);
     case WM_MOUSEMOVE:
