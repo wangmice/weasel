@@ -18,6 +18,27 @@
 #pragma comment(lib, "Shcore.lib")
 CAppModule _Module;
 
+namespace {
+struct RuntimeCleanup {
+  bool com_initialized = false;
+  bool module_initialized = false;
+  bool release_ui_shared_resources = false;
+
+  ~RuntimeCleanup() {
+    // DeviceResources owns WIC/DWrite/D2D COM interfaces whose vtables live in
+    // in-proc COM servers such as windowscodecs.dll. Release them while COM is
+    // still initialized; otherwise their static-destructor Release() can run
+    // after those modules have been unloaded.
+    if (release_ui_shared_resources)
+      weasel::ShutdownSharedResources();
+    if (module_initialized)
+      _Module.Term();
+    if (com_initialized)
+      ::CoUninitialize();
+  }
+};
+}  // namespace
+
 int WINAPI _tWinMain(HINSTANCE hInstance,
                      HINSTANCE /*hPrevInstance*/,
                      LPTSTR lpstrCmdLine,
@@ -45,7 +66,13 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     return 1;
   }
 
+  RuntimeCleanup cleanup;
   HRESULT hRes = ::CoInitialize(NULL);
+  if (FAILED(hRes)) {
+    LOG(ERROR) << "CoInitialize failed: " << hRes;
+    return -1;
+  }
+  cleanup.com_initialized = true;
   // If you are running on NT 4.0 or higher you can use the following call
   // instead to make the EXE free threaded. This means that calls come in on a
   // random RPC thread.
@@ -60,7 +87,11 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
       ICC_BAR_CLASSES);  // add flags to support other controls
 
   hRes = _Module.Init(NULL, hInstance);
-  ATLASSERT(SUCCEEDED(hRes));
+  if (FAILED(hRes)) {
+    LOG(ERROR) << "ATL module initialization failed: " << hRes;
+    return -1;
+  }
+  cleanup.module_initialized = true;
 
   if (!wcscmp(L"/userdir", lpstrCmdLine)) {
     CreateDirectory(WeaselUserDataPath().c_str(), NULL);
@@ -114,6 +145,10 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   CreateDirectory(WeaselUserDataPath().c_str(), NULL);
 
   int nRet = 0;
+  // From this point construction/run of the server may initialize process-wide
+  // UI COM resources. RuntimeCleanup executes after the local app has been
+  // destroyed, but before CoUninitialize().
+  cleanup.release_ui_shared_resources = true;
   try {
     LOG(INFO) << "constructing WeaselServerApp";
     WeaselServerApp app;
@@ -131,9 +166,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     LOG(ERROR) << "WeaselServer failed with unknown exception";
     nRet = -1;
   }
-
-  _Module.Term();
-  ::CoUninitialize();
 
   return nRet;
 }

@@ -84,6 +84,7 @@ class UiThread {
   bool created = false;
   bool same_thread_show_ok = false;
   bool same_thread_hide_ok = false;
+  bool shared_resources_released_before_com_uninit = false;
 
   void Run() {
     const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -119,9 +120,13 @@ class UiThread {
     }
     // destroy the window on its owning thread
     ui.Destroy(true);
-    // Shared WIC/graphics COM pointers outlive the panel. Release them on
-    // the graphics-owning thread before tearing down its COM apartment.
-    weasel::DeviceResources::Get().Reset();
+    // Exercise the same public shutdown path as WeaselServer.exe. In
+    // particular, WIC must be released before CoUninitialize so its COM
+    // vtable cannot outlive windowscodecs.dll.
+    weasel::ShutdownSharedResources();
+    shared_resources_released_before_com_uninit =
+        !weasel::DeviceResources::Get().wicFactory &&
+        !weasel::DeviceResources::Get().m_pWriteFactory;
     if (com_initialized)
       CoUninitialize();
   }
@@ -508,6 +513,8 @@ int main() {
   t.RequestStop();
   check(ui_thread.timed_join(boost::posix_time::seconds(5)),
         "B1: UI thread exits cleanly");
+  check(t.shared_resources_released_before_com_uninit,
+        "P1: shared WIC/DWrite resources released before COM teardown");
 
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
