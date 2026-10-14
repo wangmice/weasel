@@ -106,6 +106,9 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   template <typename _Resp>
   void HandlePipeMessage(PipeMessage pipe_msg, _Resp resp);
 
+  // The channel stores a pointer to these attributes, so the security object
+  // must be constructed before the channel and destroyed after it.
+  SecurityAttribute sa;
   std::unique_ptr<PipeServer> channel;
   std::unique_ptr<boost::thread> pipeThread;
   RequestHandler* m_pRequestHandler;  // reference
@@ -115,7 +118,6 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   /* Resolved once in the ctor; stays null if user32 does not export it
    * (below Win8.1), and OnUpdateInputPosition then keeps physical coords */
   PPhysicalToLogicalPointForPerMonitorDPI m_pPhysicalToLogicalPointForPerMonitorDPI;
-  SecurityAttribute sa;
   BOOL m_darkMode;
 };
 
