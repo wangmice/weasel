@@ -63,16 +63,30 @@ static void plant(const wchar_t* path) {
 class ScopedProfileEnvironment {
  public:
   ScopedProfileEnvironment() {
+    SetLastError(ERROR_SUCCESS);
     DWORD required =
         GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", nullptr, 0);
-    if (required != 0) {
+    if (required == 0) {
+      existed_ = GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+      return;
+    }
+
+    while (required != 0) {
       std::vector<wchar_t> buffer(required);
-      DWORD copied = GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE",
-                                             buffer.data(), required);
+      SetLastError(ERROR_SUCCESS);
+      const DWORD copied = GetEnvironmentVariableW(
+          L"TEXTSERVICE_PROFILE", buffer.data(), required);
+      if (copied == 0) {
+        existed_ = GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+        value_.clear();
+        return;
+      }
       if (copied < required) {
         existed_ = true;
         value_.assign(buffer.data(), copied);
+        return;
       }
+      required = copied;
     }
   }
 
