@@ -1,6 +1,7 @@
 #include "../../WeaselTSF/stdafx.h"
 #include "../../WeaselTSF/Globals.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
