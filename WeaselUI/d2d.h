@@ -138,6 +138,11 @@ struct D2D {
                        const wstring& comment_font_face,
                        const int comment_font_point);
   void OnResize(UINT width, UINT height);
+  // Recover this D2D owner without allowing the panel to manipulate the
+  // process-shared generation directly. Device loss rolls to a replacement
+  // generation while ordinary paint failures rebuild only window resources.
+  HRESULT RecoverAfterDeviceLoss();
+  HRESULT RecoverPaintResources();
   void SetBrushColor(uint32_t color);
   void GetTextSize(const wstring& text,
                    size_t nCount,
@@ -212,5 +217,55 @@ struct D2D {
       const std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
   std::shared_ptr<const DeviceResourcesSnapshot> m_sharedResources;
 };
+
+inline HRESULT D2D::RecoverAfterDeviceLoss() {
+  const uint64_t failed_generation =
+      m_sharedResources ? m_sharedResources->generation : 0;
+  std::shared_ptr<const DeviceResourcesSnapshot> replacement;
+  HRESULT hr = DeviceResources::Get().RecreateAfterDeviceLoss(
+      failed_generation, replacement);
+
+  const HWND hwnd = m_hWnd;
+  ReleaseWindowResources();
+  m_hWnd = hwnd;
+  // DirectComposition is created from the generation's DXGI device and must
+  // never survive a generation rollover.
+  dcompDevice.Reset();
+
+  if (FAILED(hr)) {
+    SafeReleaseAll(direct3dDevice, dxgiDevice, dxFactory, d2Factory, d2Device,
+                   m_pWriteFactory);
+    m_sharedResources.reset();
+    ClearDeviceDependentCaches();
+    return hr;
+  }
+
+  AdoptSharedResources(replacement);
+  InitDirect2D();
+  if (!dc || !swapChain || !bitmap || !visual || !target || !dcompDevice ||
+      !m_pBrush) {
+    return E_FAIL;
+  }
+  return S_OK;
+}
+
+inline HRESULT D2D::RecoverPaintResources() {
+  if (direct3dDevice &&
+      FAILED(direct3dDevice->GetDeviceRemovedReason())) {
+    return RecoverAfterDeviceLoss();
+  }
+
+  const HWND hwnd = m_hWnd;
+  if (!hwnd)
+    return E_HANDLE;
+  ReleaseWindowResources();
+  m_hWnd = hwnd;
+  InitDirect2D();
+  if (!dc || !swapChain || !bitmap || !visual || !target || !dcompDevice ||
+      !m_pBrush) {
+    return E_FAIL;
+  }
+  return S_OK;
+}
 }  // namespace weasel
 #endif

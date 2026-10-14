@@ -418,8 +418,7 @@ void WeaselPanel::_Refresh() {
       m_pD2D = std::make_shared<D2D>(m_style);
     if (m_pD2D->direct3dDevice &&
         FAILED(m_pD2D->direct3dDevice->GetDeviceRemovedReason())) {
-      DeviceResources::Get().Reset();
-      m_pD2D->ReleaseWindowResources();
+      HR(m_pD2D->RecoverAfterDeviceLoss());
     }
     const float old_scale = m_pD2D->m_dpiScaleLayout;
     m_pD2D->AttachWindow(m_hWnd);
@@ -455,11 +454,9 @@ void WeaselPanel::_RequestPaintRecovery() {
   m_layout_ready = false;
   try {
     if (m_pD2D) {
-      DeviceResources::Get().Reset();
-      m_pD2D->ReleaseWindowResources();
+      HR(m_pD2D->RecoverPaintResources());
       m_fullscreen_font_active = false;
       m_fullscreen_font_snapshot = {};
-      m_pD2D->AttachWindow(m_hWnd);
       m_pD2D->InitDirectWriteResources();
     }
   } catch (...) {
