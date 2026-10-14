@@ -30,6 +30,15 @@ int main() {
   check(!NeedsRimeSessionValidation(2, 2),
         "matching cleanup epoch keeps the key fast path");
 
+  check(CanUseEnhancedForegroundBounds(true, true, true),
+        "enhanced positioning uses validated foreground bounds");
+  check(!CanUseEnhancedForegroundBounds(true, false, false),
+        "enhanced positioning skips a missing foreground window");
+  check(!CanUseEnhancedForegroundBounds(true, true, false),
+        "enhanced positioning skips a failed foreground rect query");
+  check(!CanUseEnhancedForegroundBounds(false, true, true),
+        "normal positioning does not consult foreground bounds");
+
   PendingAutoHideState pending;
   check(!pending.Pending(), "auto-hide state starts idle");
   pending.OnPost();

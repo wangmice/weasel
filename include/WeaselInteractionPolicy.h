@@ -16,6 +16,13 @@ constexpr bool NeedsRimeSessionValidation(std::uint64_t validated_epoch,
   return validated_epoch != cleanup_epoch;
 }
 
+constexpr bool CanUseEnhancedForegroundBounds(
+    bool enhanced_position,
+    bool has_foreground_window,
+    bool has_foreground_rect) noexcept {
+  return enhanced_position && has_foreground_window && has_foreground_rect;
+}
+
 class PendingAutoHideState {
  public:
   void OnPost() noexcept {

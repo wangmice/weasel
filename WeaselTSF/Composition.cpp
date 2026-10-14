@@ -4,6 +4,7 @@
 #include "ResponseParser.h"
 #include "CandidateList.h"
 #include "AsyncUiPolicy.h"
+#include <WeaselInteractionPolicy.h>
 
 namespace {
 
@@ -276,14 +277,18 @@ STDMETHODIMP CGetTextExtentEditSession::DoEditSession(TfEditCookie ec) {
   if (SUCCEEDED(_pContextView->GetTextExt(ec, pRange, &rc, &fClipped)) &&
       (rc.left != 0 || rc.top != 0)) {
     if (_enhancedPosition) {
-      HWND hwnd = GetForegroundWindow();
-      RECT rcForegroundWindow;
-      ::GetWindowRect(hwnd, &rcForegroundWindow);
+      HWND hwnd = ::GetForegroundWindow();
+      RECT rcForegroundWindow{};
+      const bool hasForegroundWindow = hwnd != nullptr;
+      const bool hasForegroundRect =
+          hasForegroundWindow && ::GetWindowRect(hwnd, &rcForegroundWindow);
 
-      if (rc.left < rcForegroundWindow.left ||
-          rc.left > rcForegroundWindow.right ||
-          rc.top < rcForegroundWindow.top ||
-          rc.top > rcForegroundWindow.bottom) {
+      if (weasel::interaction_policy::CanUseEnhancedForegroundBounds(
+              _enhancedPosition, hasForegroundWindow, hasForegroundRect) &&
+          (rc.left < rcForegroundWindow.left ||
+           rc.left > rcForegroundWindow.right ||
+           rc.top < rcForegroundWindow.top ||
+           rc.top > rcForegroundWindow.bottom)) {
         POINT pt;
         bool hasCaret = ::GetCaretPos(&pt);
         int offsetx = rcForegroundWindow.left - rc.left + (hasCaret ? pt.x : 0);
