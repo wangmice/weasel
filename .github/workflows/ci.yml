@@ -153,11 +153,12 @@ jobs:
 
           .\test\check-tsf-host-safety.ps1
           .\test\TestBuildEnvPolicy.ps1
+          .\test\TestXmakeToolchainPolicy.ps1
 
           $savedBoost = $env:BOOST_ROOT
           try {
             $env:BOOST_ROOT = Join-Path $env:RUNNER_TEMP 'weasel-missing-boost'
-            $missingOutput = @(& xmake f -c -a x64 -m debug --vs=2022 -y 2>&1)
+            $missingOutput = @(& xmake f -c -a x64 -m debug --vs=2022 --vs_toolset=14.3 -y 2>&1)
             $missingExit = $LASTEXITCODE
             if ($missingExit -eq 0) {
               $missingOutput += @(& xmake -y 2>&1)
@@ -171,7 +172,7 @@ jobs:
             throw "missing-Boost guard did not fail with the intended diagnostic:`n$missingText"
           }
 
-          xmake f -c -a x64 -m debug --vs=2022 -y
+          xmake f -c -a x64 -m debug --vs=2022 --vs_toolset=14.3 -y
           if ($LASTEXITCODE -ne 0) { throw 'xmake debug configuration failed' }
           xmake -y
           if ($LASTEXITCODE -ne 0) { throw 'xmake debug build failed' }

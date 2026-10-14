@@ -53,82 +53,188 @@ add_rules("require_boost")
 add_cxflags("/utf-8 /MP /O2 /Oi /Gm- /EHsc /MT /GS /Gy /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /external:W3 /Gd /TP")
 add_ldflags("/TLBID:1 /DYNAMICBASE /NXCOMPAT")
 
--- 全局ATL lib路径
--- 优先使用 Developer Prompt 的 %include% 环境；否则用 vswhere 自行定位
--- Visual Studio，使 xmake 不依赖 Developer Command Prompt 也能编译
-local atl_include = ''
-local atl_lib_dir = ''
-dpi_manifest = ''
-local vs_include_env = os.getenv("include")
-if vs_include_env and vs_include_env ~= '' then
-  for include in vs_include_env:gmatch("([^;]+)") do
-    if atl_include == '' and include:match(".*ATLMFC\\include\\?$") then
-      atl_include = include
-      atl_lib_dir = include:replace("include$", "lib")
-      dpi_manifest = include:replace("ATLMFC\\include$", "Include\\Manifest\\PerMonitorHighDPIAware.manifest")
-    end
-    add_includedirs(include)
+-- Resolve ATL/MFC from the same Visual Studio family and VC toolset selected
+-- by xmake. Never append the Developer Prompt's complete INCLUDE list: xmake
+-- already wires the selected MSVC/SDK sysincludes, and importing a stale shell
+-- INCLUDE can mix STL/ATL headers from another compiler installation.
+local function nonempty_env(name)
+  local value = os.getenv(name)
+  if value and value ~= '' then
+    return value:trim()
   end
-end
-if atl_include == '' then
-  -- 从已知的 Visual Studio 安装位置探测（优先 VSINSTALLDIR 环境变量）
-  local vs_dirs = {}
-  local vs_env = os.getenv("VSINSTALLDIR")
-  if vs_env and vs_env ~= '' then
-    table.insert(vs_dirs, vs_env:trim())
-  end
-  for _, prog_files in ipairs({os.getenv("ProgramFiles") or '', os.getenv("ProgramFiles(x86)") or ''}) do
-    if prog_files ~= '' then
-      table.join2(vs_dirs, os.dirs(path.join(prog_files, "Microsoft Visual Studio", "*", "*")))
-      table.join2(vs_dirs, os.dirs(path.join(prog_files, "Microsoft Visual Studio", "*")))
-    end
-  end
-  for _, vs_dir in ipairs(vs_dirs) do
-    local toolsets = os.dirs(path.join(vs_dir, "VC", "Tools", "MSVC", "*"))
-    table.sort(toolsets, function(a, b) return a > b end)
-    for _, toolset_dir in ipairs(toolsets) do
-      if os.isdir(path.join(toolset_dir, "atlmfc")) then
-        atl_include = path.join(toolset_dir, "atlmfc", "include")
-        atl_lib_dir = path.join(toolset_dir, "atlmfc", "lib")
-        for _, manifest in ipairs({
-          path.join(toolset_dir, "include", "Manifest", "PerMonitorHighDPIAware.manifest"),
-          path.join(atl_include, "Manifest", "PerMonitorHighDPIAware.manifest")}) do
-          if os.isfile(manifest) then
-            dpi_manifest = manifest
-            break
-          end
-        end
-        break
-      end
-    end
-    if atl_include ~= '' then
-      add_includedirs(atl_include)
-      break
-    end
-  end
-  if atl_include == '' then
-    print("warning: cannot locate ATLMFC, ATL/WTL headers may be missing. Install VS with ATL/MFC components.")
-  end
-end
--- DPI manifest：仓库根缺失时尽量从 VS 复制一份（各 target 的 add_files 引用仓库根路径）
-if dpi_manifest ~= '' and not os.isfile(path.join(os.projectdir(), "PerMonitorHighDPIAware.manifest")) then
-  if not pcall(function() os.cp(dpi_manifest, os.projectdir()) end) then
-    print(("warning: copy %s to the repo root for DPI manifest embedding."):format(dpi_manifest))
-  end
+  return nil
 end
 
+local function vs_major_for_year(vs)
+  local majors = {
+    ["2015"] = "14",
+    ["2017"] = "15",
+    ["2019"] = "16",
+    ["2022"] = "17"
+  }
+  return majors[tostring(vs or '')]
+end
+
+local function vswhere_range_for_year(vs)
+  local major = vs_major_for_year(vs)
+  if not major then
+    return nil
+  end
+  return "[" .. major .. ".0," .. tostring(tonumber(major) + 1) .. ".0)"
+end
+
+local function requested_toolset_prefix(toolset)
+  local value = tostring(toolset or '')
+  if value == '' or value == 'auto' then
+    return nil
+  end
+  return value
+end
+
+local function toolset_matches(version, requested)
+  local prefix = requested_toolset_prefix(requested)
+  if not prefix then
+    return true
+  end
+  return version and version:sub(1, #prefix) == prefix
+end
+
+local configured_vs = get_config("vs")
+local configured_vs_toolset = get_config("vs_toolset")
+
+-- Command execution and filesystem mutation are not allowed in xmake's
+-- description domain. Resolve the concrete VC/ATL installation from on_load,
+-- where os.iorunv, os.dirs, io.readfile and raise are valid script APIs.
+rule("weasel_msvc_atl")
+  on_load(function(target)
+    if target:plat() ~= "windows" then
+      return
+    end
+
+    local vc_tools_dir = nil
+    local prompt_vc_tools = nonempty_env("VCToolsInstallDir")
+    local prompt_vs_version = nonempty_env("VisualStudioVersion")
+    local configured_vs_major = vs_major_for_year(configured_vs)
+
+    -- Trust a Developer Prompt only when it matches both an explicit --vs
+    -- choice and the requested VC toolset family. This prevents a VS2022
+    -- prompt using v143 from contaminating an explicit --vs_toolset=14.2 build.
+    if prompt_vc_tools and configured_vs_major and prompt_vs_version and
+       prompt_vs_version:match("^(%d+)") == configured_vs_major then
+      local normalized_prompt = prompt_vc_tools:gsub("[/\\]+$", "")
+      local prompt_toolset_version = path.filename(normalized_prompt)
+      if toolset_matches(prompt_toolset_version, configured_vs_toolset) then
+        vc_tools_dir = normalized_prompt
+      else
+        print(("warning: ignoring VCToolsInstallDir toolset %s because xmake selected %s")
+          :format(prompt_toolset_version or "unknown",
+                  tostring(configured_vs_toolset or "auto")))
+      end
+    elseif prompt_vc_tools and configured_vs and tostring(configured_vs) ~= '' and
+           tostring(configured_vs) ~= 'auto' then
+      print(("warning: ignoring VCToolsInstallDir from Visual Studio %s because xmake selected VS %s")
+        :format(prompt_vs_version or "unknown", tostring(configured_vs)))
+    end
+
+    if not vc_tools_dir then
+      local program_files_x86 = nonempty_env("ProgramFiles(x86)")
+      if program_files_x86 then
+        local vswhere = path.join(program_files_x86, "Microsoft Visual Studio", "Installer", "vswhere.exe")
+        if os.isfile(vswhere) then
+          local args = {
+            "-latest", "-products", "*",
+            "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property", "installationPath"
+          }
+          local version_range = vswhere_range_for_year(configured_vs)
+          if version_range then
+            table.insert(args, "-version")
+            table.insert(args, version_range)
+          end
+
+          local ok, output = pcall(function()
+            return os.iorunv(vswhere, args)
+          end)
+          if ok and output then
+            local install_dir = output:trim()
+            if install_dir ~= '' then
+              local msvc_root = path.join(install_dir, "VC", "Tools", "MSVC")
+              local requested_prefix = requested_toolset_prefix(configured_vs_toolset)
+              if requested_prefix then
+                local candidates = os.dirs(path.join(msvc_root, requested_prefix .. "*"))
+                table.sort(candidates, function(a, b) return a > b end)
+                for _, candidate in ipairs(candidates) do
+                  local version = path.filename(candidate:gsub("[/\\]+$", ""))
+                  if toolset_matches(version, configured_vs_toolset) and
+                     os.isdir(path.join(candidate, "atlmfc", "include")) then
+                    vc_tools_dir = candidate
+                    break
+                  end
+                end
+              else
+                local default_version_file = path.join(
+                  install_dir, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt")
+                if os.isfile(default_version_file) then
+                  local toolset_version = io.readfile(default_version_file):trim()
+                  if toolset_version ~= '' then
+                    local candidate = path.join(msvc_root, toolset_version)
+                    if os.isdir(candidate) then
+                      vc_tools_dir = candidate
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    -- Last-resort fallback when vswhere is unavailable and no explicit --vs or
+    -- --vs_toolset selection contradicts the active prompt.
+    if not vc_tools_dir and prompt_vc_tools and
+       (not configured_vs or tostring(configured_vs) == '' or tostring(configured_vs) == 'auto') then
+      local normalized_prompt = prompt_vc_tools:gsub("[/\\]+$", "")
+      local prompt_toolset_version = path.filename(normalized_prompt)
+      if toolset_matches(prompt_toolset_version, configured_vs_toolset) then
+        vc_tools_dir = normalized_prompt
+      end
+    end
+
+    if not vc_tools_dir then
+      raise(("ATL/MFC toolset root not found for VS %s / toolset %s. Install the matching ATL/MFC component or use the matching Developer Prompt.")
+        :format(tostring(configured_vs or "auto"),
+                tostring(configured_vs_toolset or "auto")))
+    end
+
+    local atl_include = path.join(vc_tools_dir, "atlmfc", "include")
+    local atl_lib_dir = path.join(vc_tools_dir, "atlmfc", "lib")
+    if not os.isdir(atl_include) or not os.isdir(atl_lib_dir) then
+      raise(("ATL/MFC not found under selected VC toolset: %s"):format(vc_tools_dir))
+    end
+
+    target:add("includedirs", atl_include)
+    local arch_lib = ({
+      x64 = "x64",
+      x86 = "x86",
+      arm = "arm",
+      arm64 = "arm64"
+    })[target:arch()]
+    if arch_lib then
+      target:add("linkdirs", path.join(atl_lib_dir, arch_lib))
+    end
+  end)
+rule_end()
+add_rules("weasel_msvc_atl")
+
+-- PerMonitorHighDPIAware.manifest is tracked at the repository root; do not
+-- copy SDK/toolset files during xmake description loading.
 add_includedirs("$(projectdir)/include/wtl")
 
 if is_arch("x64") then
   add_linkdirs("$(projectdir)/lib64")
-  add_linkdirs(atl_lib_dir .. "/x64")
 elseif is_arch("x86") then
   add_linkdirs("$(projectdir)/lib")
-  add_linkdirs(atl_lib_dir .. "/x86")
-elseif is_arch("arm") then
-  add_linkdirs(atl_lib_dir .. "/arm")
-elseif is_arch("arm64") then
-  add_linkdirs(atl_lib_dir .. "/arm64")
 end
 
 add_links("atls", "shell32", "advapi32", "gdi32", "user32", "uuid", "ole32")
