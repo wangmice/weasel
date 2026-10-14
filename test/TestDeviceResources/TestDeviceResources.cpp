@@ -109,6 +109,11 @@ void test_generation_rollover_preserves_old_snapshot() {
 }
 
 void test_concurrent_acquire_publishes_one_generation() {
+  ComScope main_com;
+  check(main_com.ready(), "COM initialized for concurrent acquire test");
+  if (!main_com.ready())
+    return;
+
   constexpr int kThreads = 8;
   std::atomic<int> ready{0};
   std::atomic<bool> go{false};
