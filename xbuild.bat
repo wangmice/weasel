@@ -147,6 +147,7 @@ if %build_opencc% == 1 (
 if %build_commands% == 1 (
   echo Generating compile_commands.json
   xmake project -k compile_commands -m %build_config%
+  if errorlevel 1 goto error
 )
 
 if defined SDKVER set build_sdk_option=--vs_sdkver=%SDKVER% -c
@@ -158,20 +159,36 @@ if %build_weasel% == 0 ( goto end )
 
 if %build_arm64% == 1 (
   xmake f -a arm64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
-  if %build_rebuild% == 1 ( xmake clean )
+  if errorlevel 1 goto error
+  if %build_rebuild% == 1 (
+    xmake clean
+    if errorlevel 1 goto error
+  )
   xmake
   if errorlevel 1 goto error
   xmake f -a arm -m %build_config% %xmake_msvc_options% %build_sdk_option%
-  if %build_rebuild% == 1 ( xmake clean )
+  if errorlevel 1 goto error
+  if %build_rebuild% == 1 (
+    xmake clean
+    if errorlevel 1 goto error
+  )
   xmake
   if errorlevel 1 goto error
 )
 xmake f -a x64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
-if %build_rebuild% == 1 ( xmake clean )
+if errorlevel 1 goto error
+if %build_rebuild% == 1 (
+  xmake clean
+  if errorlevel 1 goto error
+)
 xmake
 if errorlevel 1 goto error
 xmake f -a x86 -m %build_config% %xmake_msvc_options% %build_sdk_option%
-if %build_rebuild% == 1 ( xmake clean )
+if errorlevel 1 goto error
+if %build_rebuild% == 1 (
+  xmake clean
+  if errorlevel 1 goto error
+)
 xmake
 if errorlevel 1 goto error
 

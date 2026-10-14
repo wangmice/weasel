@@ -160,9 +160,11 @@ if %build_rime% == 1 (
   rem build x64 librime
   set ARCH=x64
   call :build_librime_platform x64 %WEASEL_ROOT%\lib64 %WEASEL_ROOT%\output
+  if errorlevel 1 goto error
   rem build Win32 librime
   set ARCH=Win32
   call :build_librime_platform Win32 %WEASEL_ROOT%\lib %WEASEL_ROOT%\output\Win32
+  if errorlevel 1 goto error
   rem clean the modified file
   rem git checkout .
   rem git submodule foreach git checkout .
@@ -177,8 +179,14 @@ if %build_weasel% == 1 (
     set build_opencc=1
   )
 )
-if %build_data% == 1 call :build_data
-if %build_opencc% == 1 call :build_opencc_data
+if %build_data% == 1 (
+  call :build_data
+  if errorlevel 1 goto error
+)
+if %build_opencc% == 1 (
+  call :build_opencc_data
+  if errorlevel 1 goto error
+)
 
 if %build_weasel% == 0 goto end
 

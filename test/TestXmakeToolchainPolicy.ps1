@@ -4,6 +4,8 @@ $sourcePath = Join-Path $PSScriptRoot '..\xmake.lua'
 $source = Get-Content -LiteralPath $sourcePath -Raw
 $xbuildPath = Join-Path $PSScriptRoot '..\xbuild.bat'
 $xbuild = Get-Content -LiteralPath $xbuildPath -Raw
+$buildPath = Join-Path $PSScriptRoot '..\build.bat'
+$build = Get-Content -LiteralPath $buildPath -Raw
 $env2022Path = Join-Path $PSScriptRoot '..\env.vs2022.bat'
 $env2022 = Get-Content -LiteralPath $env2022Path -Raw
 
@@ -72,6 +74,38 @@ foreach ($required in @('--vs=%XMAKE_VS%', '--vs_toolset=%XMAKE_VS_TOOLSET%')) {
 if (-not $env2022.Contains('set XMAKE_VS=2022') -or
     -not $env2022.Contains('set XMAKE_VS_TOOLSET=14.3')) {
   throw 'VS2022 environment must pin xmake to VS2022/v143'
+}
+
+# Build scripts must fail at the first failed subcommand. Otherwise an old xmake
+# configuration or a later successful platform build can overwrite ERRORLEVEL
+# and hide the root cause.
+$xbuildNormalized = $xbuild -replace "`r`n", "`n"
+$configureGuards = [regex]::Matches(
+  $xbuildNormalized,
+  'xmake f -a (?:arm64|arm|x64|x86)[^\n]*\n\s*if errorlevel 1 goto error')
+if ($configureGuards.Count -ne 4) {
+  throw "xbuild fail-fast regression: expected 4 guarded xmake configure commands, got $($configureGuards.Count)"
+}
+$cleanGuards = [regex]::Matches(
+  $xbuildNormalized,
+  'xmake clean\n\s*if errorlevel 1 goto error')
+if ($cleanGuards.Count -ne 4) {
+  throw "xbuild fail-fast regression: expected 4 guarded xmake clean commands, got $($cleanGuards.Count)"
+}
+if ($xbuildNormalized -notmatch 'xmake project -k compile_commands -m %build_config%\n\s*if errorlevel 1 goto error') {
+  throw 'xbuild fail-fast regression: compile_commands failure is not propagated'
+}
+
+$buildNormalized = $build -replace "`r`n", "`n"
+foreach ($pattern in @(
+  'call :build_librime_platform x64[^\n]*\n\s*if errorlevel 1 goto error',
+  'call :build_librime_platform Win32[^\n]*\n\s*if errorlevel 1 goto error',
+  'call :build_data\n\s*if errorlevel 1 goto error',
+  'call :build_opencc_data\n\s*if errorlevel 1 goto error'
+)) {
+  if ($buildNormalized -notmatch $pattern) {
+    throw "build.bat fail-fast regression: missing immediate failure propagation for pattern '$pattern'"
+  }
 }
 
 Write-Host 'Xmake MSVC toolchain isolation policy: PASS'
