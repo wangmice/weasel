@@ -268,6 +268,7 @@ if is_mode("debug") then
   includes("test/TestPipeSecurityPolicy")
   if is_arch("x64") or is_arch("x86") then
     includes("test/TestServerCommands")
+    includes("test/TestTrayRecovery")
   end
 else
   add_cxflags("/GL")

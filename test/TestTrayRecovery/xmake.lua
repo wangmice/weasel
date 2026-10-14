@@ -1,0 +1,5 @@
+target("TestTrayRecovery")
+  set_kind("binary")
+  add_files("./*.cpp")
+  add_files("../../WeaselServer/SystemTraySDK.cpp")
+  add_rules("subcmd")
