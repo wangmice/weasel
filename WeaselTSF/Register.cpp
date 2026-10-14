@@ -4,6 +4,7 @@
 #include <strsafe.h>
 #include <WeaselUtility.h>
 
+#include <algorithm>
 #include <limits>
 #include <vector>
 
