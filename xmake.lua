@@ -83,131 +83,114 @@ local function vswhere_range_for_year(vs)
   return "[" .. major .. ".0," .. tostring(tonumber(major) + 1) .. ".0)"
 end
 
-local function find_vctools_with_vswhere(configured_vs)
-  local program_files_x86 = nonempty_env("ProgramFiles(x86)")
-  if not program_files_x86 then
-    return nil
-  end
-
-  local vswhere = path.join(program_files_x86, "Microsoft Visual Studio", "Installer", "vswhere.exe")
-  if not os.isfile(vswhere) then
-    return nil
-  end
-
-  local args = {
-    "-latest", "-products", "*",
-    "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-    "-property", "installationPath"
-  }
-  local version_range = vswhere_range_for_year(configured_vs)
-  if version_range then
-    table.insert(args, "-version")
-    table.insert(args, version_range)
-  end
-
-  local ok, output = pcall(function()
-    return os.iorunv(vswhere, args)
-  end)
-  if not ok or not output then
-    return nil
-  end
-
-  local install_dir = output:trim()
-  if install_dir == '' then
-    return nil
-  end
-  local default_version_file = path.join(
-    install_dir, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt")
-  if not os.isfile(default_version_file) then
-    return nil
-  end
-  local toolset_version = io.readfile(default_version_file):trim()
-  if toolset_version == '' then
-    return nil
-  end
-  local toolset_dir = path.join(install_dir, "VC", "Tools", "MSVC", toolset_version)
-  return os.isdir(toolset_dir) and toolset_dir or nil
-end
-
 local configured_vs = get_config("vs")
-local vc_tools_dir = nil
-local prompt_vc_tools = nonempty_env("VCToolsInstallDir")
-local prompt_vs_version = nonempty_env("VisualStudioVersion")
-local configured_vs_major = vs_major_for_year(configured_vs)
 
--- Use the active Developer Prompt only when it is known to match an explicit
--- xmake --vs selection. Without --vs, xmake defaults to the latest installed
--- VS, so a prompt from an older VS must not silently override that choice.
-if prompt_vc_tools and configured_vs_major and prompt_vs_version and
-   prompt_vs_version:match("^(%d+)") == configured_vs_major then
-  vc_tools_dir = prompt_vc_tools
-elseif prompt_vc_tools and configured_vs and tostring(configured_vs) ~= '' and
-       tostring(configured_vs) ~= 'auto' then
-  print(("warning: ignoring VCToolsInstallDir from Visual Studio %s because xmake selected VS %s")
-    :format(prompt_vs_version or "unknown", tostring(configured_vs)))
-end
+-- Command execution and filesystem mutation are not allowed in xmake's
+-- description domain. Resolve the concrete VC/ATL installation from on_load,
+-- where os.iorunv and raise are valid script-domain APIs.
+rule("weasel_msvc_atl")
+  on_load(function(target)
+    if target:plat() ~= "windows" then
+      return
+    end
 
-if not vc_tools_dir then
-  vc_tools_dir = find_vctools_with_vswhere(configured_vs)
-end
+    local vc_tools_dir = nil
+    local prompt_vc_tools = nonempty_env("VCToolsInstallDir")
+    local prompt_vs_version = nonempty_env("VisualStudioVersion")
+    local configured_vs_major = vs_major_for_year(configured_vs)
 
--- Last-resort fallback for environments without vswhere. This is only safe
--- when no explicit --vs selection contradicts the prompt.
-if not vc_tools_dir and prompt_vc_tools and
-   (not configured_vs or tostring(configured_vs) == '' or tostring(configured_vs) == 'auto') then
-  vc_tools_dir = prompt_vc_tools
-end
+    -- Trust a Developer Prompt only when it matches an explicit --vs choice.
+    -- With --vs=auto/no --vs, xmake selects the newest installed VS; in that
+    -- case vswhere below follows the same policy instead of inheriting an older
+    -- prompt accidentally.
+    if prompt_vc_tools and configured_vs_major and prompt_vs_version and
+       prompt_vs_version:match("^(%d+)") == configured_vs_major then
+      vc_tools_dir = prompt_vc_tools
+    elseif prompt_vc_tools and configured_vs and tostring(configured_vs) ~= '' and
+           tostring(configured_vs) ~= 'auto' then
+      print(("warning: ignoring VCToolsInstallDir from Visual Studio %s because xmake selected VS %s")
+        :format(prompt_vs_version or "unknown", tostring(configured_vs)))
+    end
 
-local atl_include = ''
-local atl_lib_dir = ''
-dpi_manifest = ''
-if vc_tools_dir then
-  local candidate_include = path.join(vc_tools_dir, "atlmfc", "include")
-  local candidate_lib = path.join(vc_tools_dir, "atlmfc", "lib")
-  if os.isdir(candidate_include) and os.isdir(candidate_lib) then
-    atl_include = candidate_include
-    atl_lib_dir = candidate_lib
-    add_includedirs(atl_include)
-    for _, manifest in ipairs({
-      path.join(vc_tools_dir, "include", "Manifest", "PerMonitorHighDPIAware.manifest"),
-      path.join(atl_include, "Manifest", "PerMonitorHighDPIAware.manifest")}) do
-      if os.isfile(manifest) then
-        dpi_manifest = manifest
-        break
+    if not vc_tools_dir then
+      local program_files_x86 = nonempty_env("ProgramFiles(x86)")
+      if program_files_x86 then
+        local vswhere = path.join(program_files_x86, "Microsoft Visual Studio", "Installer", "vswhere.exe")
+        if os.isfile(vswhere) then
+          local args = {
+            "-latest", "-products", "*",
+            "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property", "installationPath"
+          }
+          local version_range = vswhere_range_for_year(configured_vs)
+          if version_range then
+            table.insert(args, "-version")
+            table.insert(args, version_range)
+          end
+
+          local ok, output = pcall(function()
+            return os.iorunv(vswhere, args)
+          end)
+          if ok and output then
+            local install_dir = output:trim()
+            if install_dir ~= '' then
+              local default_version_file = path.join(
+                install_dir, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt")
+              if os.isfile(default_version_file) then
+                local toolset_version = io.readfile(default_version_file):trim()
+                if toolset_version ~= '' then
+                  local candidate = path.join(
+                    install_dir, "VC", "Tools", "MSVC", toolset_version)
+                  if os.isdir(candidate) then
+                    vc_tools_dir = candidate
+                  end
+                end
+              end
+            end
+          end
+        end
       end
     end
-  end
-end
 
-local atl_available = atl_include ~= '' and atl_lib_dir ~= ''
-rule("require_atl")
-  on_load(function(target)
-    if is_plat("windows") and not atl_available then
-      raise("ATL/MFC not found for xmake's selected MSVC toolchain. Install the ATL/MFC component or configure from the matching Visual Studio Developer Prompt.")
+    -- Last-resort fallback when vswhere is unavailable and no explicit --vs
+    -- selection contradicts the active prompt.
+    if not vc_tools_dir and prompt_vc_tools and
+       (not configured_vs or tostring(configured_vs) == '' or tostring(configured_vs) == 'auto') then
+      vc_tools_dir = prompt_vc_tools
+    end
+
+    if not vc_tools_dir then
+      raise("ATL/MFC toolset root not found for xmake's selected Visual Studio. Install ATL/MFC or use the matching Developer Prompt.")
+    end
+
+    local atl_include = path.join(vc_tools_dir, "atlmfc", "include")
+    local atl_lib_dir = path.join(vc_tools_dir, "atlmfc", "lib")
+    if not os.isdir(atl_include) or not os.isdir(atl_lib_dir) then
+      raise(("ATL/MFC not found under selected VC toolset: %s"):format(vc_tools_dir))
+    end
+
+    target:add("includedirs", atl_include)
+    local arch_lib = ({
+      x64 = "x64",
+      x86 = "x86",
+      arm = "arm",
+      arm64 = "arm64"
+    })[target:arch()]
+    if arch_lib then
+      target:add("linkdirs", path.join(atl_lib_dir, arch_lib))
     end
   end)
 rule_end()
-add_rules("require_atl")
+add_rules("weasel_msvc_atl")
 
--- DPI manifest：仓库根缺失时尽量从所选 VC toolset 复制一份（各 target 的 add_files 引用仓库根路径）
-if dpi_manifest ~= '' and not os.isfile(path.join(os.projectdir(), "PerMonitorHighDPIAware.manifest")) then
-  if not pcall(function() os.cp(dpi_manifest, os.projectdir()) end) then
-    print(("warning: copy %s to the repo root for DPI manifest embedding."):format(dpi_manifest))
-  end
-end
-
+-- PerMonitorHighDPIAware.manifest is tracked at the repository root; do not
+-- copy SDK/toolset files during xmake description loading.
 add_includedirs("$(projectdir)/include/wtl")
 
 if is_arch("x64") then
   add_linkdirs("$(projectdir)/lib64")
-  if atl_available then add_linkdirs(path.join(atl_lib_dir, "x64")) end
 elseif is_arch("x86") then
   add_linkdirs("$(projectdir)/lib")
-  if atl_available then add_linkdirs(path.join(atl_lib_dir, "x86")) end
-elseif is_arch("arm") then
-  if atl_available then add_linkdirs(path.join(atl_lib_dir, "arm")) end
-elseif is_arch("arm64") then
-  if atl_available then add_linkdirs(path.join(atl_lib_dir, "arm64")) end
 end
 
 add_links("atls", "shell32", "advapi32", "gdi32", "user32", "uuid", "ole32")
