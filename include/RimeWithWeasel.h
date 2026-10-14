@@ -12,9 +12,13 @@ struct CaseInsensitiveCompare {
   bool operator()(const std::string& str1, const std::string& str2) const {
     std::string str1Lower, str2Lower;
     std::transform(str1.begin(), str1.end(), std::back_inserter(str1Lower),
-                   [](char c) { return std::tolower(c); });
+                   [](char c) {
+                     return std::tolower(static_cast<unsigned char>(c));
+                   });
     std::transform(str2.begin(), str2.end(), std::back_inserter(str2Lower),
-                   [](char c) { return std::tolower(c); });
+                   [](char c) {
+                     return std::tolower(static_cast<unsigned char>(c));
+                   });
     return str1Lower < str2Lower;
   }
 };
