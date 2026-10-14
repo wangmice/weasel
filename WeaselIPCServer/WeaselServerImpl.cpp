@@ -173,14 +173,20 @@ HWND ServerImpl::Start() {
   std::wstring instanceName = L"(WEASEL)Furandōru-Sukāretto-";
   instanceName += getUsername();
   HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE, instanceName.c_str());
-  bool areYouOK = (::GetLastError() == ERROR_ALREADY_EXISTS ||
-                   ::GetLastError() == ERROR_ACCESS_DENIED);
-
-  if (areYouOK) {
+  const DWORD mutexError = ::GetLastError();
+  if (!hMutexOneInstance) {
+    LOG(ERROR) << "CreateMutex for the WeaselServer singleton failed, error: "
+               << mutexError;
+    return 0;
+  }
+  if (mutexError == ERROR_ALREADY_EXISTS) {
+    ::CloseHandle(hMutexOneInstance);
     LOG(ERROR) << "another WeaselServer instance is already running";
     return 0;  // assure single instance
   }
 
+  // Keep the newly-created mutex handle open for the process lifetime. Closing
+  // it here would drop the single-instance guard while the server is running.
   HWND hwnd = Create(NULL);
   if (!hwnd)
     LOG(ERROR) << "ServerImpl::Create failed, error: " << GetLastError();
@@ -635,7 +641,7 @@ void PipeServer::_WorkerReaperLoop() {
 
 PipeServer::ServerRunner PipeServer::GetServerRunner(
     ServerHandler const& handler) {
-  return [&handler, this]() { Listen(handler); };
+  return [handler, this]() { Listen(handler); };
 }
 
 void PipeServer::_ProcessPipeThread(WorkerId worker_id,
