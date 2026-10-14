@@ -145,6 +145,49 @@ jobs:
             .\xbuild.bat arm64 installer
           }
 
+      - name: Run regression tests
+        if: matrix.variant == 'xmake'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          .\test\check-tsf-host-safety.ps1
+          .\test\TestBuildEnvPolicy.ps1
+
+          $savedBoost = $env:BOOST_ROOT
+          try {
+            $env:BOOST_ROOT = Join-Path $env:RUNNER_TEMP 'weasel-missing-boost'
+            $missingOutput = @(& xmake f -c -a x64 -m debug --vs=2022 -y 2>&1)
+            $missingExit = $LASTEXITCODE
+            if ($missingExit -eq 0) {
+              $missingOutput += @(& xmake -y 2>&1)
+              $missingExit = $LASTEXITCODE
+            }
+          } finally {
+            $env:BOOST_ROOT = $savedBoost
+          }
+          $missingText = $missingOutput -join "`n"
+          if ($missingExit -eq 0 -or $missingText -notmatch 'Boost not found!') {
+            throw "missing-Boost guard did not fail with the intended diagnostic:`n$missingText"
+          }
+
+          xmake f -c -a x64 -m debug --vs=2022 -y
+          if ($LASTEXITCODE -ne 0) { throw 'xmake debug configuration failed' }
+          xmake -y
+          if ($LASTEXITCODE -ne 0) { throw 'xmake debug build failed' }
+
+          foreach ($target in @(
+            'TestInteractionPolicy',
+            'TestPipeSecurityPolicy',
+            'TestResponseParser',
+            'TestPipeChannel',
+            'TestKeyEvent',
+            'TestServerCommands')) {
+            Write-Host "=== running $target ==="
+            xmake run $target
+            if ($LASTEXITCODE -ne 0) { throw "$target failed" }
+          }
+
       - name: Compress Debug Symbols
         if: matrix.variant == 'msbuild'
         shell: pwsh

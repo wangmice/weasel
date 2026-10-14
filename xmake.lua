@@ -27,16 +27,29 @@ if not boost_root or boost_root == '' then
     end
   end
 end
-if not (boost_root and os.isfile(path.join(boost_root, "boost", "version.hpp"))) then
-  raise("Boost not found! Set BOOST_ROOT (see env.bat.template) or install boost via scoop.")
+local boost_available = boost_root and os.isfile(path.join(boost_root, "boost", "version.hpp"))
+boost_include_path = boost_available and boost_root or ''
+boost_lib_path = boost_available and path.join(boost_root, "stage", "lib") or ''
+if boost_available then
+  add_includedirs(boost_include_path)
+  add_linkdirs(boost_lib_path)
+  if not os.isdir(boost_lib_path) then
+    print(("warning: %s not found; run setup-build-env.ps1 to build boost static libs first."):format(boost_lib_path))
+  end
 end
-boost_include_path = boost_root
-boost_lib_path = path.join(boost_root, "stage", "lib")
-add_includedirs(boost_include_path)
-add_linkdirs(boost_lib_path)
-if not os.isdir(boost_lib_path) then
-  print(("warning: %s not found; run setup-build-env.ps1 to build boost static libs first."):format(boost_lib_path))
-end
+
+-- raise() belongs to xmake's script domain, not the external description
+-- scope. Validate Boost from an on_load callback so missing Boost reports the
+-- intended error instead of "unknown interface: raise()".
+rule("require_boost")
+  on_load(function(target)
+    if not boost_available then
+      raise("Boost not found! Set BOOST_ROOT (see env.bat.template) or install boost via scoop.")
+    end
+  end)
+rule_end()
+add_rules("require_boost")
+
 add_cxflags("/utf-8 /MP /O2 /Oi /Gm- /EHsc /MT /GS /Gy /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /external:W3 /Gd /TP")
 add_ldflags("/TLBID:1 /DYNAMICBASE /NXCOMPAT")
 
@@ -144,6 +157,7 @@ if is_mode("debug") then
   includes("test/TestKeyEvent")
   includes("test/TestRegisterTipKeys")
   includes("test/TestInteractionPolicy")
+  includes("test/TestPipeSecurityPolicy")
   if is_arch("x64") or is_arch("x86") then
     includes("test/TestServerCommands")
   end
