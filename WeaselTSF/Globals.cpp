@@ -8,28 +8,28 @@ LONG g_cRefDll = -1;
 CRITICAL_SECTION g_cs;
 
 // {A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}
-static const GUID c_clsidTextService = {
+const CLSID c_clsidTextService = {
     0xa3f4cded,
     0xb1e9,
     0x41ee,
     {0x9c, 0xa6, 0x7b, 0x4d, 0xd, 0xe6, 0xcb, 0xa}};
 
 // {3D02CAB6-2B8E-4781-BA20-1C9267529467}
-static const GUID c_guidProfile = {
+const GUID c_guidProfile = {
     0x3d02cab6,
     0x2b8e,
     0x4781,
     {0xba, 0x20, 0x1c, 0x92, 0x67, 0x52, 0x94, 0x67}};
 
 // {341F9E3A-B8AD-499D-936C-48701E329FB2}
-static const GUID c_guidLangBarItemButton = {
+const GUID c_guidLangBarItemButton = {
     0x341f9e3a,
     0xb8ad,
     0x499d,
     {0x93, 0x6c, 0x48, 0x70, 0x1e, 0x32, 0x9f, 0xb2}};
 
 // {2AC87E79-3260-4B32-9DEA-F8390976C20B}
-static const GUID c_guidDisplayAttributeInput = {
+const GUID c_guidDisplayAttributeInput = {
     0x2ac87e79,
     0x3260,
     0x4b32,
