@@ -41,6 +41,13 @@ class FakeTray final : public CSystemTray {
     m_bRemoved = TRUE;
   }
 
+  void PreparePendingAfterFailedAdd() {
+    PrepareVisible();
+    m_bHidden = TRUE;
+    m_bRemoved = TRUE;
+    m_bShowIconPending = TRUE;
+  }
+
   void QueueResult(BOOL result) { results_.push_back(result); }
 
   bool Pending() const { return m_bShowIconPending != FALSE; }
@@ -93,6 +100,20 @@ void test_taskbar_recreation_does_not_revive_removed_icon() {
   check(!tray.Pending(), "removed icon does not become pending after restart");
 }
 
+void test_pending_hidden_failed_add_is_retried() {
+  FakeTray tray;
+  tray.PreparePendingAfterFailedAdd();
+  tray.QueueResult(TRUE);
+
+  tray.OnTaskbarCreated(0, 0);
+
+  check(tray.AddCalls() == 1,
+        "pending icon is retried even when a prior failed add marked it hidden");
+  check(!tray.Pending(), "successful pending retry clears pending state");
+  check(!tray.Hidden() && !tray.Removed(),
+        "successful pending retry restores installed shell state");
+}
+
 void test_failed_recovery_stays_pending_and_retries() {
   FakeTray tray;
   tray.PrepareVisible();
@@ -130,6 +151,7 @@ void test_setting_change_dispatch_retries_pending_install() {
 int main() {
   test_taskbar_recreation_readds_visible_icon();
   test_taskbar_recreation_does_not_revive_removed_icon();
+  test_pending_hidden_failed_add_is_retried();
   test_failed_recovery_stays_pending_and_retries();
   test_setting_change_dispatch_retries_pending_install();
 
