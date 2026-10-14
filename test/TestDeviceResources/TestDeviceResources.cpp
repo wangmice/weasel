@@ -138,8 +138,8 @@ void test_concurrent_acquire_publishes_one_generation() {
   const auto* expected = snapshots[0].get();
   bool all_same = expected != nullptr;
   for (int i = 0; i < kThreads; ++i) {
-    all_same = all_same && SUCCEEDED(results[i]) && valid_snapshot(snapshots[i]) &&
-               snapshots[i].get() == expected;
+    all_same = all_same && SUCCEEDED(results[i]) &&
+               valid_snapshot(snapshots[i]) && snapshots[i].get() == expected;
   }
   check(all_same, "parallel acquires observe one published generation");
 
