@@ -3,6 +3,15 @@
 #include "Globals.h"
 #include "FindIME.h"
 
+#include <string>
+
+// Read the optional process-local profile selector without a fixed-size
+// buffer. Missing or empty values return an empty string.
+std::wstring ReadTextServiceProfileEnvironment();
+// ITfInputProcessorProfileMgr::RegisterProfile expects cchDesc in WCHARs,
+// never bytes.
+ULONG TextServiceDescriptionCch(const std::wstring& description);
+
 BOOL RegisterProfiles();
 void UnregisterProfiles();
 BOOL RegisterCategories();
