@@ -19,6 +19,13 @@ void check(bool ok, const char* what) {
 
 class FakeTray final : public CSystemTray {
  public:
+  ~FakeTray() override {
+    // Keep the base destructor from issuing a real shell call or trying to
+    // destroy the synthetic HWND used only for WindowProc routing.
+    m_bRemoved = TRUE;
+    m_hWnd = nullptr;
+  }
+
   void PrepareVisible() {
     m_bEnabled = TRUE;
     m_bHidden = FALSE;
