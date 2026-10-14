@@ -4,6 +4,9 @@
 #include <strsafe.h>
 #include <WeaselUtility.h>
 
+#include <limits>
+#include <vector>
+
 #define CLSID_STRLEN 38  // strlen("{xxxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx}")
 
 static const char c_szInfoKeyPrefix[] = "CLSID\\";
@@ -14,6 +17,32 @@ static const char c_szLegacyTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
 static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
 
+std::wstring ReadTextServiceProfileEnvironment() {
+  DWORD required =
+      GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", nullptr, 0);
+  while (required != 0) {
+    std::vector<wchar_t> buffer(required);
+    const DWORD copied = GetEnvironmentVariableW(
+        L"TEXTSERVICE_PROFILE", buffer.data(), required);
+    if (copied == 0)
+      return {};
+    if (copied < required)
+      return std::wstring(buffer.data(), copied);
+
+    // The value grew between the size query and the read. Windows returns the
+    // new required size (including the terminator); retry with that size.
+    required = copied;
+  }
+  return {};
+}
+
+ULONG TextServiceDescriptionCch(const std::wstring& description) {
+  const size_t capped =
+      (std::min)(description.size(),
+                 static_cast<size_t>((std::numeric_limits<ULONG>::max)()));
+  return static_cast<ULONG>(capped);
+}
+
 BOOL RegisterProfiles() {
 #define CHECK_HR(hr) \
   if (FAILED(hr))    \
@@ -22,13 +51,8 @@ BOOL RegisterProfiles() {
   CComPtr<ITfInputProcessorProfileMgr> pInputProcessorProfileMgr;
   CHECK_HR(pInputProcessorProfileMgr.CoCreateInstance(
       CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_ALL));
-  WCHAR szProfile[100];
-  std::wstring profile{};
-  DWORD dwSize = GetEnvironmentVariable(L"TEXTSERVICE_PROFILE", szProfile,
-                                        ARRAYSIZE(szProfile));
-  if (dwSize > 0) {
-    profile = szProfile;
-  }
+
+  const std::wstring profile = ReadTextServiceProfileEnvironment();
   BOOL hansEnable = (profile == L"hans");
   BOOL hantEnable = (profile == L"hant");
   BOOL hkEnable = (profile == L"hongkong");
@@ -40,11 +64,14 @@ BOOL RegisterProfiles() {
 
   const auto text_service_desc = get_weasel_ime_name();
   const WCHAR* text_service_desc_str = text_service_desc.c_str();
-  ULONG text_service_desc_len = text_service_desc.size() * sizeof(wchar_t);
+  const ULONG text_service_desc_len =
+      TextServiceDescriptionCch(text_service_desc);
 
-  WCHAR achIconFile[MAX_PATH];
-  ULONG cchIconFile =
+  WCHAR achIconFile[MAX_PATH] = {};
+  const DWORD cchIconFile =
       GetModuleFileNameW(g_hInst, achIconFile, ARRAYSIZE(achIconFile));
+  if (cchIconFile == 0 || cchIconFile >= ARRAYSIZE(achIconFile))
+    return FALSE;
 
   const auto register_profile = [&](LANGID langId, HKL hkl, BOOL enable) {
     return pInputProcessorProfileMgr->RegisterProfile(
