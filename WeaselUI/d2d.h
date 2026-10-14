@@ -14,9 +14,11 @@
 #include <dwrite_2.h>
 #include <dxgi1_3.h>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
+#include <wincodec.h>
 #include <WeaselUtility.h>
 
 namespace weasel {
@@ -61,27 +63,44 @@ T MIN(T a, Args... args) {
   return a < min_rest ? a : min_rest;
 }
 
-// Shared device resources for Direct2D/Direct3D/DComposition/DWrite
-class DeviceResources {
- public:
-  static DeviceResources& Get();
-
-  HRESULT EnsureInitialized();
-  // release and reinitialize device resources (used on device lost)
-  void Reset();
-
+// Immutable process-shared graphics generation. D2D instances keep a shared
+// owner so a device-loss rollover can publish a fresh generation without
+// invalidating resources that another UI thread is still unwinding.
+//
+// DirectComposition devices stay per D2D instance so commits from independent
+// TSF threads remain separate transactions. WIC factories also stay local to
+// the owning UI/COM context instead of being passed directly across apartments.
+struct DeviceResourcesSnapshot {
+  uint64_t generation = 0;
   ComPtr<ID3D11Device> direct3dDevice;
   ComPtr<IDXGIDevice> dxgiDevice;
   ComPtr<IDXGIFactory2> dxFactory;
   ComPtr<ID2D1Factory2> d2Factory;
   ComPtr<ID2D1Device1> d2Device;
-  ComPtr<IDCompositionDevice> dcompDevice;
   ComPtr<IDWriteFactory2> m_pWriteFactory;
-  ComPtr<IWICImagingFactory> wicFactory;
+};
+
+// Publishes complete shared generations under a mutex, but owns them only
+// weakly. The final D2D owner therefore releases COM resources in its normal
+// destruction path instead of from a DLL/static destructor under loader lock.
+class DeviceResources {
+ public:
+  static DeviceResources& Get();
+
+  HRESULT Acquire(std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+  HRESULT RecreateAfterDeviceLoss(
+      uint64_t failed_generation,
+      std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+  bool HasLiveGeneration() const;
 
  private:
-  DeviceResources();
-  bool initialized;
+  DeviceResources() = default;
+  HRESULT CreateGenerationLocked(
+      std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+
+  mutable std::mutex mutex_;
+  std::weak_ptr<const DeviceResourcesSnapshot> current_;
+  uint64_t next_generation_ = 1;
 };
 
 struct IsToRoundStruct {
@@ -163,6 +182,7 @@ struct D2D {
   PtTextFormat pLabelFormat;
   PtTextFormat pCommentFormat;
   ComPtr<IDWriteFactory2> m_pWriteFactory;
+  ComPtr<IWICImagingFactory> wicFactory;
   ComPtr<ID2D1SolidColorBrush> m_pBrush;
   HICON cachedIcon = nullptr;
   ComPtr<ID2D1Bitmap1> cachedIconBitmap;
@@ -185,6 +205,12 @@ struct D2D {
   float m_dpiY;
   float m_dpiScaleFontPoint;
   float m_dpiScaleLayout;
+
+ private:
+  HRESULT AcquireSharedResources();
+  void AdoptSharedResources(
+      const std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+  std::shared_ptr<const DeviceResourcesSnapshot> m_sharedResources;
 };
 }  // namespace weasel
 #endif

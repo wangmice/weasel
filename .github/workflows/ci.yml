@@ -182,6 +182,8 @@ jobs:
             'TestResponseParser',
             'TestPipeChannel',
             'TestKeyEvent',
+            'TestDeviceResources',
+            'TestWeaselUI',
             'TestServerCommands')) {
             Write-Host "=== running $target ==="
             xmake run $target
