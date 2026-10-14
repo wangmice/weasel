@@ -23,7 +23,7 @@ if ($source -match 'os\.dirs\([^\r\n]*Microsoft Visual Studio') {
 
 # ATL discovery must be anchored either to the active Developer Prompt's VC
 # toolset root or, without a prompt, to the VS instance selected by xmake.
-foreach ($required in @('VCToolsInstallDir', 'vswhere', 'get_config("vs")')) {
+foreach ($required in @('VCToolsInstallDir', 'vswhere', 'get_config("vs")'.Replace('\"', '"'))) {
   if (-not $source.Contains($required)) {
     throw "xmake toolchain policy regression: missing selected-toolchain anchor '$required'"
   }
@@ -31,7 +31,7 @@ foreach ($required in @('VCToolsInstallDir', 'vswhere', 'get_config("vs")')) {
 
 # Native command execution is script-domain-only in xmake. Keep vswhere inside
 # the ATL rule's on_load callback rather than at top-level description scope.
-$ruleIndex = $source.IndexOf('rule("weasel_msvc_atl")')
+$ruleIndex = $source.IndexOf('rule("weasel_msvc_atl")'.Replace('\"', '"'))
 $onLoadIndex = if ($ruleIndex -ge 0) {
   $source.IndexOf('on_load(function(target)', $ruleIndex)
 } else { -1 }
