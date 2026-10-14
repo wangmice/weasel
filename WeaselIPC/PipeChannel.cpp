@@ -53,7 +53,9 @@ HANDLE PipeChannelBase::_Connect(const wchar_t* name) {
   }
   DWORD mode = PIPE_READMODE_MESSAGE;
   if (!SetNamedPipeHandleState(pipe, &mode, NULL, NULL)) {
-    _ThrowLastError;
+    const DWORD error = ::GetLastError();
+    FinalizePipeHandle(pipe);
+    throw error;
   }
   return pipe;
 }

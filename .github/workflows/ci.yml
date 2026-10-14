@@ -181,6 +181,7 @@ jobs:
             'TestPipeSecurityPolicy',
             'TestResponseParser',
             'TestPipeChannel',
+            'TestPipeConnectFailure',
             'TestKeyEvent',
             'TestDeviceResources',
             'TestWeaselUI',
@@ -231,6 +232,6 @@ jobs:
         with:
           draft: true
           files: |
-            ./output/archives/weasel*.exe
-            ./output/archives/debug_symbols.7z
+            .\output\archives\weasel*.exe
+            .\output\archives\debug_symbols.7z
           body_path: ${{ github.workspace }}/RELEASE_CHANGELOG.md
