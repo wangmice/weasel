@@ -22,12 +22,27 @@ if ($source -match 'os\.dirs\([^\r\n]*Microsoft Visual Studio') {
 }
 
 # ATL discovery must be anchored to both the selected Visual Studio instance
-# and the selected VC toolset family.
+# and the selected VC platform-toolset family.
 foreach ($required in @('VCToolsInstallDir', 'vswhere', 'get_config("vs")',
-                         'get_config("vs_toolset")', 'requested_toolset_prefix')) {
+                         'get_config("vs_toolset")', 'requested_toolset_family',
+                         'toolset_matches')) {
   if (-not $source.Contains($required)) {
     throw "xmake toolchain policy regression: missing selected-toolchain anchor '$required'"
   }
+}
+
+# --vs_toolset=14.3 means platform toolset v143; it must not be used as a
+# literal VC\Tools\MSVC\14.3* directory prefix. VS2022 v143 also includes
+# concrete 14.4x compiler directories such as 14.44.35207.
+if ($source -match 'requested_(?:prefix|family)\s*\.\.\s*"\*"') {
+  throw 'xmake toolchain policy regression: platform toolset is used as a concrete MSVC directory prefix'
+}
+if (-not $source.Contains('os.dirs(path.join(msvc_root, "*"))')) {
+  throw 'xmake toolchain policy regression: selected VS MSVC directories are not enumerated before family filtering'
+}
+if (-not $source.Contains('minor_number >= 30') -or
+    -not $source.Contains('minor_number < 50')) {
+  throw 'xmake toolchain policy regression: v143 does not accept concrete MSVC 14.3x/14.4x versions'
 }
 
 # Native command execution is script-domain-only in xmake. Keep vswhere inside

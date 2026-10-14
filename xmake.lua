@@ -83,20 +83,42 @@ local function vswhere_range_for_year(vs)
   return "[" .. major .. ".0," .. tostring(tonumber(major) + 1) .. ".0)"
 end
 
-local function requested_toolset_prefix(toolset)
+-- Xmake's --vs_toolset uses platform-toolset semantics (14.3 == v143),
+-- whereas VC\Tools\MSVC directory names are concrete compiler versions such
+-- as 14.44.35207. Keep those namespaces separate.
+local function requested_toolset_family(toolset)
   local value = tostring(toolset or '')
   if value == '' or value == 'auto' then
     return nil
   end
-  return value
+  local aliases = {
+    ["v140"] = "14.0",
+    ["v141"] = "14.1",
+    ["v142"] = "14.2",
+    ["v143"] = "14.3"
+  }
+  return aliases[value:lower()] or value
 end
 
 local function toolset_matches(version, requested)
-  local prefix = requested_toolset_prefix(requested)
-  if not prefix then
+  local family = requested_toolset_family(requested)
+  if not family then
     return true
   end
-  return version and version:sub(1, #prefix) == prefix
+  if not version then
+    return false
+  end
+
+  -- VS2022's v143 family spans concrete MSVC 14.3x and 14.4x releases.
+  -- 14.5x belongs to the next toolset generation, so do not accept it here.
+  if family == "14.3" then
+    local major, minor = version:match("^(%d+)%.(%d+)")
+    local minor_number = tonumber(minor)
+    return major == "14" and minor_number and
+           minor_number >= 30 and minor_number < 50
+  end
+
+  return version:sub(1, #family) == family
 end
 
 local configured_vs = get_config("vs")
@@ -159,9 +181,12 @@ rule("weasel_msvc_atl")
             local install_dir = output:trim()
             if install_dir ~= '' then
               local msvc_root = path.join(install_dir, "VC", "Tools", "MSVC")
-              local requested_prefix = requested_toolset_prefix(configured_vs_toolset)
-              if requested_prefix then
-                local candidates = os.dirs(path.join(msvc_root, requested_prefix .. "*"))
+              local requested_family = requested_toolset_family(configured_vs_toolset)
+              if requested_family then
+                -- Concrete directory versions do not share the platform
+                -- toolset string. Enumerate the selected VS instance and
+                -- classify each candidate by toolset family instead.
+                local candidates = os.dirs(path.join(msvc_root, "*"))
                 table.sort(candidates, function(a, b) return a > b end)
                 for _, candidate in ipairs(candidates) do
                   local version = path.filename(candidate:gsub("[/\\]+$", ""))
