@@ -53,10 +53,10 @@ add_rules("require_boost")
 add_cxflags("/utf-8 /MP /O2 /Oi /Gm- /EHsc /MT /GS /Gy /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /external:W3 /Gd /TP")
 add_ldflags("/TLBID:1 /DYNAMICBASE /NXCOMPAT")
 
--- Resolve ATL/MFC from the same Visual Studio family selected by xmake.
--- Never append the Developer Prompt's complete INCLUDE list: xmake already
--- wires the selected MSVC/SDK sysincludes, and importing a stale shell INCLUDE
--- can mix STL/ATL headers from another toolset with xmake's compiler/libs.
+-- Resolve ATL/MFC from the same Visual Studio family and VC toolset selected
+-- by xmake. Never append the Developer Prompt's complete INCLUDE list: xmake
+-- already wires the selected MSVC/SDK sysincludes, and importing a stale shell
+-- INCLUDE can mix STL/ATL headers from another compiler installation.
 local function nonempty_env(name)
   local value = os.getenv(name)
   if value and value ~= '' then
@@ -83,11 +83,28 @@ local function vswhere_range_for_year(vs)
   return "[" .. major .. ".0," .. tostring(tonumber(major) + 1) .. ".0)"
 end
 
+local function requested_toolset_prefix(toolset)
+  local value = tostring(toolset or '')
+  if value == '' or value == 'auto' then
+    return nil
+  end
+  return value
+end
+
+local function toolset_matches(version, requested)
+  local prefix = requested_toolset_prefix(requested)
+  if not prefix then
+    return true
+  end
+  return version and version:sub(1, #prefix) == prefix
+end
+
 local configured_vs = get_config("vs")
+local configured_vs_toolset = get_config("vs_toolset")
 
 -- Command execution and filesystem mutation are not allowed in xmake's
 -- description domain. Resolve the concrete VC/ATL installation from on_load,
--- where os.iorunv and raise are valid script-domain APIs.
+-- where os.iorunv, os.dirs, io.readfile and raise are valid script APIs.
 rule("weasel_msvc_atl")
   on_load(function(target)
     if target:plat() ~= "windows" then
@@ -99,13 +116,20 @@ rule("weasel_msvc_atl")
     local prompt_vs_version = nonempty_env("VisualStudioVersion")
     local configured_vs_major = vs_major_for_year(configured_vs)
 
-    -- Trust a Developer Prompt only when it matches an explicit --vs choice.
-    -- With --vs=auto/no --vs, xmake selects the newest installed VS; in that
-    -- case vswhere below follows the same policy instead of inheriting an older
-    -- prompt accidentally.
+    -- Trust a Developer Prompt only when it matches both an explicit --vs
+    -- choice and the requested VC toolset family. This prevents a VS2022
+    -- prompt using v143 from contaminating an explicit --vs_toolset=14.2 build.
     if prompt_vc_tools and configured_vs_major and prompt_vs_version and
        prompt_vs_version:match("^(%d+)") == configured_vs_major then
-      vc_tools_dir = prompt_vc_tools
+      local normalized_prompt = prompt_vc_tools:gsub("[/\\]+$", "")
+      local prompt_toolset_version = path.filename(normalized_prompt)
+      if toolset_matches(prompt_toolset_version, configured_vs_toolset) then
+        vc_tools_dir = normalized_prompt
+      else
+        print(("warning: ignoring VCToolsInstallDir toolset %s because xmake selected %s")
+          :format(prompt_toolset_version or "unknown",
+                  tostring(configured_vs_toolset or "auto")))
+      end
     elseif prompt_vc_tools and configured_vs and tostring(configured_vs) ~= '' and
            tostring(configured_vs) ~= 'auto' then
       print(("warning: ignoring VCToolsInstallDir from Visual Studio %s because xmake selected VS %s")
@@ -134,15 +158,29 @@ rule("weasel_msvc_atl")
           if ok and output then
             local install_dir = output:trim()
             if install_dir ~= '' then
-              local default_version_file = path.join(
-                install_dir, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt")
-              if os.isfile(default_version_file) then
-                local toolset_version = io.readfile(default_version_file):trim()
-                if toolset_version ~= '' then
-                  local candidate = path.join(
-                    install_dir, "VC", "Tools", "MSVC", toolset_version)
-                  if os.isdir(candidate) then
+              local msvc_root = path.join(install_dir, "VC", "Tools", "MSVC")
+              local requested_prefix = requested_toolset_prefix(configured_vs_toolset)
+              if requested_prefix then
+                local candidates = os.dirs(path.join(msvc_root, requested_prefix .. "*"))
+                table.sort(candidates, function(a, b) return a > b end)
+                for _, candidate in ipairs(candidates) do
+                  local version = path.filename(candidate:gsub("[/\\]+$", ""))
+                  if toolset_matches(version, configured_vs_toolset) and
+                     os.isdir(path.join(candidate, "atlmfc", "include")) then
                     vc_tools_dir = candidate
+                    break
+                  end
+                end
+              else
+                local default_version_file = path.join(
+                  install_dir, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt")
+                if os.isfile(default_version_file) then
+                  local toolset_version = io.readfile(default_version_file):trim()
+                  if toolset_version ~= '' then
+                    local candidate = path.join(msvc_root, toolset_version)
+                    if os.isdir(candidate) then
+                      vc_tools_dir = candidate
+                    end
                   end
                 end
               end
@@ -152,15 +190,21 @@ rule("weasel_msvc_atl")
       end
     end
 
-    -- Last-resort fallback when vswhere is unavailable and no explicit --vs
-    -- selection contradicts the active prompt.
+    -- Last-resort fallback when vswhere is unavailable and no explicit --vs or
+    -- --vs_toolset selection contradicts the active prompt.
     if not vc_tools_dir and prompt_vc_tools and
        (not configured_vs or tostring(configured_vs) == '' or tostring(configured_vs) == 'auto') then
-      vc_tools_dir = prompt_vc_tools
+      local normalized_prompt = prompt_vc_tools:gsub("[/\\]+$", "")
+      local prompt_toolset_version = path.filename(normalized_prompt)
+      if toolset_matches(prompt_toolset_version, configured_vs_toolset) then
+        vc_tools_dir = normalized_prompt
+      end
     end
 
     if not vc_tools_dir then
-      raise("ATL/MFC toolset root not found for xmake's selected Visual Studio. Install ATL/MFC or use the matching Developer Prompt.")
+      raise(("ATL/MFC toolset root not found for VS %s / toolset %s. Install the matching ATL/MFC component or use the matching Developer Prompt.")
+        :format(tostring(configured_vs or "auto"),
+                tostring(configured_vs_toolset or "auto")))
     end
 
     local atl_include = path.join(vc_tools_dir, "atlmfc", "include")
