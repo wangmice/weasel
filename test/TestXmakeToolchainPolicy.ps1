@@ -17,6 +17,9 @@ if ($source -match 'os\.getenv\("include"\)') {
 if ($source -match 'add_includedirs\(include\)') {
   throw 'xmake toolchain policy regression: shell include entries are appended globally'
 }
+if ($source -match 'os\.dirs\([^\r\n]*Microsoft Visual Studio') {
+  throw 'xmake toolchain policy regression: unconstrained Visual Studio directory scan returned'
+}
 
 # ATL discovery must be anchored either to the active Developer Prompt's VC
 # toolset root or, without a prompt, to the VS instance selected by xmake.
@@ -24,6 +27,22 @@ foreach ($required in @('VCToolsInstallDir', 'vswhere', 'get_config("vs")')) {
   if (-not $source.Contains($required)) {
     throw "xmake toolchain policy regression: missing selected-toolchain anchor '$required'"
   }
+}
+
+# Native command execution is script-domain-only in xmake. Keep vswhere inside
+# the ATL rule's on_load callback rather than at top-level description scope.
+$ruleIndex = $source.IndexOf('rule("weasel_msvc_atl")')
+$onLoadIndex = if ($ruleIndex -ge 0) {
+  $source.IndexOf('on_load(function(target)', $ruleIndex)
+} else { -1 }
+$ioRunIndex = if ($ruleIndex -ge 0) {
+  $source.IndexOf('os.iorunv', $ruleIndex)
+} else { -1 }
+if ($ruleIndex -lt 0 -or $onLoadIndex -lt 0 -or $ioRunIndex -lt $onLoadIndex) {
+  throw 'xmake toolchain policy regression: vswhere execution is outside the ATL on_load script domain'
+}
+if ($source -match 'os\.cp\(') {
+  throw 'xmake toolchain policy regression: filesystem mutation returned to description loading'
 }
 
 # xbuild must pass the same Visual Studio/toolset policy to every xmake
