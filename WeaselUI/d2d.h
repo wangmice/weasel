@@ -66,6 +66,10 @@ T MIN(T a, Args... args) {
 // Immutable process-shared graphics generation. D2D instances keep a shared
 // owner so a device-loss rollover can publish a fresh generation without
 // invalidating resources that another UI thread is still unwinding.
+//
+// DirectComposition devices stay per D2D instance so commits from independent
+// TSF threads remain separate transactions. WIC factories also stay local to
+// the owning UI/COM context instead of being passed directly across apartments.
 struct DeviceResourcesSnapshot {
   uint64_t generation = 0;
   ComPtr<ID3D11Device> direct3dDevice;
@@ -73,9 +77,7 @@ struct DeviceResourcesSnapshot {
   ComPtr<IDXGIFactory2> dxFactory;
   ComPtr<ID2D1Factory2> d2Factory;
   ComPtr<ID2D1Device1> d2Device;
-  ComPtr<IDCompositionDevice> dcompDevice;
   ComPtr<IDWriteFactory2> m_pWriteFactory;
-  ComPtr<IWICImagingFactory> wicFactory;
 };
 
 // Publishes complete shared generations under a mutex, but owns them only
