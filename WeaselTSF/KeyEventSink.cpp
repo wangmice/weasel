@@ -35,7 +35,13 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     return;
   }
   weasel::KeyEvent ke;
-  GetKeyboardState(_lpbKeyState);
+  if (!GetKeyboardState(_lpbKeyState)) {
+    // Do not interpret a key using stale modifier state from the previous
+    // event. When Windows cannot provide a current keyboard snapshot, release
+    // the key to the host and try again on the next event.
+    *pfEaten = FALSE;
+    return;
+  }
   if (!ConvertKeyEvent(static_cast<UINT>(wParam), lParam, _lpbKeyState, ke)) {
     /* Unknown key event */
     *pfEaten = FALSE;
