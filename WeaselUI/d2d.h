@@ -67,13 +67,14 @@ T MIN(T a, Args... args) {
 // owner so a device-loss rollover can publish a fresh generation without
 // invalidating resources that another UI thread is still unwinding.
 //
-// DXGI factories, DirectComposition devices, and WIC factories stay per D2D
-// instance so swap-chain operations, composition transactions, and apartment-
-// sensitive COM work remain on the owning UI thread.
+// DirectComposition devices stay per D2D instance so commits from independent
+// TSF threads remain separate transactions. WIC factories also stay local to
+// the owning UI/COM context instead of being passed directly across apartments.
 struct DeviceResourcesSnapshot {
   uint64_t generation = 0;
   ComPtr<ID3D11Device> direct3dDevice;
   ComPtr<IDXGIDevice> dxgiDevice;
+  ComPtr<IDXGIFactory2> dxFactory;
   ComPtr<ID2D1Factory2> d2Factory;
   ComPtr<ID2D1Device1> d2Device;
   ComPtr<IDWriteFactory2> m_pWriteFactory;
