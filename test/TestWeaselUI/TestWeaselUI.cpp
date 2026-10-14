@@ -118,15 +118,12 @@ class UiThread {
       }
       MsgWaitForMultipleObjects(1, &m_stop, FALSE, 50, QS_ALLINPUT);
     }
-    // destroy the window on its owning thread
+    // Destroy(true) releases this UI's D2D generation lease. With no other UI
+    // owner in this isolated test process, the manager's weak generation must
+    // expire before COM is uninitialized.
     ui.Destroy(true);
-    // WeaselServer.exe uses the same internal DeviceResources reset before
-    // CoUninitialize. Keep the TSF-facing WeaselUI API free of process-shutdown
-    // hooks while still verifying the COM teardown invariant here.
-    weasel::DeviceResources::Get().Reset();
     shared_resources_released_before_com_uninit =
-        !weasel::DeviceResources::Get().wicFactory &&
-        !weasel::DeviceResources::Get().m_pWriteFactory;
+        !weasel::DeviceResources::Get().HasLiveGeneration();
     if (com_initialized)
       CoUninitialize();
   }
@@ -523,7 +520,7 @@ int main() {
   check(ui_thread.timed_join(boost::posix_time::seconds(5)),
         "B1: UI thread exits cleanly");
   check(t.shared_resources_released_before_com_uninit,
-        "P1: shared WIC/DWrite resources released before COM teardown");
+        "P1: shared graphics generation released before COM teardown");
 
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
