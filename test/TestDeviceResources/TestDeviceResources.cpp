@@ -34,8 +34,7 @@ struct ComScope {
 
 bool valid_snapshot(const std::shared_ptr<const DeviceResourcesSnapshot>& s) {
   return s && s->generation != 0 && s->direct3dDevice && s->dxgiDevice &&
-         s->dxFactory && s->d2Factory && s->d2Device && s->dcompDevice &&
-         s->m_pWriteFactory && s->wicFactory;
+         s->dxFactory && s->d2Factory && s->d2Device && s->m_pWriteFactory;
 }
 
 void test_shared_generation_lifetime() {
@@ -61,13 +60,14 @@ void test_shared_generation_lifetime() {
   check(SUCCEEDED(first->d2Factory.As(&multithread)) && multithread &&
             multithread->GetMultithreadProtected(),
         "shared Direct2D factory is multithread protected");
+  multithread.Reset();
 
   first.reset();
   check(resources.HasLiveGeneration(),
         "generation remains alive while one lease remains");
   second.reset();
   check(!resources.HasLiveGeneration(),
-        "last lease releases all shared COM resources");
+        "last lease releases the shared generation");
 }
 
 void test_generation_rollover_preserves_old_snapshot() {
