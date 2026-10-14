@@ -148,6 +148,9 @@ protected:
     void InstallIconPending();
     ATOM RegisterClass(HINSTANCE hInstance);
 
+    // Shell interaction seam used by recovery tests; production dispatches
+    // directly to Shell_NotifyIcon with this instance's NOTIFYICONDATA.
+    virtual BOOL NotifyIcon(DWORD message);
     virtual void CustomizeMenu(HMENU) {}
 
 // Implementation
