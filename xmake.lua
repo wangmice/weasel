@@ -147,6 +147,7 @@ if is_mode("debug") then
   includes("test/TestWeaselIPC")
   includes("test/TestResponseParser")
   includes("test/TestPipeChannel")
+  includes("test/TestPipeConnectFailure")
   includes("test/TestFindIME")
   includes("test/TestCompartmentUtil")
   includes("test/TestPerUserReg")
