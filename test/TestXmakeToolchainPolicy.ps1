@@ -21,9 +21,10 @@ if ($source -match 'os\.dirs\([^\r\n]*Microsoft Visual Studio') {
   throw 'xmake toolchain policy regression: unconstrained Visual Studio directory scan returned'
 }
 
-# ATL discovery must be anchored either to the active Developer Prompt's VC
-# toolset root or, without a prompt, to the VS instance selected by xmake.
-foreach ($required in @('VCToolsInstallDir', 'vswhere', 'get_config("vs")')) {
+# ATL discovery must be anchored to both the selected Visual Studio instance
+# and the selected VC toolset family.
+foreach ($required in @('VCToolsInstallDir', 'vswhere', 'get_config("vs")',
+                         'get_config("vs_toolset")', 'requested_toolset_prefix')) {
   if (-not $source.Contains($required)) {
     throw "xmake toolchain policy regression: missing selected-toolchain anchor '$required'"
   }
