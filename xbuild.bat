@@ -1,19 +1,5 @@
 @echo off
 setlocal enabledelayedexpansion
-if not defined include (
-  echo You should run this inside Developer Command Promt!
-  exit /b
-)
-for %%a in ("%include:;=" "%") do (
-  echo %%a| findstr /r "ATLMFC\\include" > nul
-  if not errorlevel 1 (
-    set "atl_lib_dir=%%a"
-    set dpi_manifest=!atl_lib_dir:ATLMFC\include=Include\Manifest\PerMonitorHighDPIAware.manifest!
-    if not exist ".\PerMonitorHighDPIAware.manifest" (
-      copy ""!dpi_manifest!"" .\
-    )
-  )
-)
 rem ---------------------------------------------------------------------------
 if not exist env.bat copy env.bat.template env.bat
 if exist env.bat call env.bat
@@ -22,6 +8,9 @@ if not defined WEASEL_ROOT set WEASEL_ROOT=%CD%
 if not defined VERSION_MAJOR set VERSION_MAJOR=0
 if not defined VERSION_MINOR set VERSION_MINOR=17
 if not defined VERSION_PATCH set VERSION_PATCH=4
+if not defined XMAKE_VS set XMAKE_VS=2022
+if not defined XMAKE_VS_TOOLSET set XMAKE_VS_TOOLSET=14.3
+set "xmake_msvc_options=--vs=%XMAKE_VS% --vs_toolset=%XMAKE_VS_TOOLSET%"
 
 if not defined WEASEL_VERSION set WEASEL_VERSION=%VERSION_MAJOR%.%VERSION_MINOR%.%VERSION_PATCH%
 if not defined WEASEL_BUILD set WEASEL_BUILD=0
@@ -54,6 +43,8 @@ echo WEASEL_BUILD=%WEASEL_BUILD%
 echo WEASEL_ROOT=%WEASEL_ROOT%
 echo WEASEL_BUNDLED_RECIPES=%WEASEL_BUNDLED_RECIPES%
 echo BOOST_ROOT=%BOOST_ROOT%
+echo XMAKE_VS=%XMAKE_VS%
+echo XMAKE_VS_TOOLSET=%XMAKE_VS_TOOLSET%
 
 if defined GITHUB_ENV (
 	setlocal enabledelayedexpansion
@@ -166,20 +157,20 @@ if %build_clean% == 1 ( goto clean )
 if %build_weasel% == 0 ( goto end )
 
 if %build_arm64% == 1 (
-  xmake f -a arm64 -m %build_config% %build_sdk_option%
+  xmake f -a arm64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
   if %build_rebuild% == 1 ( xmake clean )
   xmake
   if errorlevel 1 goto error
-  xmake f -a arm  -m %build_config% %build_sdk_option%
+  xmake f -a arm -m %build_config% %xmake_msvc_options% %build_sdk_option%
   if %build_rebuild% == 1 ( xmake clean )
   xmake
   if errorlevel 1 goto error
 )
-xmake f -a x64 -m %build_config% %build_sdk_option%
+xmake f -a x64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
 if %build_rebuild% == 1 ( xmake clean )
 xmake
 if errorlevel 1 goto error
-xmake f -a x86 -m %build_config% %build_sdk_option%
+xmake f -a x86 -m %build_config% %xmake_msvc_options% %build_sdk_option%
 if %build_rebuild% == 1 ( xmake clean )
 xmake
 if errorlevel 1 goto error
