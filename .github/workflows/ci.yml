@@ -183,6 +183,7 @@ jobs:
             'TestPipeChannel',
             'TestPipeConnectFailure',
             'TestKeyEvent',
+            'TestRegisterTipKeys',
             'TestDeviceResources',
             'TestWeaselUI',
             'TestServerCommands')) {

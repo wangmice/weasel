@@ -1,15 +1,13 @@
-// TestRegisterTipKeys.cpp : regression tests for the dual-location TIP key
-// cleanup in UnregisterServer (K5).
+// TestRegisterTipKeys.cpp : regression tests for TSF registration helpers.
 //
-// DeleteTipKeyUnderRoot takes the registry root as a parameter, so the tests
-// plant scratch TIP subtrees under HKEY_CURRENT_USER with a fake CLSID and
-// verify that the "registered" cleanup targets the correctly spelled
-// Microsoft path while the "legacy" cleanup keeps the historical Microsft
-// typo, each removing only its own subtree. The real HKLM/HKCR locations are
-// never touched.
+// TIP-key cleanup uses scratch HKCU subtrees only; profile environment tests
+// change only the current process environment and restore it before exit.
 
 #include <Windows.h>
 #include <stdio.h>
+
+#include <string>
+#include <vector>
 
 #include "../../WeaselTSF/Register.h"
 
@@ -62,7 +60,74 @@ static void plant(const wchar_t* path) {
   RegCloseKey(hKey);
 }
 
+class ScopedProfileEnvironment {
+ public:
+  ScopedProfileEnvironment() {
+    SetLastError(ERROR_SUCCESS);
+    DWORD required =
+        GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", nullptr, 0);
+    if (required == 0) {
+      existed_ = GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+      return;
+    }
+
+    while (required != 0) {
+      std::vector<wchar_t> buffer(required);
+      SetLastError(ERROR_SUCCESS);
+      const DWORD copied = GetEnvironmentVariableW(
+          L"TEXTSERVICE_PROFILE", buffer.data(), required);
+      if (copied == 0) {
+        existed_ = GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+        value_.clear();
+        return;
+      }
+      if (copied < required) {
+        existed_ = true;
+        value_.assign(buffer.data(), copied);
+        return;
+      }
+      required = copied;
+    }
+  }
+
+  ~ScopedProfileEnvironment() {
+    SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE",
+                            existed_ ? value_.c_str() : nullptr);
+  }
+
+ private:
+  bool existed_ = false;
+  std::wstring value_;
+};
+
+static void test_profile_registration_boundaries() {
+  check(TextServiceDescriptionCch(L"小狼毫") == 3,
+        "RegisterProfile description length is measured in WCHARs");
+  check(TextServiceDescriptionCch(L"Weasel") == 6,
+        "ASCII description length remains a character count");
+
+  ScopedProfileEnvironment restore;
+  const std::wstring long_profile(300, L'x');
+  check(SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", long_profile.c_str()) !=
+            FALSE,
+        "install long TEXTSERVICE_PROFILE test value");
+  check(ReadTextServiceProfileEnvironment() == long_profile,
+        "TEXTSERVICE_PROFILE longer than 100 WCHARs is read without truncation");
+
+  check(SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", L"hant") != FALSE,
+        "install supported profile test value");
+  check(ReadTextServiceProfileEnvironment() == L"hant",
+        "supported profile value is preserved exactly");
+
+  check(SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", nullptr) != FALSE,
+        "remove profile environment test value");
+  check(ReadTextServiceProfileEnvironment().empty(),
+        "missing TEXTSERVICE_PROFILE produces an empty profile");
+}
+
 int main() {
+  test_profile_registration_boundaries();
+
   // isolate: start without either scratch tree
   RegDeleteTreeW(HKEY_CURRENT_USER, kRealPath);
   RegDeleteTreeW(HKEY_CURRENT_USER, kTypoPath);
