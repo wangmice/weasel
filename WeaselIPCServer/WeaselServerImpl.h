@@ -1,5 +1,6 @@
 #pragma once
 #include <WeaselIPC.h>
+#include <WeaselInteractionPolicy.h>
 #include <map>
 #include <Winnt.h>   // for security attributes constants
 #include <aclapi.h>  // for ACL
@@ -24,7 +25,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
   MESSAGE_HANDLER(WM_CLOSE, OnClose)
   MESSAGE_HANDLER(WM_QUERYENDSESSION, OnQueryEndSystemSession)
-  MESSAGE_HANDLER(WM_ENDSESSION, OnEndSystemSession)
+  MESSAGE_HANDLER(WM_ENDSESSION, OnEndSystemSessionChecked)
   MESSAGE_HANDLER(WM_DWMCOLORIZATIONCOLORCHANGED, OnColorChange)
   MESSAGE_HANDLER(WM_SETTINGCHANGE, OnColorChange)
   MESSAGE_HANDLER(WM_COMMAND, OnCommand)
@@ -46,6 +47,14 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
                              WPARAM wParam,
                              LPARAM lParam,
                              BOOL& bHandled);
+  LRESULT OnEndSystemSessionChecked(UINT uMsg,
+                                    WPARAM wParam,
+                                    LPARAM lParam,
+                                    BOOL& bHandled) {
+    if (!interaction_policy::ShouldFinalizeEndSession(wParam != FALSE))
+      return 0;
+    return OnEndSystemSession(uMsg, wParam, lParam, bHandled);
+  }
   LRESULT OnCommand(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
   LRESULT OnServiceNotifyMessage(UINT uMsg,
                                  WPARAM wParam,

@@ -23,6 +23,10 @@ constexpr bool CanUseEnhancedForegroundBounds(
   return enhanced_position && has_foreground_window && has_foreground_rect;
 }
 
+constexpr bool ShouldFinalizeEndSession(bool session_ending) noexcept {
+  return session_ending;
+}
+
 class PendingAutoHideState {
  public:
   void OnPost() noexcept {

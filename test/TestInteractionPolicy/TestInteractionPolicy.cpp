@@ -39,6 +39,11 @@ int main() {
   check(!CanUseEnhancedForegroundBounds(false, true, true),
         "normal positioning does not consult foreground bounds");
 
+  check(ShouldFinalizeEndSession(true),
+        "confirmed end-session finalizes the server handler");
+  check(!ShouldFinalizeEndSession(false),
+        "cancelled end-session keeps the server handler alive");
+
   PendingAutoHideState pending;
   check(!pending.Pending(), "auto-hide state starts idle");
   pending.OnPost();
