@@ -76,16 +76,23 @@ if (-not $env2022.Contains('set XMAKE_VS=2022') -or
   throw 'VS2022 environment must pin xmake to VS2022/v143'
 }
 
-# Build scripts must fail at the first failed subcommand. Otherwise an old xmake
-# configuration or a later successful platform build can overwrite ERRORLEVEL
-# and hide the root cause.
+# Multi-architecture builds share one xmake working directory. Clear the
+# configuration cache before every architecture switch so the detected MSVC
+# target environment cannot leak from x64 into x86 (or ARM variants).
 $xbuildNormalized = $xbuild -replace "`r`n", "`n"
 $configureGuards = [regex]::Matches(
   $xbuildNormalized,
-  'xmake f -a (?:arm64|arm|x64|x86)[^\n]*\n\s*if errorlevel 1 goto error')
+  'xmake f -c -a (?:arm64|arm|x64|x86)[^\n]*\n\s*if errorlevel 1 goto error')
 if ($configureGuards.Count -ne 4) {
-  throw "xbuild fail-fast regression: expected 4 guarded xmake configure commands, got $($configureGuards.Count)"
+  throw "xbuild architecture-isolation regression: expected 4 guarded clean xmake configure commands, got $($configureGuards.Count)"
 }
+if ($xbuildNormalized -match 'xmake f -a (?:arm64|arm|x64|x86)') {
+  throw 'xbuild architecture-isolation regression: architecture configure without -c returned'
+}
+
+# Build scripts must fail at the first failed subcommand. Otherwise an old xmake
+# configuration or a later successful platform build can overwrite ERRORLEVEL
+# and hide the root cause.
 $cleanGuards = [regex]::Matches(
   $xbuildNormalized,
   'xmake clean\n\s*if errorlevel 1 goto error')
