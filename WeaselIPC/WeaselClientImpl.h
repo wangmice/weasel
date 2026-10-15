@@ -16,7 +16,7 @@ class ClientImpl {
   void ShutdownServer();
   void StartSession();
   void EndSession();
-  void StartMaintenance();
+  bool StartMaintenance();
   void EndMaintenance();
   bool Echo();
   KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
