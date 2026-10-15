@@ -102,7 +102,7 @@ if ($xbuildNormalized -notmatch 'call "%XMAKE_VCVARSALL%" %vcvars_arch%\n\s*if e
 if ($xbuildNormalized -notmatch 'xmake f -c -a %xmake_arch%[^\n]*\n\s*if errorlevel 1 exit /b 1') {
   throw 'xbuild target-environment regression: helper does not cleanly configure the requested architecture'
 }
-if ($xbuildNormalized -match 'xmake f -a (?:arm64|arm|x64|x86)') {
+if ($xbuildNormalized -match '(?m)^\s*xmake\s+f\s+-a\s+(?:arm64|arm|x64|x86)(?:\s|$)') {
   throw 'xbuild architecture-isolation regression: architecture configure without -c returned'
 }
 
