@@ -222,9 +222,9 @@ goto end
 rem ---------------------------------------------------------------------------
 rem Build one target architecture in a fresh, x64-hosted Visual Studio target
 rem environment. setlocal prevents vcvarsall changes from leaking into the next
-rem architecture. The exact compiler/linker paths are exported through Xmake's
-rem documented tool override environment variables so its MSVC auto-detection
-rem cannot switch a target build back to another architecture.
+rem architecture. Pass the validated compiler/linker paths as xmake configure
+rem values; the Windows/MSVC toolchain consumes config.get("cc"/"cxx"/etc.),
+rem so environment-only CC/CXX/LD/SH/AR overrides are insufficient here.
 :build_xmake_arch
   setlocal
   set "xmake_arch=%~1"
@@ -254,13 +254,7 @@ rem cannot switch a target build back to another architecture.
   )
   echo xmake %xmake_arch% linker: !selected_link!
 
-  set "CC=!selected_cl!"
-  set "CXX=!selected_cl!"
-  set "LD=!selected_link!"
-  set "SH=!selected_link!"
-  set "AR=!selected_link!"
-
-  xmake f -c -a %xmake_arch% -m %build_config% %xmake_msvc_options% %build_sdk_option%
+  xmake f -c -a %xmake_arch% -m %build_config% %xmake_msvc_options% %build_sdk_option% "--cc=!selected_cl!" "--cxx=!selected_cl!" "--ld=!selected_link!" "--sh=!selected_link!" "--ar=!selected_link!"
   if errorlevel 1 exit /b 1
   if %build_rebuild% == 1 (
     xmake clean
