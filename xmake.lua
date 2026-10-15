@@ -252,6 +252,20 @@ rule("weasel_msvc_atl")
 rule_end()
 add_rules("weasel_msvc_atl")
 
+-- Keep release LTCG compilation enabled everywhere except WeaselTSF. The TSF
+-- target intentionally compiles without /GL, but still links against the same
+-- release libraries and keeps the global /LTCG link behavior below.
+rule("weasel_release_gl")
+  on_load(function(target)
+    if target:name() ~= "WeaselTSF" then
+      target:add("cxflags", "/GL", {force = true})
+    end
+  end)
+rule_end()
+if not is_mode("debug") then
+  add_rules("weasel_release_gl")
+end
+
 -- PerMonitorHighDPIAware.manifest is tracked at the repository root; do not
 -- copy SDK/toolset files during xmake description loading.
 add_includedirs("$(projectdir)/include/wtl")
@@ -296,17 +310,16 @@ if is_mode("debug") then
     includes("test/TestTrayRecovery")
   end
 else
-  add_cxflags("/GL")
   add_ldflags("/LTCG", "/INCREMENTAL:NO", {force = true})
 end
 
 rule("subcmd")
   on_load(function(target)
-    target:add("ldflags", "/SUBSYSTEM:CONSOLE")
+    target:add("ldflags", "/SUBSYSTEM:CONSOLE", {force = true})
   end)
 rule("subwin")
   on_load(function(target)
-    target:add("ldflags", "/SUBSYSTEM:WINDOWS")
+    target:add("ldflags", "/SUBSYSTEM:WINDOWS", {force = true})
   end)
 
 rule("add_rcfiles")
