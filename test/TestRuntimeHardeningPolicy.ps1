@@ -4,6 +4,8 @@ $repo = Split-Path -Parent $PSScriptRoot
 $compartment = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Compartment.cpp') -Raw
 $pipeCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\PipeChannel.cpp') -Raw
 $pipeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
+$rimeWithWeasel = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\RimeWithWeasel.cpp') -Raw
+$d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 
 foreach ($sink in @(
   '_pKeyboardCompartmentSink',
@@ -37,6 +39,26 @@ if ($pipeCpp -notmatch 'success\s*&&\s*lread\s*!=\s*rec_len') {
 }
 if ($pipeHeader -notmatch '_TyRes\s+result\s*\{\s*\}\s*;') {
   throw 'PipeChannel::_ReceiveResponse must zero-initialize its scalar response'
+}
+
+if ($rimeWithWeasel -match '\(\s*1\s*<<\s*i\s*\)') {
+  throw 'RimeWithWeasel session seed still left-shifts signed int 1 into bit 31'
+}
+if ($rimeWithWeasel -notmatch 'DWORD\s*\{\s*1\s*\}\s*<<\s*i') {
+  throw 'RimeWithWeasel session seed must use an unsigned DWORD mask'
+}
+
+$resizeStart = $d2d.IndexOf('void D2D::OnResize')
+$resizeEnd = $d2d.IndexOf('std::vector<std::wstring> ws_split', $resizeStart)
+if ($resizeStart -lt 0 -or $resizeEnd -le $resizeStart) {
+  throw 'unable to isolate D2D::OnResize for recovery policy checks'
+}
+$resizeBody = $d2d.Substring($resizeStart, $resizeEnd - $resizeStart)
+if ($resizeBody -notmatch 'RecoverAfterDeviceLoss\(\)') {
+  throw 'D2D::OnResize must delegate device-loss rollover to RecoverAfterDeviceLoss'
+}
+if ($resizeBody -match 'RecreateAfterDeviceLoss') {
+  throw 'D2D::OnResize still duplicates shared generation rollover logic'
 }
 
 Write-Host 'Runtime hardening policy: PASS'
