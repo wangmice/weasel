@@ -106,6 +106,24 @@ if ($xbuildNormalized -match 'xmake f -a (?:arm64|arm|x64|x86)') {
   throw 'xbuild architecture-isolation regression: architecture configure without -c returned'
 }
 
+# Do not execute a quoted Program Files path through FOR /F command
+# substitution. cmd.exe reparses that nested command and can truncate
+# "C:\Program Files\...\vswhere.exe" to "C:\Program". Capture vswhere output
+# with a normal quoted command, then read the first line from the temporary file.
+if ($xbuildNormalized -match 'for /f[^\n]*XMAKE_VSWHERE') {
+  throw 'xbuild VS discovery regression: vswhere returned to fragile FOR /F command substitution'
+}
+foreach ($required in @(
+  'set "XMAKE_VSWHERE_OUTPUT=',
+  '> "%XMAKE_VSWHERE_OUTPUT%"',
+  'set /p XMAKE_VS_INSTALL=<"%XMAKE_VSWHERE_OUTPUT%"',
+  'del /q "%XMAKE_VSWHERE_OUTPUT%"'
+)) {
+  if (-not $xbuild.Contains($required)) {
+    throw "xbuild VS discovery regression: missing '$required'"
+  }
+}
+
 # Build scripts must fail at the first failed subcommand. Otherwise an old xmake
 # configuration or a later successful platform build can overwrite ERRORLEVEL
 # and hide the root cause.
