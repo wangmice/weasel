@@ -83,9 +83,6 @@ HRESULT DeviceResources::CreateGenerationLocked(
                          next->d2Factory.ReleaseAndGetAddressOf());
   if (FAILED(hr))
     return hr;
-  hr = next->direct3dDevice.As(&next->dxgiDevice);
-  if (FAILED(hr))
-    return hr;
   hr = next->d2Factory->CreateDevice(next->dxgiDevice.Get(),
                                      next->d2Device.ReleaseAndGetAddressOf());
   if (FAILED(hr))
