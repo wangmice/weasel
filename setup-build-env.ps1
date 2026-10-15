@@ -10,7 +10,7 @@
 #
 # 用法:
 #   powershell/pwsh -ExecutionPolicy Bypass -File .\setup-build-env.ps1           # 仅准备环境
-#   powershell/pwsh -ExecutionPolicy Bypass -File .\setup-build-env.ps1 -Build    # 准备后顺便 xmake 编译 x64+x86
+#   powershell/pwsh -ExecutionPolicy Bypass -File .\setup-build-env.ps1 -Build    # 准备后顺便 xbuild 编译 x64+x86
 #
 # 依赖: scoop、Visual Studio 2022 含 ATL 组件（MFC 可选）
 param(
@@ -198,21 +198,15 @@ call build.bat boost || exit /b 1
 
 # --------------------------------------------------------------------------
 if ($Build) {
-  Step "构建 weasel (x64 + x86, 固定 Visual Studio 2022/v143)"
+  Step "构建 weasel (x64 + x86, 复用 xbuild 的目标架构隔离)"
   Push-Location $repo
   try {
-    xmake f -a x64 -m release --vs=2022 --vs_toolset=14.3 -y
-    if ($LASTEXITCODE -ne 0) { throw "xmake config x64 failed" }
-    xmake -y
-    if ($LASTEXITCODE -ne 0) { throw "xmake build x64 failed" }
-    xmake f -a x86 -m release --vs=2022 --vs_toolset=14.3 -y
-    if ($LASTEXITCODE -ne 0) { throw "xmake config x86 failed" }
-    xmake -y
-    if ($LASTEXITCODE -ne 0) { throw "xmake build x86 failed" }
+    & (Join-Path $repo 'xbuild.bat') rebuild
+    if ($LASTEXITCODE -ne 0) { throw "xbuild rebuild failed" }
   } finally { Pop-Location }
 }
 
 Write-Host "`n=== 环境就绪 ===" -ForegroundColor Green
-Write-Host '  xmake:             xmake f -a x64 -m release --vs=2022 --vs_toolset=14.3 -y ; xmake   (x86 同理换 -a x86)'
+Write-Host '  xmake 多架构:      .\xbuild.bat rebuild'
 Write-Host '  传统方式:          在 VS2022 Developer Command Prompt 中运行 build.bat'
 Write-Host "  Boost:             默认 $boostVersion；可用 boost_version / BOOST_ROOT 显式覆盖"

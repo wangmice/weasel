@@ -8,6 +8,7 @@
 #include "PerUserReg.h"
 #include "SetupUtil.h"
 #include <thread>
+#include <vector>
 
 #include "InstallOptionsDlg.h"
 #include "TransactionalInstall.h"
@@ -128,33 +129,55 @@ static int CustomInstall(bool installing) {
     return 0;
   }
 
-  if (profile != registered_profile) {
-    // 修改安装换了 profile：同步 TSF 注册，不能只写注册表（K14）
-    if (0 != switch_registered_profile(registered_profile, profile, silent))
+  const std::wstring user_key = per_user_subkey(KEY);
+  std::vector<weasel::setup::detail::RegistryValueSnapshot> registry = {
+      {per_user_root(), user_key, L"RimeUserDir"},
+      {per_user_root(), user_key, L"Profile"},
+      {per_user_root(), user_key, L"Hant"},
+  };
+  for (auto& snapshot : registry) {
+    if (!snapshot.Capture())
       return 1;
   }
+  auto restore_registry = [&]() {
+    for (auto it = registry.rbegin(); it != registry.rend(); ++it)
+      it->Restore();
+  };
 
-  ret = SetRegKeyValue(per_user_root(), per_user_subkey(KEY).c_str(),
-                       L"RimeUserDir", user_dir.c_str(), REG_SZ, false);
+  ret = SetRegKeyValue(per_user_root(), user_key.c_str(), L"RimeUserDir",
+                       user_dir.c_str(), REG_SZ, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
+    restore_registry();
     MSG_BY_IDS(IDS_STR_ERR_WRITE_USER_DIR, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
   }
-  ret = SetRegKeyValue(per_user_root(), per_user_subkey(KEY).c_str(),
-                       L"Profile", profile.c_str(), REG_SZ, false);
+  ret = SetRegKeyValue(per_user_root(), user_key.c_str(), L"Profile",
+                       profile.c_str(), REG_SZ, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
+    restore_registry();
     MSG_BY_IDS(IDS_STR_ERR_WRITE_PROFILE, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
   }
 
-  ret = SetRegKeyValue(per_user_root(), per_user_subkey(KEY).c_str(), L"Hant",
+  ret = SetRegKeyValue(per_user_root(), user_key.c_str(), L"Hant",
                        (profile == L"hant" ? 1 : 0), REG_DWORD, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
+    restore_registry();
     MSG_BY_IDS(IDS_STR_ERR_WRITE_HANT, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
+  }
+
+  if (profile != registered_profile) {
+    // Persist the requested state first. The profile switch has its own exact
+    // TSF/layout rollback; if it fails, restore the registry snapshot too so
+    // both sources of truth remain aligned.
+    if (0 != switch_registered_profile(registered_profile, profile, silent)) {
+      restore_registry();
+      return 1;
+    }
   }
 
   std::wstring dir(install_dir());

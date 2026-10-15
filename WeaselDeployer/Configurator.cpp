@@ -191,17 +191,26 @@ int Configurator::UpdateWorkspace(bool report_errors) {
     return 1;
   }
 
+  int retval = 0;
   {
     MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     // initialize default config, preset schemas
-    rime->deploy();
+    if (!rime->deploy()) {
+      LOG(ERROR) << "Error deploying Rime workspace.";
+      retval = 1;
+    }
     // initialize weasel config
-    rime->deploy_config_file("weasel.yaml", "config_version");
+    if (!rime->deploy_config_file("weasel.yaml", "config_version")) {
+      LOG(ERROR) << "Error deploying weasel.yaml.";
+      retval = 1;
+    }
+    // Even on failure, wait for any maintenance work spawned by the successful
+    // portions above before releasing the mutex and resuming WeaselServer.
     rime->join_maintenance_thread();
     CloseHandle(hMutex);  // should be closed before resuming service.
   }
-  return 0;
+  return retval;
 }
 
 int Configurator::DictManagement() {

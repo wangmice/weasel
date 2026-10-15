@@ -159,8 +159,10 @@ jobs:
           .\test\check-tsf-host-safety.ps1
           .\test\TestBuildEnvPolicy.ps1
           .\test\TestXmakeToolchainPolicy.ps1
+          .\test\TestXmakeTargetLinkFlagsPolicy.ps1
           .\test\TestRuntimeHardeningPolicy.ps1
           .\test\TestSetupTransactionPolicy.ps1
+          .\test\TestResourcePolicy.ps1
           python .\test\TestInstaller\test_install_result.py
           if ($LASTEXITCODE -ne 0) { throw 'installer rollback tests failed' }
 
@@ -187,6 +189,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'xmake debug build failed' }
 
           foreach ($target in @(
+            'TestWeaselIPC',
             'TestInteractionPolicy',
             'TestPipeSecurityPolicy',
             'TestResponseParser',
@@ -196,6 +199,11 @@ jobs:
             'TestRegisterTipKeys',
             'TestDeviceResources',
             'TestWeaselUI',
+            'TestWeaselUILayout',
+            'TestFindIME',
+            'TestCompartmentUtil',
+            'TestPerUserReg',
+            'TestBstrUtil',
             'TestWeaselSetup',
             'TestServerCommands',
             'TestTrayRecovery')) {

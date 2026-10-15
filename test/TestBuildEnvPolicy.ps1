@@ -1,8 +1,61 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\BuildEnvPolicy.ps1')
 
+$repo = Split-Path -Parent $PSScriptRoot
+$setupBuild = Get-Content -LiteralPath (Join-Path $repo 'setup-build-env.ps1') -Raw
+$ci = Get-Content -LiteralPath (Join-Path $repo '.github\workflows\ci.yml') -Raw
+
 if ((Get-WeaselDefaultBoostVersion) -ne '1.84.0') {
   throw "default Boost version must stay aligned with CI baseline 1.84.0"
+}
+
+$buildBlock = [regex]::Match(
+  $setupBuild,
+  'if\s*\(\$Build\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $buildBlock.Success) {
+  throw 'setup-build-env -Build block not found'
+}
+if ($buildBlock.Groups['body'].Value -notmatch 'xbuild\.bat') {
+  throw 'setup-build-env -Build must reuse xbuild.bat architecture/toolchain isolation'
+}
+if ($buildBlock.Groups['body'].Value -match 'xmake\s+f\s+-a\s+(?:x64|x86)') {
+  throw 'setup-build-env -Build must not maintain a second direct per-arch xmake path'
+}
+
+foreach ($policy in @(
+  'TestBuildEnvPolicy.ps1',
+  'TestRuntimeHardeningPolicy.ps1',
+  'TestSetupTransactionPolicy.ps1',
+  'TestResourcePolicy.ps1',
+  'TestXmakeTargetLinkFlagsPolicy.ps1')) {
+  if ($ci -notmatch [regex]::Escape($policy)) {
+    throw "CI does not run required policy test $policy"
+  }
+}
+
+foreach ($target in @(
+  'TestWeaselIPC',
+  'TestInteractionPolicy',
+  'TestPipeSecurityPolicy',
+  'TestResponseParser',
+  'TestPipeChannel',
+  'TestPipeConnectFailure',
+  'TestKeyEvent',
+  'TestRegisterTipKeys',
+  'TestDeviceResources',
+  'TestWeaselUI',
+  'TestWeaselUILayout',
+  'TestFindIME',
+  'TestCompartmentUtil',
+  'TestPerUserReg',
+  'TestBstrUtil',
+  'TestWeaselSetup',
+  'TestServerCommands',
+  'TestTrayRecovery')) {
+  if ($ci -notmatch ("'" + [regex]::Escape($target) + "'")) {
+    throw "CI does not execute xmake regression target $target"
+  }
 }
 
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("weasel-boost-policy-" + [guid]::NewGuid())
@@ -62,7 +115,7 @@ try {
     throw 'missing x64 serialization library was not detected'
   }
 
-  Write-Host 'Build environment Boost policy: PASS'
+  Write-Host 'Build environment and CI policy: PASS'
 } finally {
   Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }

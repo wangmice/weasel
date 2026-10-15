@@ -5,6 +5,7 @@ $compartment = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Compartment.
 $pipeCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\PipeChannel.cpp') -Raw
 $pipeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
+$configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
 
 foreach ($sink in @(
   '_pKeyboardCompartmentSink',
@@ -51,6 +52,25 @@ if ($resizeBody -notmatch 'RecoverAfterDeviceLoss\(\)') {
 }
 if ($resizeBody -match 'RecreateAfterDeviceLoss') {
   throw 'D2D::OnResize still duplicates shared generation rollover logic'
+}
+
+$updateStart = $configurator.IndexOf('int Configurator::UpdateWorkspace')
+$updateEnd = $configurator.IndexOf('int Configurator::DictManagement', $updateStart)
+if ($updateStart -lt 0 -or $updateEnd -le $updateStart) {
+  throw 'unable to isolate Configurator::UpdateWorkspace'
+}
+$updateBody = $configurator.Substring($updateStart, $updateEnd - $updateStart)
+if ($updateBody -notmatch 'if\s*\(!rime->deploy\(\)\)') {
+  throw 'UpdateWorkspace must treat rime->deploy() failure as an operation failure'
+}
+if ($updateBody -notmatch 'if\s*\(!rime->deploy_config_file\("weasel\.yaml",\s*"config_version"\)\)') {
+  throw 'UpdateWorkspace must treat weasel.yaml deployment failure as an operation failure'
+}
+if ($updateBody -notmatch 'rime->join_maintenance_thread\(\)') {
+  throw 'UpdateWorkspace must still join librime maintenance work before resuming the server'
+}
+if ($updateBody -notmatch 'return\s+retval\s*;') {
+  throw 'UpdateWorkspace must return its accumulated deployment result'
 }
 
 Write-Host 'Runtime hardening policy: PASS'
