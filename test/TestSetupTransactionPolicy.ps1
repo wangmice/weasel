@@ -10,7 +10,11 @@ if ($setup -notmatch '#include\s+"TransactionalInstall\.h"') {
 if ($setup -notmatch 'InstallFreshTransactional\(profile,\s*user_dir,\s*silent\)') {
   throw 'fresh setup must pass profile and RimeUserDir into the transaction'
 }
-if ($setup -notmatch 'if\s*\(!_has_installed\).*?InstallRequestedProfile\(profile,\s*user_dir,\s*silent\).*?return\s+0;', 'Singleline') {
+$freshFlow = [regex]::IsMatch(
+  $setup,
+  'if\s*\(!_has_installed\).*?InstallRequestedProfile\(profile,\s*user_dir,\s*silent\).*?return\s+0;',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $freshFlow) {
   throw 'fresh setup must return after the transaction instead of doing a second registry-write pass'
 }
 
