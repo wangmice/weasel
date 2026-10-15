@@ -23,4 +23,20 @@ foreach ($target in $targets) {
   }
 }
 
+$rootXmakePath = Join-Path $repoRoot 'xmake.lua'
+$rootXmake = Get-Content -LiteralPath $rootXmakePath -Raw
+if ($rootXmake -match 'add_ldflags\(\s*["''][^"'']*\s+[^"'']*["'']') {
+  throw 'xmake linker flag policy regression: multiple global linker options are packed into one string'
+}
+
+$requiredGlobalFlags = 'add_ldflags("/TLBID:1", "/DYNAMICBASE", "/NXCOMPAT", {force = true})'
+if (-not $rootXmake.Contains($requiredGlobalFlags)) {
+  throw 'xmake linker flag policy regression: global MSVC security flags must stay split and forced'
+}
+
+$requiredReleaseFlags = 'add_ldflags("/LTCG", "/INCREMENTAL:NO", {force = true})'
+if (-not $rootXmake.Contains($requiredReleaseFlags)) {
+  throw 'xmake linker flag policy regression: release LTCG flags must stay split and forced'
+}
+
 Write-Host 'Xmake target linker flag policy: PASS'
