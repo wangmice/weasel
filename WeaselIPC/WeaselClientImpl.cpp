@@ -204,9 +204,10 @@ void ClientImpl::EndSession() {
   _SetSessionId(0);
 }
 
-void ClientImpl::StartMaintenance() {
-  _SendMessage(WEASEL_IPC_START_MAINTENANCE, 0, 0);
+bool ClientImpl::StartMaintenance() {
+  const LRESULT ret = _SendMessage(WEASEL_IPC_START_MAINTENANCE, 0, 0);
   _SetSessionId(0);
+  return ret != 0;
 }
 
 void ClientImpl::EndMaintenance() {
@@ -322,8 +323,8 @@ void Client::EndSession() {
   m_pImpl->EndSession();
 }
 
-void Client::StartMaintenance() {
-  m_pImpl->StartMaintenance();
+bool Client::StartMaintenance() {
+  return m_pImpl->StartMaintenance();
 }
 
 void Client::EndMaintenance() {
