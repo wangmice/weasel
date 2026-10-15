@@ -166,9 +166,18 @@ if not exist "%XMAKE_VSWHERE%" (
   echo Error: vswhere.exe not found at "%XMAKE_VSWHERE%".
   goto error
 )
-for /f "usebackq delims=" %%i in (`"%XMAKE_VSWHERE%" -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
-  if not defined XMAKE_VS_INSTALL set "XMAKE_VS_INSTALL=%%i"
+rem Do not execute a quoted Program Files path through FOR /F command
+rem substitution: the nested cmd.exe can reparse it as C:\Program. Capture the
+rem normal quoted command's output first, then read the first line separately.
+set "XMAKE_VSWHERE_OUTPUT=%TEMP%\weasel-vswhere-%RANDOM%-%RANDOM%.txt"
+"%XMAKE_VSWHERE%" -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > "%XMAKE_VSWHERE_OUTPUT%"
+if errorlevel 1 (
+  del /q "%XMAKE_VSWHERE_OUTPUT%" >nul 2>&1
+  echo Error: vswhere failed to locate Visual Studio 2022.
+  goto error
 )
+set /p XMAKE_VS_INSTALL=<"%XMAKE_VSWHERE_OUTPUT%"
+del /q "%XMAKE_VSWHERE_OUTPUT%" >nul 2>&1
 if not defined XMAKE_VS_INSTALL (
   echo Error: Visual Studio 2022 C++ toolchain not found.
   goto error
