@@ -51,7 +51,7 @@ rule_end()
 add_rules("require_boost")
 
 add_cxflags("/utf-8 /MP /O2 /Oi /Gm- /EHsc /MT /GS /Gy /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /external:W3 /Gd /TP")
-add_ldflags("/TLBID:1 /DYNAMICBASE /NXCOMPAT")
+add_ldflags("/TLBID:1", "/DYNAMICBASE", "/NXCOMPAT", {force = true})
 
 -- Resolve ATL/MFC from the same Visual Studio family and VC toolset selected
 -- by xmake. Never append the Developer Prompt's complete INCLUDE list: xmake
@@ -297,7 +297,7 @@ if is_mode("debug") then
   end
 else
   add_cxflags("/GL")
-  add_ldflags("/LTCG /INCREMENTAL:NO", {force = true})
+  add_ldflags("/LTCG", "/INCREMENTAL:NO", {force = true})
 end
 
 rule("subcmd")
