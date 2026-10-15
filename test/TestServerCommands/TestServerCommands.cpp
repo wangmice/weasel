@@ -168,7 +168,8 @@ static void test_panel_recreate_reapplies_window_size() {
         "retained panel reapplies layout size to a recreated HWND");
 
   ui.Destroy(true);
-  weasel::DeviceResources::Get().Reset();
+  check(!weasel::DeviceResources::Get().HasLiveGeneration(),
+        "panel teardown releases the shared graphics generation lease");
 }
 
 class SessionHandler : public weasel::RequestHandler {
@@ -366,8 +367,12 @@ static void test_maintenance_session_recovery() {
         "healthy key uses exactly one key IPC and no Echo");
 
   // A different client performs deployment while the TSF pipe stays open.
-  deployer.StartMaintenance();
+  check(deployer.StartMaintenance(),
+        "deployer receives maintenance acknowledgement after transition");
+  check(handler.maintaining,
+        "maintenance acknowledgement is sent only after handler transition");
   deployer.EndMaintenance();
+  check(!handler.maintaining, "end-maintenance leaves the handler active");
   check(tsf.m_client.IsSessionActive(),
         "TSF keeps the stale cached session after maintenance");
   check(tsf._EnsureServerConnected(),
