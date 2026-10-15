@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "InstallOptionsDlg.h"
+#include "TransactionalInstall.h"
 
 #include <ShellScalingApi.h>
 #pragma comment(lib, "Shcore.lib")
@@ -51,6 +52,12 @@ bool has_installed();
 int switch_registered_profile(const std::wstring& old_profile,
                               const std::wstring& new_profile,
                               bool silent);
+
+static int InstallRequestedProfile(const std::wstring& profile, bool silent) {
+  if (has_installed())
+    return install(profile, silent);
+  return weasel::setup::InstallFreshTransactional(profile, silent);
+}
 
 static std::wstring install_dir() {
   WCHAR exe_path[MAX_PATH] = {0};
@@ -108,7 +115,7 @@ static int CustomInstall(bool installing) {
     _has_installed = dlg.installed;
   }
   if (!_has_installed) {
-    if (0 != install(profile, silent))
+    if (0 != InstallRequestedProfile(profile, silent))
       return 1;
   } else if (profile != registered_profile) {
     // 修改安装换了 profile：同步 TSF 注册，不能只写注册表（K14）
@@ -266,19 +273,19 @@ static int Run(LPTSTR lpCmdLine) {
 
   bool hans = !wcscmp(L"/s", lpCmdLine);
   if (hans)
-    return install(L"hans", silent);
+    return InstallRequestedProfile(L"hans", silent);
   bool hant = !wcscmp(L"/t", lpCmdLine);
   if (hant)
-    return install(L"hant", silent);
+    return InstallRequestedProfile(L"hant", silent);
   bool hongkong = !wcscmp(L"/hk", lpCmdLine);
   if (hongkong)
-    return install(L"hongkong", silent);
+    return InstallRequestedProfile(L"hongkong", silent);
   bool macau = !wcscmp(L"/mc", lpCmdLine);
   if (macau)
-    return install(L"macau", silent);
+    return InstallRequestedProfile(L"macau", silent);
   bool singapore = !wcscmp(L"/sg", lpCmdLine);
   if (singapore)
-    return install(L"singapore", silent);
+    return InstallRequestedProfile(L"singapore", silent);
   bool installing = !wcscmp(L"/i", lpCmdLine);
   return CustomInstall(installing);
 }
