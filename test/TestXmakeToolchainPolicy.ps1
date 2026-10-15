@@ -124,19 +124,30 @@ foreach ($required in @(
   }
 }
 
-# `vcvarsall` only prepares PATH. Xmake may still run its own MSVC discovery and
-# select a different target compiler. Pin every relevant tool to the exact
-# target-specific executables that were just validated by the helper.
+# Xmake's MSVC tool selection consumes configure values such as --cc/--cxx;
+# merely exporting CC/CXX/LD/SH/AR is not sufficient for the Windows toolchain.
+# Pass the already validated target-specific executables through xmake f itself.
 foreach ($required in @(
   'set "selected_link=!selected_bin!link.exe"',
+  '"--cc=!selected_cl!"',
+  '"--cxx=!selected_cl!"',
+  '"--ld=!selected_link!"',
+  '"--sh=!selected_link!"',
+  '"--ar=!selected_link!"'
+)) {
+  if (-not $xbuild.Contains($required)) {
+    throw "xbuild explicit-tool regression: missing '$required'"
+  }
+}
+foreach ($legacy in @(
   'set "CC=!selected_cl!"',
   'set "CXX=!selected_cl!"',
   'set "LD=!selected_link!"',
   'set "SH=!selected_link!"',
   'set "AR=!selected_link!"'
 )) {
-  if (-not $xbuild.Contains($required)) {
-    throw "xbuild explicit-tool regression: missing '$required'"
+  if ($xbuild.Contains($legacy)) {
+    throw "xbuild explicit-tool regression: legacy environment-only override returned: '$legacy'"
   }
 }
 
