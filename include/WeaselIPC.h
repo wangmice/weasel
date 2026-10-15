@@ -130,8 +130,8 @@ class Client {
   void StartSession();
   // 結束會話
   void EndSession();
-  // 進入維護模式
-  void StartMaintenance();
+  // 進入維護模式；仅当服务端已完成状态切换并返回确认时为 true
+  bool StartMaintenance();
   // 退出維護模式
   void EndMaintenance();
   // 测试连接
