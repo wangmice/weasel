@@ -171,9 +171,9 @@ void WeaselTSF::_RetargetKeyboardDisabledSinks(
   auto callback = std::bind(&WeaselTSF::_OnKeyboardDisabledCompartmentChange,
                             this, _1);
   if (!_pKeyboardDisabledSink)
-    _pKeyboardDisabledSink = new CCompartmentEventSink(callback);
+    _pKeyboardDisabledSink.Attach(new CCompartmentEventSink(callback));
   if (!_pEmptyContextSink)
-    _pEmptyContextSink = new CCompartmentEventSink(callback);
+    _pEmptyContextSink.Attach(new CCompartmentEventSink(callback));
 
   HRESULT hrDisabled = _pKeyboardDisabledSink->_Advise(
       (IUnknown*)pContext, GUID_COMPARTMENT_KEYBOARD_DISABLED);
@@ -215,7 +215,7 @@ HRESULT WeaselTSF::_SetKeyboardOpen(BOOL fOpen) {
   com_ptr<ITfCompartmentMgr> pCompMgr;
 
   if (_pThreadMgr->QueryInterface(&pCompMgr) == S_OK) {
-    ITfCompartment* pCompartment;
+    com_ptr<ITfCompartment> pCompartment;
     if (pCompMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
                                  &pCompartment) == S_OK) {
       VARIANT var;
@@ -295,13 +295,13 @@ BOOL WeaselTSF::_InitCompartment() {
   using namespace std::placeholders;
 
   auto callback = std::bind(&WeaselTSF::_HandleCompartment, this, _1);
-  _pKeyboardCompartmentSink = new CCompartmentEventSink(callback);
+  _pKeyboardCompartmentSink.Attach(new CCompartmentEventSink(callback));
   if (!_pKeyboardCompartmentSink)
     return FALSE;
   HRESULT hrKeyboard = _pKeyboardCompartmentSink->_Advise(
       (IUnknown*)_pThreadMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE);
 
-  _pConvertionCompartmentSink = new CCompartmentEventSink(callback);
+  _pConvertionCompartmentSink.Attach(new CCompartmentEventSink(callback));
   if (!_pConvertionCompartmentSink)
     return FALSE;
   HRESULT hrConversion = _pConvertionCompartmentSink->_Advise(
