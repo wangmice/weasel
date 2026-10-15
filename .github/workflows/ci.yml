@@ -64,7 +64,7 @@ jobs:
         with:
           path: |
             ${{ env.BOOST_ROOT }}
-          key: ${{ runner.os }}-boost-${{ env.boost_version }}
+          key: ${{ runner.os }}-boost-${{ env.boost_version }}-b2v2
 
       - name: Install Boost
         if: steps.cache-boost.outputs.cache-hit != 'true'
@@ -154,6 +154,10 @@ jobs:
           .\test\check-tsf-host-safety.ps1
           .\test\TestBuildEnvPolicy.ps1
           .\test\TestXmakeToolchainPolicy.ps1
+          .\test\TestRuntimeHardeningPolicy.ps1
+          .\test\TestSetupTransactionPolicy.ps1
+          python .\test\TestInstaller\test_install_result.py
+          if ($LASTEXITCODE -ne 0) { throw 'installer rollback tests failed' }
 
           $savedBoost = $env:BOOST_ROOT
           try {
@@ -187,6 +191,7 @@ jobs:
             'TestRegisterTipKeys',
             'TestDeviceResources',
             'TestWeaselUI',
+            'TestWeaselSetup',
             'TestServerCommands',
             'TestTrayRecovery')) {
             Write-Host "=== running $target ==="
@@ -235,6 +240,6 @@ jobs:
         with:
           draft: true
           files: |
-            .\output\archives\weasel*.exe
-            .\output\archives\debug_symbols.7z
+            .\output\archives/weasel*.exe
+            .\output\archives/debug_symbols.7z
           body_path: ${{ github.workspace }}/RELEASE_CHANGELOG.md
