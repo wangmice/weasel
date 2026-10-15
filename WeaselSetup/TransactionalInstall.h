@@ -238,7 +238,9 @@ inline void RestoreLayout(const std::wstring& profile,
 
 }  // namespace detail
 
-inline int InstallFreshTransactional(const std::wstring& profile, bool silent) {
+inline int InstallFreshTransactional(const std::wstring& profile,
+                                     const std::wstring& user_dir,
+                                     bool silent) {
   // This wrapper is for a genuinely fresh system registration. Existing
   // installs keep using the profile-switch transaction instead of replacing
   // their registered service in place.
@@ -252,6 +254,7 @@ inline int InstallFreshTransactional(const std::wstring& profile, bool silent) {
       {HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"ServerExecutable"},
       {per_user_root(), user_key, L"Profile"},
       {per_user_root(), user_key, L"Hant"},
+      {per_user_root(), user_key, L"RimeUserDir"},
   };
   for (auto& snapshot : registry) {
     if (!snapshot.Capture())
@@ -297,7 +300,8 @@ inline int InstallFreshTransactional(const std::wstring& profile, bool silent) {
   auto write_failed = [&](LSTATUS status) {
     return FAILED(HRESULT_FROM_WIN32(status));
   };
-  if (write_failed(SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY,
+  bool registry_failed =
+      write_failed(SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY,
                                   L"WeaselRoot", root_dir.c_str(), REG_SZ)) ||
       write_failed(SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY,
                                   L"ServerExecutable", L"WeaselServer.exe",
@@ -305,7 +309,13 @@ inline int InstallFreshTransactional(const std::wstring& profile, bool silent) {
       write_failed(SetRegKeyValue(per_user_root(), user_key.c_str(), L"Profile",
                                   profile.c_str(), REG_SZ)) ||
       write_failed(SetRegKeyValue(per_user_root(), user_key.c_str(), L"Hant",
-                                  profile == L"hant" ? 1 : 0, REG_DWORD))) {
+                                  profile == L"hant" ? 1 : 0, REG_DWORD));
+  if (!registry_failed && !user_dir.empty()) {
+    registry_failed = write_failed(SetRegKeyValue(
+        per_user_root(), user_key.c_str(), L"RimeUserDir", user_dir.c_str(),
+        REG_SZ, false));
+  }
+  if (registry_failed) {
     rollback();
     return 1;
   }
