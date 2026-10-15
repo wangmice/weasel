@@ -114,7 +114,8 @@ class InstallResultTests(unittest.TestCase):
     def test_install_directory_is_written_only_after_setup_succeeds(self):
         source = (REPO / "output/install.nsi").read_text(encoding="utf-8-sig")
         setup = source.index('  ExecWait \'"$INSTDIR\\WeaselSetup.exe" $R2\'')
-        directory = source.index('WriteRegStr HKLM SOFTWARE\\Rime\\Weasel "InstallDir"')
+        directory = source.index(
+            'WriteRegStr HKLM SOFTWARE\\Rime\\Weasel "InstallDir"', setup)
         self.assertGreater(directory, setup)
 
     def test_previous_program_files_are_cleaned_only_after_setup_succeeds(self):
