@@ -25,6 +25,8 @@ foreach ($target in $targets) {
 
 $rootXmakePath = Join-Path $repoRoot 'xmake.lua'
 $rootXmake = Get-Content -LiteralPath $rootXmakePath -Raw
+$tsfXmake = Get-Content -LiteralPath (Join-Path $repoRoot 'WeaselTSF\xmake.lua') -Raw
+
 if ($rootXmake -match 'add_ldflags\(\s*["''][^"'']*\s+[^"'']*["'']') {
   throw 'xmake linker flag policy regression: multiple global linker options are packed into one string'
 }
@@ -37,6 +39,26 @@ if (-not $rootXmake.Contains($requiredGlobalFlags)) {
 $requiredReleaseFlags = 'add_ldflags("/LTCG", "/INCREMENTAL:NO", {force = true})'
 if (-not $rootXmake.Contains($requiredReleaseFlags)) {
   throw 'xmake linker flag policy regression: release LTCG flags must stay split and forced'
+}
+
+if (-not $rootXmake.Contains('rule("weasel_release_gl")')) {
+  throw 'xmake LTCG policy regression: release /GL target rule is missing'
+}
+if (-not $rootXmake.Contains('if target:name() ~= "WeaselTSF" then')) {
+  throw 'xmake LTCG policy regression: WeaselTSF is no longer excluded from release /GL'
+}
+if (-not $rootXmake.Contains('target:add("cxflags", "/GL", {force = true})')) {
+  throw 'xmake LTCG policy regression: release /GL is not forced through the target rule'
+}
+if ($tsfXmake.Contains('/GL-')) {
+  throw 'xmake LTCG policy regression: WeaselTSF should be excluded from /GL instead of overriding it with /GL-'
+}
+
+if (-not $rootXmake.Contains('target:add("ldflags", "/SUBSYSTEM:CONSOLE", {force = true})')) {
+  throw 'xmake subsystem policy regression: console subsystem flag is not forced'
+}
+if (-not $rootXmake.Contains('target:add("ldflags", "/SUBSYSTEM:WINDOWS", {force = true})')) {
+  throw 'xmake subsystem policy regression: windows subsystem flag is not forced'
 }
 
 Write-Host 'Xmake target linker flag policy: PASS'
