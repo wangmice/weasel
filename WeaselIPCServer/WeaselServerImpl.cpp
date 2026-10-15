@@ -350,9 +350,13 @@ DWORD ServerImpl::OnUpdateInputPosition(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
                                      DWORD wParam,
                                      DWORD lParam) {
-  if (m_pRequestHandler)
-    m_pRequestHandler->StartMaintenance();
-  return 0;
+  if (!m_pRequestHandler)
+    return 0;
+  m_pRequestHandler->StartMaintenance();
+  // Run() holds g_api_mutex around this call, so the acknowledgement is sent
+  // only after every earlier handler call has finished and maintenance entry
+  // has completed.
+  return 1;
 }
 
 DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
@@ -438,7 +442,6 @@ DWORD ServerImpl::OnChangePage(WEASEL_IPC_COMMAND uMsg,
   }                                       \
   __result = _result;                     \
   }
-
 template <typename _Resp>
 void ServerImpl::HandlePipeMessage(PipeMessage pipe_msg, _Resp resp) {
   DWORD result;
