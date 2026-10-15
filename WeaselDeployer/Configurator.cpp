@@ -27,17 +27,17 @@ static void CreateFileIfNotExist(std::string filename) {
   }
 }
 
-// StartMaintenance 的作用域守卫：无论同步成败（含异常路径），退出时都
-// 重新连接并调用 EndMaintenance，保证服务端不会永久停留在维护模式（K1）。
-// 各维护路径统一在析构前完成 join_maintenance_thread 与 CloseHandle：
-// 部署任务全部落地、部署互斥释放之后，才唤醒服务（K19）。
+// Only a caller that received START_MAINTENANCE's acknowledgement owns the
+// matching resume. This avoids sending EndMaintenance to a server that was not
+// running when deployment began but happened to start while local work ran.
 class MaintenanceReleaser {
  public:
-  explicit MaintenanceReleaser(weasel::Client& client) : client_(client) {}
+  MaintenanceReleaser(weasel::Client& client, bool active)
+      : client_(client), active_(active) {}
   MaintenanceReleaser(const MaintenanceReleaser&) = delete;
   MaintenanceReleaser& operator=(const MaintenanceReleaser&) = delete;
   ~MaintenanceReleaser() {
-    if (client_.Connect()) {
+    if (active_ && client_.Connect()) {
       LOG(INFO) << "Resuming service.";
       client_.EndMaintenance();
     }
@@ -45,7 +45,34 @@ class MaintenanceReleaser {
 
  private:
   weasel::Client& client_;
+  bool active_;
 };
+
+// Enter maintenance only when a server is already present. A failed
+// acknowledgement is ambiguous because the request may have reached the server
+// and only the response may have been lost, so send one best-effort resume
+// before reporting failure. Local librime work must not start in that case.
+static bool BeginMaintenanceIfConnected(weasel::Client& client,
+                                        bool& maintenance_started) {
+  maintenance_started = false;
+  if (!client.Connect())
+    return true;
+
+  LOG(INFO) << "Turning WeaselServer into maintenance mode.";
+  if (client.StartMaintenance()) {
+    maintenance_started = true;
+    return true;
+  }
+
+  LOG(ERROR) << "WeaselServer did not acknowledge maintenance mode; aborting "
+                "local maintenance work.";
+  if (client.Connect()) {
+    // The request could have been applied before the reply was lost.
+    client.EndMaintenance();
+  }
+  return false;
+}
+
 Configurator::Configurator() {
   CreateFileIfNotExist("default.custom.yaml");
   CreateFileIfNotExist("weasel.custom.yaml");
@@ -158,13 +185,14 @@ int Configurator::UpdateWorkspace(bool report_errors) {
   }
 
   weasel::Client client;
-  if (client.Connect()) {
-    LOG(INFO) << "Turning WeaselServer into maintenance mode.";
-    client.StartMaintenance();
+  bool maintenance_started = false;
+  if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
+    CloseHandle(hMutex);
+    return 1;
   }
 
   {
-    MaintenanceReleaser releaser(client);
+    MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     // initialize default config, preset schemas
     rime->deploy();
@@ -193,13 +221,14 @@ int Configurator::DictManagement() {
   }
 
   weasel::Client client;
-  if (client.Connect()) {
-    LOG(INFO) << "Turning WeaselServer into maintenance mode.";
-    client.StartMaintenance();
+  bool maintenance_started = false;
+  if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
+    CloseHandle(hMutex);
+    return 1;
   }
 
   {
-    MaintenanceReleaser releaser(client);
+    MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     if (RIME_API_AVAILABLE(rime, run_task)) {
       rime->run_task("installation_update");  // setup user data sync dir
@@ -229,16 +258,17 @@ int Configurator::SyncUserData() {
   }
 
   weasel::Client client;
-  if (client.Connect()) {
-    LOG(INFO) << "Turning WeaselServer into maintenance mode.";
-    client.StartMaintenance();
+  bool maintenance_started = false;
+  if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
+    CloseHandle(hMutex);
+    return 1;
   }
 
   int retval = 0;
   {
     // 失败或异常退出本作用域时同样恢复服务端；
     // EndMaintenance 由析构执行，保持在 CloseHandle 之后（先释放部署互斥再唤醒服务）
-    MaintenanceReleaser releaser(client);
+    MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     if (!rime->sync_user_data()) {
       LOG(ERROR) << "Error synching user data.";
