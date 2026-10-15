@@ -1,3 +1,21 @@
+function Get-WeaselDefaultBoostVersion {
+  '1.84.0'
+}
+
+function Get-WeaselBoostSourceProblems {
+  param([Parameter(Mandatory = $true)][string]$BoostRoot)
+
+  $required = @(
+    'boost\version.hpp',
+    'bootstrap.bat',
+    'boost-build.jam',
+    'tools\build\src\build-system.jam'
+  )
+  @($required | Where-Object {
+    -not (Test-Path -LiteralPath (Join-Path $BoostRoot $_) -PathType Leaf)
+  })
+}
+
 function Get-WeaselRequiredBoostPatterns {
   $libraries = @('filesystem', 'json', 'locale', 'regex', 'serialization', 'thread')
   foreach ($arch in @('x64', 'x32')) {
