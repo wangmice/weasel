@@ -66,16 +66,21 @@ jobs:
             ${{ env.BOOST_ROOT }}
           key: ${{ runner.os }}-boost-${{ env.boost_version }}-b2v2
 
-      - name: Install Boost
+      - name: Install Boost source
         if: steps.cache-boost.outputs.cache-hit != 'true'
         shell: bash
-        run: |
-          ./install_boost.bat
-          ./build.bat boost arm64
+        run: ./install_boost.bat
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           sdk: ${{ env.SDKVER }}
+
+      - name: Validate Boost source, B2, and staged libraries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build.bat boost arm64
+          if ($LASTEXITCODE -ne 0) { throw 'Boost validation/build failed' }
 
       # bundled winsparkle v0.9.2 to disable auto open ReleaseNoteUrl in default browser
       - name: cache bundled winsparkle
@@ -240,6 +245,6 @@ jobs:
         with:
           draft: true
           files: |
-            .\output\archives/weasel*.exe
-            .\output\archives/debug_symbols.7z
+            .\output\archives\weasel*.exe
+            .\output\archives\debug_symbols.7z
           body_path: ${{ github.workspace }}/RELEASE_CHANGELOG.md
