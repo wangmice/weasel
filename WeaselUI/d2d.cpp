@@ -83,6 +83,9 @@ HRESULT DeviceResources::CreateGenerationLocked(
                          next->d2Factory.ReleaseAndGetAddressOf());
   if (FAILED(hr))
     return hr;
+  hr = next->direct3dDevice.As(&next->dxgiDevice);
+  if (FAILED(hr))
+    return hr;
   hr = next->d2Factory->CreateDevice(next->dxgiDevice.Get(),
                                      next->d2Device.ReleaseAndGetAddressOf());
   if (FAILED(hr))
@@ -378,28 +381,10 @@ void D2D::OnResize(UINT width, UINT height) {
       swapChain->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
   if (hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_REMOVED) {
     DEBUG << "Device lost during ResizeBuffers: " << HRESULTToString(hr);
-
-    const uint64_t failed_generation =
-        m_sharedResources ? m_sharedResources->generation : 0;
-    std::shared_ptr<const DeviceResourcesSnapshot> replacement;
-    hr = DeviceResources::Get().RecreateAfterDeviceLoss(failed_generation,
-                                                         replacement);
-
-    const HWND hwnd = m_hWnd;
-    ReleaseWindowResources();
-    m_hWnd = hwnd;
-    dcompDevice.Reset();
-
+    hr = RecoverAfterDeviceLoss();
     if (FAILED(hr)) {
-      SafeReleaseAll(direct3dDevice, dxgiDevice, dxFactory, d2Factory,
-                     d2Device, m_pWriteFactory);
-      m_sharedResources.reset();
       DEBUG << "shared device recovery failed: " << HRESULTToString(hr);
-      return;
     }
-
-    AdoptSharedResources(replacement);
-    InitDirect2D();
     return;
   }
   HR(hr);
