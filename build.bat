@@ -256,7 +256,10 @@ rem validate or rebuild the B2 launcher for the selected source tree
 :ensure_boost_b2
   cd /d "%BOOST_ROOT%"
   if exist b2.exe (
-    b2 --version >nul 2>&1
+    rem A version-only probe can succeed without loading boost-build.jam.
+    rem Dry-run a real Boost target so auto-discovery of the current source
+    rem tree and the requested toolset must both succeed before reuse.
+    b2 -n --with-filesystem stage toolset=%BJAM_TOOLSET% >nul 2>&1
     if not errorlevel 1 exit /b 0
     echo Existing b2.exe cannot load this Boost source tree; rebuilding it...
     del /q b2.exe
@@ -264,7 +267,7 @@ rem validate or rebuild the B2 launcher for the selected source tree
   )
   call bootstrap.bat
   if errorlevel 1 exit /b 1
-  b2 --version >nul 2>&1
+  b2 -n --with-filesystem stage toolset=%BJAM_TOOLSET% >nul 2>&1
   if errorlevel 1 (
     echo Error: bootstrapped b2.exe still cannot load this Boost source tree.
     exit /b 1
