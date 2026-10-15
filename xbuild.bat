@@ -158,7 +158,7 @@ if %build_clean% == 1 ( goto clean )
 if %build_weasel% == 0 ( goto end )
 
 if %build_arm64% == 1 (
-  xmake f -a arm64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
+  xmake f -c -a arm64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
   if errorlevel 1 goto error
   if %build_rebuild% == 1 (
     xmake clean
@@ -166,7 +166,7 @@ if %build_arm64% == 1 (
   )
   xmake
   if errorlevel 1 goto error
-  xmake f -a arm -m %build_config% %xmake_msvc_options% %build_sdk_option%
+  xmake f -c -a arm -m %build_config% %xmake_msvc_options% %build_sdk_option%
   if errorlevel 1 goto error
   if %build_rebuild% == 1 (
     xmake clean
@@ -175,7 +175,7 @@ if %build_arm64% == 1 (
   xmake
   if errorlevel 1 goto error
 )
-xmake f -a x64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
+xmake f -c -a x64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
 if errorlevel 1 goto error
 if %build_rebuild% == 1 (
   xmake clean
@@ -183,7 +183,7 @@ if %build_rebuild% == 1 (
 )
 xmake
 if errorlevel 1 goto error
-xmake f -a x86 -m %build_config% %xmake_msvc_options% %build_sdk_option%
+xmake f -c -a x86 -m %build_config% %xmake_msvc_options% %build_sdk_option%
 if errorlevel 1 goto error
 if %build_rebuild% == 1 (
   xmake clean
@@ -227,4 +227,3 @@ goto end
   
 :end
   cd %WEASEL_ROOT%
-
