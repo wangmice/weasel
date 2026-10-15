@@ -124,6 +124,22 @@ foreach ($required in @(
   }
 }
 
+# `vcvarsall` only prepares PATH. Xmake may still run its own MSVC discovery and
+# select a different target compiler. Pin every relevant tool to the exact
+# target-specific executables that were just validated by the helper.
+foreach ($required in @(
+  'set "selected_link=!selected_bin!link.exe"',
+  'set "CC=!selected_cl!"',
+  'set "CXX=!selected_cl!"',
+  'set "LD=!selected_link!"',
+  'set "SH=!selected_link!"',
+  'set "AR=!selected_link!"'
+)) {
+  if (-not $xbuild.Contains($required)) {
+    throw "xbuild explicit-tool regression: missing '$required'"
+  }
+}
+
 # Build scripts must fail at the first failed subcommand. Otherwise an old xmake
 # configuration or a later successful platform build can overwrite ERRORLEVEL
 # and hide the root cause.
