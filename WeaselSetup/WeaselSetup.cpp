@@ -53,10 +53,12 @@ int switch_registered_profile(const std::wstring& old_profile,
                               const std::wstring& new_profile,
                               bool silent);
 
-static int InstallRequestedProfile(const std::wstring& profile, bool silent) {
+static int InstallRequestedProfile(const std::wstring& profile,
+                                   const std::wstring& user_dir,
+                                   bool silent) {
   if (has_installed())
     return install(profile, silent);
-  return weasel::setup::InstallFreshTransactional(profile, silent);
+  return weasel::setup::InstallFreshTransactional(profile, user_dir, silent);
 }
 
 static std::wstring install_dir() {
@@ -114,17 +116,24 @@ static int CustomInstall(bool installing) {
     user_dir = dlg.user_dir;
     _has_installed = dlg.installed;
   }
+
+  if (user_dir.empty())
+    user_dir = per_user_default_dir();
+
   if (!_has_installed) {
-    if (0 != InstallRequestedProfile(profile, silent))
+    if (0 != InstallRequestedProfile(profile, user_dir, silent))
       return 1;
-  } else if (profile != registered_profile) {
+    // Fresh install committed Profile/Hant/RimeUserDir atomically with the
+    // TSF registration and layout. Do not perform a second fallible write pass.
+    return 0;
+  }
+
+  if (profile != registered_profile) {
     // 修改安装换了 profile：同步 TSF 注册，不能只写注册表（K14）
     if (0 != switch_registered_profile(registered_profile, profile, silent))
       return 1;
   }
 
-  if (user_dir.empty())
-    user_dir = per_user_default_dir();
   ret = SetRegKeyValue(per_user_root(), per_user_subkey(KEY).c_str(),
                        L"RimeUserDir", user_dir.c_str(), REG_SZ, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
@@ -147,25 +156,24 @@ static int CustomInstall(bool installing) {
                MB_ICONERROR | MB_OK);
     return 1;
   }
-  if (_has_installed) {
-    std::wstring dir(install_dir());
-    // 服务重启+部署序列与"修改成功"提示并发执行（用户读提示的 1 秒里
-    // 服务已在重启），但必须 join：进程先退出会腰斩 detached 线程，
-    // 服务停在半重启状态
-    std::thread th([dir]() {
-      ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"/q",
-                    NULL, SW_SHOWNORMAL);
-      Sleep(500);
-      ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"",
-                    NULL, SW_SHOWNORMAL);
-      Sleep(500);
-      ShellExecuteW(NULL, NULL, (dir + L"\\WeaselDeployer.exe").c_str(),
-                    L"/deploy", NULL, SW_SHOWNORMAL);
-    });
-    MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
-               MB_ICONINFORMATION | MB_OK);
-    th.join();
-  }
+
+  std::wstring dir(install_dir());
+  // 服务重启+部署序列与"修改成功"提示并发执行（用户读提示的 1 秒里
+  // 服务已在重启），但必须 join：进程先退出会腰斩 detached 线程，
+  // 服务停在半重启状态
+  std::thread th([dir]() {
+    ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"/q",
+                  NULL, SW_SHOWNORMAL);
+    Sleep(500);
+    ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"",
+                  NULL, SW_SHOWNORMAL);
+    Sleep(500);
+    ShellExecuteW(NULL, NULL, (dir + L"\\WeaselDeployer.exe").c_str(),
+                  L"/deploy", NULL, SW_SHOWNORMAL);
+  });
+  MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
+             MB_ICONINFORMATION | MB_OK);
+  th.join();
 
   return 0;
 }
@@ -273,19 +281,19 @@ static int Run(LPTSTR lpCmdLine) {
 
   bool hans = !wcscmp(L"/s", lpCmdLine);
   if (hans)
-    return InstallRequestedProfile(L"hans", silent);
+    return InstallRequestedProfile(L"hans", L"", silent);
   bool hant = !wcscmp(L"/t", lpCmdLine);
   if (hant)
-    return InstallRequestedProfile(L"hant", silent);
+    return InstallRequestedProfile(L"hant", L"", silent);
   bool hongkong = !wcscmp(L"/hk", lpCmdLine);
   if (hongkong)
-    return InstallRequestedProfile(L"hongkong", silent);
+    return InstallRequestedProfile(L"hongkong", L"", silent);
   bool macau = !wcscmp(L"/mc", lpCmdLine);
   if (macau)
-    return InstallRequestedProfile(L"macau", silent);
+    return InstallRequestedProfile(L"macau", L"", silent);
   bool singapore = !wcscmp(L"/sg", lpCmdLine);
   if (singapore)
-    return InstallRequestedProfile(L"singapore", silent);
+    return InstallRequestedProfile(L"singapore", L"", silent);
   bool installing = !wcscmp(L"/i", lpCmdLine);
   return CustomInstall(installing);
 }
