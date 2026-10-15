@@ -76,15 +76,31 @@ if (-not $env2022.Contains('set XMAKE_VS=2022') -or
   throw 'VS2022 environment must pin xmake to VS2022/v143'
 }
 
-# Multi-architecture builds share one xmake working directory. Clear the
-# configuration cache before every architecture switch so the detected MSVC
-# target environment cannot leak from x64 into x86 (or ARM variants).
+# Xmake can reuse the calling shell's active MSVC target environment. A build
+# started from an x64 Developer Prompt must therefore not rely on `-a x86`
+# alone: otherwise HostX64\x64\cl.exe can emit x64 objects into the x86 tree.
+# Resolve one VS2022 instance and enter a fresh vcvarsall environment per arch.
 $xbuildNormalized = $xbuild -replace "`r`n", "`n"
-$configureGuards = [regex]::Matches(
-  $xbuildNormalized,
-  'xmake f -c -a (?:arm64|arm|x64|x86)[^\n]*\n\s*if errorlevel 1 goto error')
-if ($configureGuards.Count -ne 4) {
-  throw "xbuild architecture-isolation regression: expected 4 guarded clean xmake configure commands, got $($configureGuards.Count)"
+foreach ($required in @(
+  'vswhere.exe',
+  'VC\Auxiliary\Build\vcvarsall.bat',
+  'call :build_xmake_arch x64 x64',
+  'call :build_xmake_arch x86 x64_x86',
+  'call :build_xmake_arch arm x64_arm',
+  'call :build_xmake_arch arm64 x64_arm64'
+)) {
+  if (-not $xbuild.Contains($required)) {
+    throw "xbuild target-environment regression: missing '$required'"
+  }
+}
+if ($xbuildNormalized -notmatch ':build_xmake_arch\n\s*setlocal') {
+  throw 'xbuild target-environment regression: per-architecture helper is not environment-isolated'
+}
+if ($xbuildNormalized -notmatch 'call "%XMAKE_VCVARSALL%" %vcvars_arch%\n\s*if errorlevel 1 exit /b 1') {
+  throw 'xbuild target-environment regression: vcvarsall failure is not propagated'
+}
+if ($xbuildNormalized -notmatch 'xmake f -c -a %xmake_arch%[^\n]*\n\s*if errorlevel 1 exit /b 1') {
+  throw 'xbuild target-environment regression: helper does not cleanly configure the requested architecture'
 }
 if ($xbuildNormalized -match 'xmake f -a (?:arm64|arm|x64|x86)') {
   throw 'xbuild architecture-isolation regression: architecture configure without -c returned'
@@ -93,11 +109,8 @@ if ($xbuildNormalized -match 'xmake f -a (?:arm64|arm|x64|x86)') {
 # Build scripts must fail at the first failed subcommand. Otherwise an old xmake
 # configuration or a later successful platform build can overwrite ERRORLEVEL
 # and hide the root cause.
-$cleanGuards = [regex]::Matches(
-  $xbuildNormalized,
-  'xmake clean\n\s*if errorlevel 1 goto error')
-if ($cleanGuards.Count -ne 4) {
-  throw "xbuild fail-fast regression: expected 4 guarded xmake clean commands, got $($cleanGuards.Count)"
+if ($xbuildNormalized -notmatch 'xmake clean\n\s*if errorlevel 1 exit /b 1') {
+  throw 'xbuild fail-fast regression: per-architecture clean failure is not propagated'
 }
 if ($xbuildNormalized -notmatch 'xmake project -k compile_commands -m %build_config%\n\s*if errorlevel 1 goto error') {
   throw 'xbuild fail-fast regression: compile_commands failure is not propagated'
