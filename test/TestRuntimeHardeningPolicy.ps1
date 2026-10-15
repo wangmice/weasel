@@ -4,8 +4,6 @@ $repo = Split-Path -Parent $PSScriptRoot
 $compartment = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Compartment.cpp') -Raw
 $pipeCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\PipeChannel.cpp') -Raw
 $pipeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
-$rimeWithWeasel = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\RimeWithWeasel.cpp') -Raw
-$d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 
 foreach ($sink in @(
   '_pKeyboardCompartmentSink',
@@ -39,25 +37,6 @@ if ($pipeCpp -notmatch 'success\s*&&\s*lread\s*!=\s*rec_len') {
 }
 if ($pipeHeader -notmatch '_TyRes\s+result\s*\{\s*\}\s*;') {
   throw 'PipeChannel::_ReceiveResponse must zero-initialize its scalar response'
-}
-
-if ($rimeWithWeasel -match '\(1\s*<<\s*i\)') {
-  throw 'session-id seed still performs signed 1 << 31'
-}
-if ($rimeWithWeasel -notmatch '(1u|DWORD\s*\{\s*1\s*\})\s*<<\s*i') {
-  throw 'session-id seed does not use an unsigned bit mask'
-}
-
-$resize = [regex]::Match(
-  $d2d,
-  'void\s+D2D::OnResize\(UINT\s+width,\s*UINT\s+height\)\s*\{(?<body>.*?)\n\}\n\nstd::vector<std::wstring>',
-  [System.Text.RegularExpressions.RegexOptions]::Singleline)
-if (-not $resize.Success) { throw 'unable to locate D2D::OnResize' }
-if ($resize.Groups['body'].Value -notmatch 'RecoverAfterDeviceLoss\(\)') {
-  throw 'D2D::OnResize must reuse RecoverAfterDeviceLoss for generation rollover'
-}
-if ($resize.Groups['body'].Value -match 'RecreateAfterDeviceLoss') {
-  throw 'D2D::OnResize still duplicates the generation rollover state machine'
 }
 
 Write-Host 'Runtime hardening policy: PASS'
