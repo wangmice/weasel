@@ -4,6 +4,7 @@
 #include <strsafe.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -21,10 +22,6 @@ using TransactionalImeRegisterFunc = int (*)(const std::wstring& ime_path,
                                              bool is_wowarm,
                                              const std::wstring& profile,
                                              bool silent);
-
-// Implemented in imesetup.cpp. These declarations intentionally expose only
-// the file/registration operations needed by the fresh-install transaction.
-int install_ime_file(const std::wstring& ext_dummy);  // never defined/used
 
 }  // namespace weasel::setup
 
