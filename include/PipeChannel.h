@@ -1,4 +1,5 @@
 #pragma once
+#include <WeaselIPC.h>
 #include <string>
 #include <memory>
 #include <windows.h>
@@ -229,7 +230,7 @@ class PipeChannel : public PipeChannelBase {
   }
 
   _TyRes _ReceiveResponse() {
-    _TyRes result;
+    _TyRes result{};
     _Receive(_GetPipeHandle()->handle, &result, sizeof(result));
     return result;
   }
