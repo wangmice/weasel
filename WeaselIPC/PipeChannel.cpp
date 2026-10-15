@@ -18,7 +18,7 @@ using namespace boost;
 PipeChannelBase::PipeChannelBase(std::wstring&& pn_cmd,
                                  size_t bs = 4 * 1024,
                                  SECURITY_ATTRIBUTES* s = NULL)
-    : pname(pn_cmd), buff_size(bs), sa(s) {};
+    : pname(pn_cmd), buff_size(bs), sa(s) {}
 
 PipeChannelBase::~PipeChannelBase() {
   // Thread-specific pointers are cleaned up automatically
@@ -91,8 +91,14 @@ size_t PipeChannelBase::_WritePipe(HANDLE pipe, size_t s, char* b) {
 }
 
 void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len) {
-  DWORD lread;
+  DWORD lread = 0;
   BOOL success = ::ReadFile(pipe, msg, rec_len, &lread, NULL);
+  if (success && lread != rec_len) {
+    // Message-mode pipes can successfully return a complete message that is
+    // shorter than the caller's fixed header. Treat it as a malformed frame
+    // instead of letting uninitialized header fields reach command dispatch.
+    _ThrowCode(ERROR_INVALID_DATA);
+  }
   if (!success) {
     _ThrowIfNot(ERROR_MORE_DATA);
 
