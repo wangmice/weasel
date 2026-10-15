@@ -157,39 +157,38 @@ rem if to clean
 if %build_clean% == 1 ( goto clean )
 if %build_weasel% == 0 ( goto end )
 
+rem Resolve the VS2022 instance once, but never trust the caller's active target
+rem architecture. xmake can otherwise inherit an x64 Developer Prompt and use
+rem HostX64\x64\cl.exe even after `xmake f -a x86`.
+set "XMAKE_VS_INSTALL="
+set "XMAKE_VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%XMAKE_VSWHERE%" (
+  echo Error: vswhere.exe not found at "%XMAKE_VSWHERE%".
+  goto error
+)
+for /f "usebackq delims=" %%i in (`"%XMAKE_VSWHERE%" -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+  if not defined XMAKE_VS_INSTALL set "XMAKE_VS_INSTALL=%%i"
+)
+if not defined XMAKE_VS_INSTALL (
+  echo Error: Visual Studio 2022 C++ toolchain not found.
+  goto error
+)
+set "XMAKE_VCVARSALL=%XMAKE_VS_INSTALL%\VC\Auxiliary\Build\vcvarsall.bat"
+if not exist "%XMAKE_VCVARSALL%" (
+  echo Error: vcvarsall.bat not found at "%XMAKE_VCVARSALL%".
+  goto error
+)
+echo XMAKE_VS_INSTALL=%XMAKE_VS_INSTALL%
+
 if %build_arm64% == 1 (
-  xmake f -c -a arm64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
+  call :build_xmake_arch arm64 x64_arm64 arm64
   if errorlevel 1 goto error
-  if %build_rebuild% == 1 (
-    xmake clean
-    if errorlevel 1 goto error
-  )
-  xmake
-  if errorlevel 1 goto error
-  xmake f -c -a arm -m %build_config% %xmake_msvc_options% %build_sdk_option%
-  if errorlevel 1 goto error
-  if %build_rebuild% == 1 (
-    xmake clean
-    if errorlevel 1 goto error
-  )
-  xmake
+  call :build_xmake_arch arm x64_arm arm
   if errorlevel 1 goto error
 )
-xmake f -c -a x64 -m %build_config% %xmake_msvc_options% %build_sdk_option%
+call :build_xmake_arch x64 x64 x64
 if errorlevel 1 goto error
-if %build_rebuild% == 1 (
-  xmake clean
-  if errorlevel 1 goto error
-)
-xmake
-if errorlevel 1 goto error
-xmake f -c -a x86 -m %build_config% %xmake_msvc_options% %build_sdk_option%
-if errorlevel 1 goto error
-if %build_rebuild% == 1 (
-  xmake clean
-  if errorlevel 1 goto error
-)
-xmake
+call :build_xmake_arch x86 x64_x86 x86
 if errorlevel 1 goto error
 
 if %build_arm64% == 1 (
@@ -210,6 +209,43 @@ if %build_installer% == 1 (
   if errorlevel 1 goto error
 )
 goto end
+
+rem ---------------------------------------------------------------------------
+rem Build one target architecture in a fresh, x64-hosted Visual Studio target
+rem environment. setlocal prevents vcvarsall changes from leaking into the next
+rem architecture. The selected cl.exe is checked before xmake runs so an x64
+rem compiler cannot silently emit objects into the x86 build tree.
+:build_xmake_arch
+  setlocal
+  set "xmake_arch=%~1"
+  set "vcvars_arch=%~2"
+  set "expected_target=%~3"
+  call "%XMAKE_VCVARSALL%" %vcvars_arch%
+  if errorlevel 1 exit /b 1
+
+  set "selected_cl="
+  for /f "delims=" %%c in ('where cl 2^>nul') do if not defined selected_cl set "selected_cl=%%c"
+  if not defined selected_cl (
+    echo Error: cl.exe not found after vcvarsall %vcvars_arch%.
+    exit /b 1
+  )
+  echo xmake %xmake_arch% compiler: !selected_cl!
+  echo(!selected_cl!| findstr /i /e /c:"\Hostx64\%expected_target%\cl.exe" >nul
+  if errorlevel 1 (
+    echo Error: vcvarsall %vcvars_arch% selected the wrong compiler for %xmake_arch%.
+    exit /b 1
+  )
+
+  xmake f -c -a %xmake_arch% -m %build_config% %xmake_msvc_options% %build_sdk_option%
+  if errorlevel 1 exit /b 1
+  if %build_rebuild% == 1 (
+    xmake clean
+    if errorlevel 1 exit /b 1
+  )
+  xmake
+  if errorlevel 1 exit /b 1
+  endlocal
+  exit /b 0
 
 :clean
   if exist build (
