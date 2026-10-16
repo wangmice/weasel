@@ -346,11 +346,14 @@ bool WeaselTSF::_EnsureServerConnected() {
     return true;
   }
 
-  // A missing server used to require six failed key events before recovery
-  // even started, which leaked those keys straight to the host as ASCII. Start
-  // recovery on the first failed reconnect. The detached launcher owns the
-  // session-scoped mutex, so concurrent TSF hosts still collapse to one launch.
-  if (count_server_process_in_current_session() == 0) {
+  // The pipe can disappear slightly before a quitting WeaselServer process
+  // leaves the process table. Keep checking that transition during this same
+  // key, so recovery does not need a second physical keystroke to start.
+  bool launch_started = false;
+  const auto try_start_recovery = [&]() {
+    if (launch_started || count_server_process_in_current_session() != 0)
+      return;
+
     std::wstring dir = _GetRootDir();
     std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
     std::thread th([dir = std::move(dir),
@@ -358,7 +361,10 @@ bool WeaselTSF::_EnsureServerConnected() {
       launch_server_serialized(std::move(dir), std::move(launch_mutex_name));
     });
     th.detach();
-  }
+    launch_started = true;
+  };
+
+  try_start_recovery();
 
   // Give this same key one short, bounded recovery window. Once the pipe and
   // session are live, _ProcessKeyEvent continues normally and sends the current
@@ -372,6 +378,10 @@ bool WeaselTSF::_EnsureServerConnected() {
       _reconnectRetry = 0;
       return true;
     }
+
+    // If the first check caught the old server during its final shutdown,
+    // launch as soon as that process actually disappears.
+    try_start_recovery();
   }
 
   _reconnectRetry = 0;
