@@ -19,6 +19,8 @@
 CAppModule _Module;
 
 namespace {
+constexpr DWORD kServerShutdownTimeoutMs = 30000;
+
 struct RuntimeCleanup {
   bool com_initialized = false;
   bool module_initialized = false;
@@ -30,6 +32,34 @@ struct RuntimeCleanup {
       ::CoUninitialize();
   }
 };
+
+bool OpenRunningServerProcess(HANDLE& process) {
+  process = nullptr;
+  HWND hwnd = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
+  if (!hwnd)
+    return true;
+
+  DWORD process_id = 0;
+  GetWindowThreadProcessId(hwnd, &process_id);
+  if (!process_id)
+    return false;
+
+  process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
+  if (process)
+    return true;
+
+  // The server may have exited between FindWindowW and OpenProcess.
+  return GetLastError() == ERROR_INVALID_PARAMETER;
+}
+
+bool WaitForRunningServerExit(HANDLE process) {
+  if (!process)
+    return true;
+  const DWORD wait_result =
+      WaitForSingleObject(process, kServerShutdownTimeoutMs);
+  CloseHandle(process);
+  return wait_result == WAIT_OBJECT_0;
+}
 }  // namespace
 
 int WINAPI _tWinMain(HINSTANCE hInstance,
@@ -110,14 +140,28 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
 
   // command line option /q stops the running server
   bool quit = !wcscmp(L"/q", lpstrCmdLine) || !wcscmp(L"/quit", lpstrCmdLine);
+  HANDLE running_server = nullptr;
+  if (quit && !OpenRunningServerProcess(running_server)) {
+    LOG(ERROR) << "failed to retain the running WeaselServer process";
+    return 1;
+  }
+
   // restart if already running
   {
     weasel::Client client;
     if (client.Connect())  // try to connect to running server
     {
       client.ShutdownServer();
-      if (quit)
+      if (quit) {
+        // Release the helper's pipe before waiting: server teardown drains pipe
+        // workers, so keeping this client connected would only delay shutdown.
+        client.Disconnect();
+        if (!WaitForRunningServerExit(running_server)) {
+          LOG(ERROR) << "timed out waiting for WeaselServer to exit";
+          return 1;
+        }
         return 0;
+      }
       int retry = 0;
       while (client.Connect() && retry < 10) {
         client.ShutdownServer();
@@ -126,8 +170,13 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
       }
       if (retry >= 10)
         return 0;
-    } else if (quit)
+    } else if (quit) {
+      if (running_server) {
+        CloseHandle(running_server);
+        return 1;
+      }
       return 0;
+    }
   }
 
   bool check_updates = !wcscmp(L"/update", lpstrCmdLine);

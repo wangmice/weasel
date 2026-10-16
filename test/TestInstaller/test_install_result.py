@@ -36,7 +36,7 @@ def setup_result_block():
     start = source.index(command)
     if source[:start].endswith("  ClearErrors\n"):
         start -= len("  ClearErrors\n")
-    end = source.index("  ; Commit the upgrade", start)
+    end = source.index("  ; Commit", start)
     return source[start:end]
 
 
@@ -121,8 +121,17 @@ class InstallResultTests(unittest.TestCase):
     def test_previous_program_files_are_cleaned_only_after_setup_succeeds(self):
         source = (REPO / "output/install.nsi").read_text(encoding="utf-8-sig")
         setup = source.index('  ExecWait \'"$INSTDIR\\WeaselSetup.exe" $R2\'')
-        cleanup = source.index('RMDir /r "$PreviousBackupDir"', setup)
+        cleanup = source.index('RMDir /r /REBOOTOK "$PreviousInstallDir"', setup)
         self.assertGreater(cleanup, setup)
+
+    def test_replacement_writes_to_a_side_by_side_slot(self):
+        source = (REPO / "output/install.nsi").read_text(encoding="utf-8-sig")
+        self.assertIn(
+            'StrCpy $NewInstallDir "$INSTDIR\\weasel-${WEASEL_VERSION}.upgrade-$UpgradeSlotId"',
+            source,
+        )
+        self.assertIn('StrCpy $INSTDIR "$NewInstallDir"', source)
+        self.assertNotIn('Rename "$PreviousInstallDir"', source)
 
     def test_setup_failure_paths_call_rollback_before_abort(self):
         block = setup_result_block()
@@ -144,17 +153,32 @@ class InstallResultTests(unittest.TestCase):
         export = prefix.rfind(
             '  ExecWait \'reg export HKCU\\Software\\Rime\\Weasel '
             '"$TEMP\\weasel-hkcu-backup.reg" /y\' $R2')
-        stale_backup_guard = prefix.rfind(
-            '  IfFileExists "$PreviousBackupDir\\WeaselSetup.exe" '
-            'previous_backup_exists 0')
-        self.assertGreaterEqual(stale_backup_guard, 0)
-        self.assertLess(stale_backup_guard, delete)
         self.assertGreaterEqual(delete, 0)
         self.assertGreater(export, delete)
         backup_guard = source[export:old_uninstall]
         self.assertIn('${If} $R2 != 0', backup_guard)
         self.assertIn('IfFileExists "$TEMP\\weasel-hkcu-backup.reg"', backup_guard)
-        self.assertIn('Abort "$(SETUPFAILED)"', backup_guard)
+        self.assertIn('!insertmacro AbortInitFailure', backup_guard)
+
+    def test_upgrade_skips_registry_export_when_no_user_state_exists(self):
+        source = (REPO / "output/install.nsi").read_text(encoding="utf-8-sig")
+        start = source.index('backup_current_config:')
+        end = source.index('export_user_config:', start)
+        probe = source[start:end]
+        self.assertIn('EnumRegValue $R4 HKCU "Software\\Rime\\Weasel" 0', probe)
+        self.assertIn('EnumRegKey $R4 HKCU "Software\\Rime\\Weasel" 0', probe)
+        self.assertIn(
+            'StrCmp $R4 "" backup_user_config_ok export_user_config', probe)
+
+    def test_init_failures_are_visible_in_interactive_installs(self):
+        source = (REPO / "output/install.nsi").read_text(encoding="utf-8-sig")
+        macro = source.split('!macro AbortInitFailure', 1)[1].split('!macroend', 1)[0]
+        self.assertIn('IfSilent +2', macro)
+        self.assertIn('MessageBox MB_OK|MB_ICONSTOP "$(SETUPFAILED)"', macro)
+        self.assertIn('Abort', macro)
+        init = source.split('Function .onInit', 1)[1].split('FunctionEnd', 1)[0]
+        self.assertNotIn('Abort "$(SETUPFAILED)"', init)
+        self.assertIn('!insertmacro AbortInitFailure', init)
 
 
 if __name__ == "__main__":

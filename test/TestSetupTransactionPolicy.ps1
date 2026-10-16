@@ -99,4 +99,51 @@ if ($modify -notmatch 'if\s*\(!RestartServerAndDeploy\(dir\)\)\s*return\s+1;') {
   throw 'modify install must propagate restart/deploy failure to its exit code'
 }
 
+$installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
+$preflightStart = $installer.IndexOf('backup_current_config:')
+$preflightEnd = $installer.IndexOf('stop_old_version:', $preflightStart)
+if ($preflightStart -lt 0 -or $preflightEnd -le $preflightStart) {
+  throw 'unable to isolate installer overwrite preflight'
+}
+$preflight = $installer.Substring($preflightStart, $preflightEnd - $preflightStart)
+foreach ($required in @(
+  'EnumRegValue $R4 HKCU "Software\Rime\Weasel" 0',
+  'EnumRegKey $R4 HKCU "Software\Rime\Weasel" 0',
+  'StrCmp $R4 "" check_user_config_subkey export_user_config',
+  'StrCmp $R4 "" backup_user_config_ok export_user_config'
+)) {
+  if (-not $preflight.Contains($required)) {
+    throw "installer overwrite preflight is missing '$required'"
+  }
+}
+if ($preflight -notmatch 'export_user_config:[\s\S]*?reg export HKCU\\Software\\Rime\\Weasel[\s\S]*?IfFileExists "\$TEMP\\weasel-hkcu-backup\.reg" backup_user_config_ok 0') {
+  throw 'installer must still verify a requested HKCU export before old uninstall'
+}
+
+$oldUninstallStart = $installer.IndexOf('  ExecWait ''"$R1\WeaselSetup.exe" /u'' $R2')
+$oldUninstallEnd = $installer.IndexOf('  ; Restore the profile/preferences for new Setup /i.', $oldUninstallStart)
+if ($oldUninstallStart -lt 0 -or $oldUninstallEnd -le $oldUninstallStart) {
+  throw 'unable to isolate previous-version uninstall result handling'
+}
+$oldUninstallFlow = $installer.Substring($oldUninstallStart, $oldUninstallEnd - $oldUninstallStart)
+if ($oldUninstallFlow -match '(?s)\$\{If\}\s+\$R2\s+!=\s+0.*?!insertmacro\s+AbortInitFailure') {
+  throw 'previous WeaselSetup /u nonzero exit must not hard-abort transactional overwrite'
+}
+if ($oldUninstallFlow -notmatch 'DetailPrint\s+"Previous WeaselSetup /u exited with \$R2; continuing transactional replacement\."') {
+  throw 'recoverable previous-uninstall failure must remain observable in installer details'
+}
+
+if ($installer -notmatch '(?s)!macro AbortInitFailure.*?IfSilent \+2.*?MessageBox MB_OK\|MB_ICONSTOP "\$\(SETUPFAILED\)".*?Abort.*?!macroend') {
+  throw 'interactive .onInit failures must display SETUPFAILED before quitting'
+}
+$initStart = $installer.IndexOf('Function .onInit')
+$initEnd = $installer.IndexOf('FunctionEnd', $initStart)
+$init = $installer.Substring($initStart, $initEnd - $initStart)
+if ($init.Contains('Abort "$(SETUPFAILED)"')) {
+  throw '.onInit must not silently abort with a status-only SETUPFAILED string'
+}
+if (-not $init.Contains('!insertmacro AbortInitFailure')) {
+  throw '.onInit fatal upgrade paths must use the visible failure macro'
+}
+
 Write-Host 'Setup transaction policy: PASS'
