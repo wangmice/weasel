@@ -100,37 +100,107 @@ if ($modify -notmatch 'if\s*\(!RestartServerAndDeploy\(dir\)\)\s*return\s+1;') {
 }
 
 $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
-$preflightStart = $installer.IndexOf('backup_current_config:')
-$preflightEnd = $installer.IndexOf('stop_old_version:', $preflightStart)
-if ($preflightStart -lt 0 -or $preflightEnd -le $preflightStart) {
-  throw 'unable to isolate installer overwrite preflight'
+
+$prepareStart = $installer.IndexOf('Function PreparePreviousInstall')
+$prepareEnd = $installer.IndexOf('FunctionEnd', $prepareStart)
+if ($prepareStart -lt 0 -or $prepareEnd -le $prepareStart) {
+  throw 'unable to isolate installer transactional overwrite preparation'
 }
-$preflight = $installer.Substring($preflightStart, $preflightEnd - $preflightStart)
+$prepare = $installer.Substring($prepareStart, $prepareEnd - $prepareStart)
+
 foreach ($required in @(
   'EnumRegValue $R4 HKCU "Software\Rime\Weasel" 0',
   'EnumRegKey $R4 HKCU "Software\Rime\Weasel" 0',
-  'StrCmp $R4 "" check_user_config_subkey export_user_config',
-  'StrCmp $R4 "" backup_user_config_ok export_user_config'
+  'StrCmp $R4 "" prepare_check_user_config_subkey prepare_export_user_config',
+  'StrCmp $R4 "" prepare_backup_program prepare_export_user_config'
 )) {
-  if (-not $preflight.Contains($required)) {
+  if (-not $prepare.Contains($required)) {
     throw "installer overwrite preflight is missing '$required'"
   }
 }
-if ($preflight -notmatch 'export_user_config:[\s\S]*?reg export HKCU\\Software\\Rime\\Weasel[\s\S]*?IfFileExists "\$TEMP\\weasel-hkcu-backup\.reg" backup_user_config_ok 0') {
-  throw 'installer must still verify a requested HKCU export before old uninstall'
+if ($prepare -notmatch 'prepare_export_user_config:[\s\S]*?reg export HKCU\\Software\\Rime\\Weasel[\s\S]*?IfFileExists "\$TEMP\\weasel-hkcu-backup\.reg" prepare_backup_program prepare_failed_before_mutation') {
+  throw 'installer must verify a requested HKCU export before mutating the old install'
 }
 
-$oldUninstallStart = $installer.IndexOf('  ExecWait ''"$R1\WeaselSetup.exe" /u'' $R2')
-$oldUninstallEnd = $installer.IndexOf('  ; Restore the profile/preferences for new Setup /i.', $oldUninstallStart)
-if ($oldUninstallStart -lt 0 -or $oldUninstallEnd -le $oldUninstallStart) {
+$programBackup = $prepare.IndexOf('prepare_backup_program:')
+$stopOld = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselServer.exe" /quit''')
+$oldUninstall = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselSetup.exe" /u'' $R2')
+if ($programBackup -lt 0 -or $stopOld -lt 0 -or $oldUninstall -lt 0 -or
+    -not ($programBackup -lt $stopOld -and $stopOld -lt $oldUninstall)) {
+  throw 'complete program backup must finish before the old service is stopped or unregistered'
+}
+$backupFlow = $prepare.Substring($programBackup, $stopOld - $programBackup)
+if ($backupFlow -notmatch 'weasel-program-backup-\$UpgradeSlotId') {
+  throw 'installer must use an isolated temporary program backup directory'
+}
+if ($backupFlow -notmatch 'robocopy\.exe[\s\S]*?"\$PreviousInstallDir"[\s\S]*?"\$PreviousProgramBackupDir"') {
+  throw 'installer must copy the complete previous program tree before mutation'
+}
+foreach ($critical in @('WeaselSetup.exe', 'WeaselServer.exe')) {
+  if ($backupFlow -notmatch ('IfFileExists\s+"\$PreviousProgramBackupDir\\' + [regex]::Escape($critical) + '"')) {
+    throw "installer must verify $critical in the program backup"
+  }
+}
+
+$restorePrefs = $prepare.IndexOf('  ; Restore preferences for the replacement Setup.', $oldUninstall)
+if ($restorePrefs -lt 0) {
   throw 'unable to isolate previous-version uninstall result handling'
 }
-$oldUninstallFlow = $installer.Substring($oldUninstallStart, $oldUninstallEnd - $oldUninstallStart)
-if ($oldUninstallFlow -match '(?s)\$\{If\}\s+\$R2\s+!=\s+0.*?!insertmacro\s+AbortInitFailure') {
-  throw 'previous WeaselSetup /u nonzero exit must not hard-abort transactional overwrite'
-}
+$oldUninstallFlow = $prepare.Substring($oldUninstall, $restorePrefs - $oldUninstall)
 if ($oldUninstallFlow -notmatch 'DetailPrint\s+"Previous WeaselSetup /u exited with \$R2; continuing transactional replacement\."') {
   throw 'recoverable previous-uninstall failure must remain observable in installer details'
+}
+if ($oldUninstallFlow -match 'Abort|Quit|Return') {
+  throw 'previous WeaselSetup /u nonzero exit must not hard-abort transactional overwrite'
+}
+
+$samePathStart = $prepare.IndexOf('prepare_remove_same_path:')
+$lockedStart = $prepare.IndexOf('prepare_locked:', $samePathStart)
+if ($samePathStart -lt 0 -or $lockedStart -le $samePathStart) {
+  throw 'unable to isolate same-path locked-file guard'
+}
+$samePathFlow = $prepare.Substring($samePathStart, $lockedStart - $samePathStart)
+foreach ($required in @(
+  'StrCmp $PreviousInstallDir $INSTDIR 0 prepare_done',
+  'RMDir /r "$INSTDIR"',
+  'GoTo prepare_locked',
+  'IfFileExists "$INSTDIR\*.*" prepare_locked 0'
+)) {
+  if (-not $samePathFlow.Contains($required)) {
+    throw "same-version overwrite guard is missing '$required'"
+  }
+}
+$lockedEnd = $prepare.IndexOf('prepare_failed_before_mutation:', $lockedStart)
+$lockedFlow = $prepare.Substring($lockedStart, $lockedEnd - $lockedStart)
+if ($lockedFlow -notmatch 'Call RollbackPreviousInstall[\s\S]*?StrCpy \$R9 "2"') {
+  throw 'locked same-version replacement must rollback and report the locked target'
+}
+
+$sectionStart = $installer.IndexOf('Section "Weasel"')
+$sectionEnd = $installer.IndexOf('SectionEnd', $sectionStart)
+if ($sectionStart -lt 0 -or $sectionEnd -le $sectionStart) {
+  throw 'unable to isolate Weasel install section'
+}
+$section = $installer.Substring($sectionStart, $sectionEnd - $sectionStart)
+$canonical = '  StrCpy $NewInstallDir "$INSTDIR\weasel-${WEASEL_VERSION}"'
+$selectTarget = '  StrCpy $INSTDIR "$NewInstallDir"'
+$prepareCall = '  Call PreparePreviousInstall'
+$overwrite = '  SetOverwrite on'
+$canonicalIndex = $section.IndexOf($canonical)
+$targetIndex = $section.IndexOf($selectTarget)
+$prepareIndex = $section.IndexOf($prepareCall)
+$overwriteIndex = $section.IndexOf($overwrite)
+if ($canonicalIndex -lt 0 -or $targetIndex -lt 0 -or $prepareIndex -lt 0 -or
+    $overwriteIndex -lt 0 -or
+    -not ($canonicalIndex -lt $targetIndex -and $targetIndex -lt $prepareIndex -and
+          $prepareIndex -lt $overwriteIndex)) {
+  throw 'installer must select the canonical path, prepare it transactionally, then enable overwrite'
+}
+if ($installer -match '\.upgrade-\$UpgradeSlotId') {
+  throw 'installer must not create a side-by-side .upgrade-* replacement slot'
+}
+if ($installer -match '/REBOOTOK') {
+  throw 'installer must not schedule install/version directories for deferred reboot deletion'
 }
 
 if ($installer -notmatch '(?s)!macro AbortInitFailure.*?IfSilent \+2.*?MessageBox MB_OK\|MB_ICONSTOP "\$\(SETUPFAILED\)".*?Abort.*?!macroend') {
@@ -144,6 +214,9 @@ if ($init.Contains('Abort "$(SETUPFAILED)"')) {
 }
 if (-not $init.Contains('!insertmacro AbortInitFailure')) {
   throw '.onInit fatal upgrade paths must use the visible failure macro'
+}
+if ($init -match 'WeaselServer\.exe"\s+/quit|WeaselSetup\.exe"\s+/u') {
+  throw '.onInit must remain non-destructive; old shutdown/uninstall belongs in PreparePreviousInstall'
 }
 
 Write-Host 'Setup transaction policy: PASS'
