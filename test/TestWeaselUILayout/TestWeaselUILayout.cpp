@@ -195,9 +195,11 @@ int main() {
   test_polymorphic_layout_destruction();
   test_recreate_with_unchanged_context();
   test_fullscreen_tracks_input_rectangle();
-  // Release the process-wide WIC/graphics COM pointers while their apartment
-  // is still alive. Do not bypass destructors or process-exit verification.
-  weasel::DeviceResources::Get().Reset();
+  // DeviceResources now keeps only a weak reference to the published
+  // generation. Once all panel/D2D owners above have unwound, no shared
+  // generation should remain alive; verify that before tearing down COM.
+  check(!weasel::DeviceResources::Get().HasLiveGeneration(),
+        "UI tests release the shared graphics generation before COM teardown");
   CoUninitialize();
   std::printf("Failures: %d\n", g_failures);
   return g_failures ? 1 : 0;
