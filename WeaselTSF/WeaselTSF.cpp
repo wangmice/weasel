@@ -264,7 +264,7 @@ void WeaselTSF::_Reconnect() {
 static int count_server_process_in_current_session() {
   DWORD current_session_id = 0;
   const bool have_current_session =
-      GetCurrentWindowsSessionId(current_session_id);
+      weasel::GetCurrentWindowsSessionId(current_session_id);
 
   int count = 0;
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -343,7 +343,7 @@ bool WeaselTSF::_EnsureServerConnected() {
     if (++_reconnectRetry >= 6) {
       if (count_server_process_in_current_session() == 0) {
         std::wstring dir = _GetRootDir();
-        std::wstring launch_mutex_name = GetServerLaunchMutexName();
+        std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
         // The detached thread owns launch arbitration. This keeps the named
         // mutex held until WeaselServer becomes observable without blocking the
         // TSF input thread on process startup.
