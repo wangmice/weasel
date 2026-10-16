@@ -297,6 +297,41 @@ static int count_server_process_in_current_session() {
   return count;
 }
 
+namespace {
+constexpr ULONGLONG kServerLaunchObservationTimeoutMs = 5000;
+constexpr DWORD kServerLaunchObservationPollMs = 50;
+
+void launch_server_serialized(std::wstring dir, std::wstring mutex_name) {
+  HANDLE launch_mutex = CreateMutex(NULL, FALSE, mutex_name.c_str());
+  if (!launch_mutex)
+    return;
+
+  const DWORD wait_result = WaitForSingleObject(launch_mutex, 0);
+  if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
+    CloseHandle(launch_mutex);
+    return;
+  }
+
+  if (count_server_process_in_current_session() == 0) {
+    const HINSTANCE launched =
+        ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
+                      NULL, dir.c_str(), SW_HIDE);
+    if (reinterpret_cast<INT_PTR>(launched) > 32) {
+      const ULONGLONG deadline =
+          GetTickCount64() + kServerLaunchObservationTimeoutMs;
+      while (GetTickCount64() < deadline) {
+        if (count_server_process_in_current_session() > 0)
+          break;
+        Sleep(kServerLaunchObservationPollMs);
+      }
+    }
+  }
+
+  ReleaseMutex(launch_mutex);
+  CloseHandle(launch_mutex);
+}
+}  // namespace
+
 bool WeaselTSF::_EnsureServerConnected() {
   // Healthy typing is a local fast path. A remotely invalidated session is
   // detected by PROCESS_KEY_EVENT itself, avoiding an Echo roundtrip per key.
@@ -306,25 +341,18 @@ bool WeaselTSF::_EnsureServerConnected() {
   _Reconnect();
   if (!m_client.IsSessionActive()) {
     if (++_reconnectRetry >= 6) {
-      const std::wstring launch_mutex_name = GetServerLaunchMutexName();
-      HANDLE hMutex =
-          CreateMutex(NULL, TRUE, launch_mutex_name.c_str());
-      // Read GetLastError right after CreateMutex: any later pipe call
-      // would overwrite the ERROR_ALREADY_EXISTS indicator.
-      bool alreadyLaunching = (GetLastError() == ERROR_ALREADY_EXISTS);
-      if (!alreadyLaunching && count_server_process_in_current_session() == 0) {
+      if (count_server_process_in_current_session() == 0) {
         std::wstring dir = _GetRootDir();
-        // The detached thread must not capture this: it can outlive the
-        // TIP object while the host app tears down. It only starts the
-        // service; the next keystroke's reconnect path completes login.
-        std::thread th([dir]() {
-          ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
-                        NULL, dir.c_str(), SW_HIDE);
+        std::wstring launch_mutex_name = GetServerLaunchMutexName();
+        // The detached thread owns launch arbitration. This keeps the named
+        // mutex held until WeaselServer becomes observable without blocking the
+        // TSF input thread on process startup.
+        std::thread th([dir = std::move(dir),
+                        launch_mutex_name = std::move(launch_mutex_name)]() mutable {
+          launch_server_serialized(std::move(dir),
+                                   std::move(launch_mutex_name));
         });
         th.detach();
-      }
-      if (hMutex) {
-        CloseHandle(hMutex);
       }
       _reconnectRetry = 0;
     }

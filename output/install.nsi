@@ -102,6 +102,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_TRADCHINESE} "您的系统不被支持，�
 LangString AUTOCHKUPDATE ${LANG_TRADCHINESE} "自動檢查版本更新？"
 LangString SETUPCANCELLED ${LANG_TRADCHINESE} "已取消安裝，不會繼續部署或啟動服務。"
 LangString SETUPFAILED ${LANG_TRADCHINESE} "輸入法安裝失敗，不會繼續部署或啟動服務。"
+LangString UNINSTALLFAILED ${LANG_TRADCHINESE} "小狼毫卸載未能完整完成。已保留安裝資訊與程式檔案，請關閉使用輸入法的程式後重試；必要時請先登出或重新啟動 Windows。"
 LangString FILESINUSE ${LANG_TRADCHINESE} "無法替換正在使用中的小狼毫程式檔案。請關閉所有使用輸入法的程式後重試；若仍失敗，請登出 Windows 後重新登入再安裝。舊版本已嘗試恢復。"
 LangString ROLLBACKFAILED ${LANG_TRADCHINESE} "安裝回滾未能完整完成。請先登出或重新啟動 Windows，再重新執行安裝程式。暫存備份會保留以供恢復。"
 LangString ARM64NOTSUPPORTED ${LANG_TRADCHINESE} "此安裝包僅支援 x86/x64 Windows。請使用包含完整 ARM64 元件的小狼毫安裝包；現有安裝尚未變更。"
@@ -124,6 +125,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_SIMPCHINESE} "您的系統不被支持，�
 LangString AUTOCHKUPDATE ${LANG_SIMPCHINESE} "自动检查版本更新？"
 LangString SETUPCANCELLED ${LANG_SIMPCHINESE} "已取消安装，不会继续部署或启动服务。"
 LangString SETUPFAILED ${LANG_SIMPCHINESE} "输入法安装失败，不会继续部署或启动服务。"
+LangString UNINSTALLFAILED ${LANG_SIMPCHINESE} "小狼毫卸载未能完整完成。已保留安装信息和程序文件，请关闭正在使用输入法的程序后重试；必要时请先注销或重新启动 Windows。"
 LangString FILESINUSE ${LANG_SIMPCHINESE} "无法替换正在使用中的小狼毫程序文件。请关闭所有正在使用输入法的程序后重试；如果仍然失败，请注销 Windows 后重新登录再安装。旧版本已尝试恢复。"
 LangString ROLLBACKFAILED ${LANG_SIMPCHINESE} "安装回滚未能完整完成。请先注销或重新启动 Windows，再重新运行安装程序。临时备份会保留以供恢复。"
 LangString ARM64NOTSUPPORTED ${LANG_SIMPCHINESE} "此安装包仅支持 x86/x64 Windows。请使用包含完整 ARM64 组件的小狼毫安装包；现有安装尚未更改。"
@@ -146,6 +148,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_ENGLISH} "Your system not supported, minimi
 LangString AUTOCHKUPDATE ${LANG_ENGLISH} "Automatically check for updates?"
 LangString SETUPCANCELLED ${LANG_ENGLISH} "Installation cancelled. Deployment and service startup will not continue."
 LangString SETUPFAILED ${LANG_ENGLISH} "Input method setup failed. Deployment and service startup will not continue."
+LangString UNINSTALLFAILED ${LANG_ENGLISH} "Weasel could not be completely uninstalled. Installation metadata and program files were retained so you can retry. Close applications using the input method and try again; sign out or restart Windows if necessary."
 LangString FILESINUSE ${LANG_ENGLISH} "Weasel program files are still in use and cannot be replaced. Close applications using the input method and retry. If the files remain locked, sign out of Windows and sign back in before installing again. The previous version has been restored where possible."
 LangString ROLLBACKFAILED ${LANG_ENGLISH} "Installation rollback could not complete. Sign out or restart Windows, then run the installer again. The temporary backup has been retained for recovery."
 LangString ARM64NOTSUPPORTED ${LANG_ENGLISH} "This package supports x86/x64 Windows only. Please use a Weasel installer with the complete ARM64 components. Your existing installation has not been changed."
@@ -723,9 +726,35 @@ SectionEnd
 
 Section "Uninstall"
 
-  ExecWait '"$INSTDIR\WeaselServer.exe" /quit'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselServer.exe" /quit' $R0
+  ${If} ${Errors}
+    SetErrorLevel 1
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
+  ${If} $R0 != 0
+    SetErrorLevel $R0
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
 
-  ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $R0
+  ${If} ${Errors}
+    SetErrorLevel 1
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
+  ${If} $R0 != 0
+    SetErrorLevel $R0
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
 
   ; Remove registry keys
   DeleteRegKey HKLM SOFTWARE\Rime

@@ -71,16 +71,23 @@ BOOL copy_file(const std::wstring& src, const std::wstring& dest) {
 
 BOOL delete_file(const std::wstring& file) {
   BOOL ret = DeleteFile(file.c_str());
-  if (!ret) {
-    for (int i = 0; i < 10; ++i) {
-      std::wstring old = file + L".old." + std::to_wstring(i);
-      if (MoveFileEx(file.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        MoveFileEx(old.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
-        return TRUE;
-      }
+  if (ret)
+    return TRUE;
+
+  const DWORD delete_error = GetLastError();
+  if (delete_error == ERROR_FILE_NOT_FOUND ||
+      delete_error == ERROR_PATH_NOT_FOUND) {
+    return TRUE;
+  }
+
+  for (int i = 0; i < 10; ++i) {
+    std::wstring old = file + L".old." + std::to_wstring(i);
+    if (MoveFileEx(file.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+      MoveFileEx(old.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+      return TRUE;
     }
   }
-  return ret;
+  return FALSE;
 }
 
 typedef BOOL(WINAPI* PISWOW64P2)(HANDLE, USHORT*, USHORT*);
@@ -293,14 +300,25 @@ int uninstall_ime_file(const std::wstring& ext,
                        bool silent,
                        ime_register_func func) {
   int retval = 0;
+  auto unregister_and_delete = [&](const std::wstring& path, bool is_wow64,
+                                   bool is_wowarm32) {
+    const int unregister_result =
+        func(path, false, is_wow64, is_wowarm32, profile, silent);
+    retval += unregister_result;
+    if (unregister_result == 0 && !delete_file(path))
+      ++retval;
+  };
+  auto delete_checked = [&](const std::wstring& path) {
+    if (!delete_file(path))
+      ++retval;
+  };
+
   WCHAR path[MAX_PATH];
   GetSystemDirectoryW(path, _countof(path));
   std::wstring imePath(path);
   imePath += L"\\weasel" + ext;
-  retval += func(imePath, false, false, false, profile, silent);
-  delete_file(imePath);
+  unregister_and_delete(imePath, false, false);
   if (is_wow64()) {
-    retval += func(imePath, false, true, false, profile, silent);
     Wow64FsRedirectionGuard redirect;
     if (!redirect.Disable()) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
@@ -308,24 +326,24 @@ int uninstall_ime_file(const std::wstring& ext,
       return 1;
     }
 
+    unregister_and_delete(imePath, true, false);
+
     if (is_arm64_machine()) {
       WCHAR sysarm32[MAX_PATH];
       if (get_wow_arm32_system_dir(sysarm32, _countof(sysarm32)) > 0) {
         std::wstring imePathARM32 = std::wstring(sysarm32) + L"\\weasel" + ext;
-        retval += func(imePathARM32, false, true, true, profile, silent);
-        delete_file(imePathARM32);
+        unregister_and_delete(imePathARM32, true, true);
       }
 
       std::wstring imePathX64 = imePath;
       ireplace_last(imePathX64, ext, L"x64" + ext);
-      delete_file(imePathX64);
+      delete_checked(imePathX64);
 
       std::wstring imePathARM64 = imePath;
       ireplace_last(imePathARM64, ext, L"ARM64" + ext);
-      delete_file(imePathARM64);
+      delete_checked(imePathARM64);
     }
 
-    delete_file(imePath);
     if (!redirect.Restore()) {
       MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
                             IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
@@ -378,28 +396,29 @@ static HRESULT is_profile_enabled_for_user(const std::wstring& profile,
 
 // 注册/注销路径保持原语义：初始安装时启用当前用户 profile，并把所选
 // profile 设为默认；卸载时彻底移除注册条目。
-void enable_profile(BOOL fEnable, const std::wstring& profile) {
+HRESULT enable_profile(BOOL fEnable, const std::wstring& profile) {
   ITfInputProcessorProfiles* pProfiles = NULL;
   HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
                                 CLSCTX_INPROC_SERVER,
                                 IID_ITfInputProcessorProfiles,
                                 (LPVOID*)&pProfiles);
   if (FAILED(hr))
-    return;
+    return hr;
 
   const LANGID lang_id = profile_to_lang_id(profile);
   if (fEnable) {
     hr = pProfiles->EnableLanguageProfile(c_clsidTextService, lang_id,
                                           c_guidProfile, TRUE);
     if (SUCCEEDED(hr)) {
-      pProfiles->EnableLanguageProfileByDefault(c_clsidTextService, lang_id,
-                                                c_guidProfile, TRUE);
+      hr = pProfiles->EnableLanguageProfileByDefault(
+          c_clsidTextService, lang_id, c_guidProfile, TRUE);
     }
   } else {
-    pProfiles->RemoveLanguageProfile(c_clsidTextService, lang_id,
-                                     c_guidProfile);
+    hr = pProfiles->RemoveLanguageProfile(c_clsidTextService, lang_id,
+                                          c_guidProfile);
   }
   pProfiles->Release();
+  return hr;
 }
 
 // InstallLayoutOrTip
@@ -610,8 +629,10 @@ int register_text_service(const std::wstring& tsf_path,
                           bool silent) {
   using RegisterServerFunction = HRESULT(STDAPICALLTYPE*)();
 
-  if (!register_ime)
-    enable_profile(FALSE, profile);
+  const bool manage_profile = !is_wow64 && !is_wowarm32;
+  HRESULT profile_result = S_OK;
+  if (!register_ime && manage_profile)
+    profile_result = enable_profile(FALSE, profile);
 
   std::wstring params = L" \"" + tsf_path + L"\"";
   if (!register_ime) {
@@ -658,8 +679,15 @@ int register_text_service(const std::wstring& tsf_path,
     return report_regsvr32_failure(params, silent);
   }
 
-  if (register_ime)
-    enable_profile(TRUE, profile);
+  if (register_ime && manage_profile)
+    profile_result = enable_profile(TRUE, profile);
+  if (FAILED(profile_result)) {
+    MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
+                          register_ime ? IDS_STR_INSTALL_FAILED
+                                       : IDS_STR_UNINSTALL_FAILED,
+                          MB_ICONERROR | MB_OK);
+    return 1;
+  }
 
   return 0;
 }
@@ -738,7 +766,6 @@ int install(const std::wstring& profile, bool silent) {
 }
 
 int uninstall(bool silent) {
-  // 注销输入法
   int retval = 0;
 
   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
@@ -760,21 +787,29 @@ int uninstall(bool silent) {
         profile = (data != 0) ? L"hant" : L"hans";
       }
     }
-
-    install_layout_or_tip(profile, LayoutOrTipAction::Uninstall);
     RegCloseKey(hKey);
   }
 
-  // IMM/.ime support removed; only uninstall TSF/.dll
+  if (FAILED(install_layout_or_tip(profile, LayoutOrTipAction::Uninstall)))
+    ++retval;
+
+  // IMM/.ime support removed; only uninstall TSF/.dll.
   retval +=
       uninstall_ime_file(L".dll", profile, silent, &register_text_service);
+
+  // Preserve install metadata after critical TSF/layout/file cleanup failures.
+  // A later retry still needs the persisted profile/root to finish safely.
+  if (retval)
+    return 1;
 
   // 清除注册信息（RegDeleteKey 遇有子键的键即失败，必须递归整树删除；
   // 键本就不存在视为已清除，其余失败计入 retval 报卸载失败）
   for (const wchar_t* key : {WEASEL_REG_KEY, RIME_REG_KEY}) {
     const LSTATUS deleted = delete_reg_tree(HKEY_LOCAL_MACHINE, key);
-    if (deleted != ERROR_SUCCESS && deleted != ERROR_FILE_NOT_FOUND)
+    if (deleted != ERROR_SUCCESS && deleted != ERROR_FILE_NOT_FOUND &&
+        deleted != ERROR_PATH_NOT_FOUND) {
       ++retval;
+    }
   }
 
   // NSIS 卸载脚本只清 HKLM 不碰 HKCU（output/install.nsi Uninstall 段），
@@ -782,15 +817,22 @@ int uninstall(bool silent) {
   // 用户数据目录的文件留给用户自行处理
   const LSTATUS user_deleted =
       delete_reg_tree(per_user_root(), per_user_subkey(KEY).c_str());
-  if (user_deleted != ERROR_SUCCESS && user_deleted != ERROR_FILE_NOT_FOUND)
+  if (user_deleted != ERROR_SUCCESS && user_deleted != ERROR_FILE_NOT_FOUND &&
+      user_deleted != ERROR_PATH_NOT_FOUND) {
     ++retval;
+  }
 
   // delete WER register,
   // "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\Windows Error
   // Reporting\\LocalDumps\\WeaselServer.exe" no WOW64 redirect
-
   auto flag_wow64 = is_wow64() ? KEY_WOW64_64KEY : 0;
-  RegDeleteKeyEx(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, flag_wow64, 0);
+  const LSTATUS wer_deleted =
+      RegDeleteKeyEx(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, flag_wow64, 0);
+  if (wer_deleted != ERROR_SUCCESS && wer_deleted != ERROR_FILE_NOT_FOUND &&
+      wer_deleted != ERROR_PATH_NOT_FOUND) {
+    ++retval;
+  }
+
   if (retval)
     return 1;
 
