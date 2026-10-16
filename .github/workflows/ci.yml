@@ -161,6 +161,7 @@ jobs:
           .\test\TestXmakeToolchainPolicy.ps1
           .\test\TestXmakeTargetLinkFlagsPolicy.ps1
           .\test\TestRuntimeHardeningPolicy.ps1
+          .\test\TestRestartRollbackRegressionPolicy.ps1
           .\test\TestSetupTransactionPolicy.ps1
           .\test\TestResourcePolicy.ps1
           python .\test\TestInstaller\test_install_result.py
@@ -253,6 +254,6 @@ jobs:
         with:
           draft: true
           files: |
-            .\output\archives\weasel*.exe
-            .\output\archives\debug_symbols.7z
+            ./output/archives/weasel*.exe
+            ./output/archives/debug_symbols.7z
           body_path: ${{ github.workspace }}/RELEASE_CHANGELOG.md

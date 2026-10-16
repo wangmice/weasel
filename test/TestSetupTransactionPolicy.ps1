@@ -232,6 +232,11 @@ $restoreProgram = $installer.Substring($restoreStart, $restoreEnd - $restoreStar
 if ($restoreProgram -notmatch 'restore_program_failed:[\s\S]*?StrCpy \$ProgramRestoreFailed "1"[\s\S]*?StrCpy \$RollbackFailed "1"') {
   throw 'program restore failures must set both the dedicated and aggregate rollback failure flags'
 }
+foreach ($critical in @('WeaselSetup.exe', 'WeaselServer.exe')) {
+  if ($restoreProgram -notmatch ('restore_program_ok:[\s\S]*?IfFileExists\s+"\$PreviousInstallDir\\' + [regex]::Escape($critical) + '"\s+0\s+restore_program_failed')) {
+    throw "restored program tree must verify $critical before becoming runnable"
+  }
+}
 
 $rollbackStart = $installer.IndexOf('Function RollbackPreviousInstall')
 $rollbackEnd = $installer.IndexOf('FunctionEnd', $rollbackStart)
@@ -241,10 +246,13 @@ if ($rollbackStart -lt 0 -or $rollbackEnd -le $rollbackStart) {
 $rollback = $installer.Substring($rollbackStart, $rollbackEnd - $rollbackStart)
 $restoreCall = $rollback.IndexOf('  Call RestorePreviousProgramBackup')
 $programFailureGuard = $rollback.IndexOf('  StrCmp $ProgramRestoreFailed "1" rollback_restore_base_registry', $restoreCall)
-$registerOld = $rollback.IndexOf('rollback_register_old:', $restoreCall)
+$registerOld = $rollback.IndexOf('  IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 rollback_registration_failed', $restoreCall)
 if ($restoreCall -lt 0 -or $programFailureGuard -lt 0 -or $registerOld -lt 0 -or
     -not ($restoreCall -lt $programFailureGuard -and $programFailureGuard -lt $registerOld)) {
   throw 'rollback must gate old registration on successful program-tree restoration'
+}
+if ($rollback -match '(?m)^rollback_register_old:\s*$') {
+  throw 'rollback registration must not retain an unused fallthrough label'
 }
 if ($rollback -notmatch 'rollback_registration_failed:[\s\S]*?StrCpy \$RollbackFailed "1"[\s\S]*?GoTo rollback_restore_base_registry') {
   throw 'failed old-version registration must skip runtime autorun/server restoration'

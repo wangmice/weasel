@@ -44,7 +44,8 @@ bool OpenRunningServerProcess(HANDLE& process) {
   if (!process_id)
     return false;
 
-  process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
+  process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                        process_id);
   if (process)
     return true;
 
@@ -147,10 +148,14 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     LOG(ERROR) << "failed to retain the running WeaselServer process";
     return 1;
   }
+  HWND running_window = running_server
+                            ? FindWindowW(nullptr, WEASEL_IPC_WINDOW)
+                            : nullptr;
 
-  // Restart if already running. A process observed without a connectable pipe
-  // may already be shutting down; still wait for that exact process before a
-  // replacement is allowed to contend for the singleton.
+  // Restart if already running. If the old window already exists while the
+  // pipe listener is still starting, request shutdown through that exact
+  // process's window before waiting for process exit; never wait on a live
+  // process that has not actually been asked to stop.
   {
     weasel::Client client;
     const bool connected = client.Connect();
@@ -164,8 +169,47 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
           client.Disconnect();
           return 1;
         }
+        running_window = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
       }
       client.ShutdownServer();
+    } else if (running_server) {
+      const DWORD process_state = WaitForSingleObject(running_server, 0);
+      if (process_state == WAIT_OBJECT_0) {
+        CloseHandle(running_server);
+        running_server = nullptr;
+        running_window = nullptr;
+        if (quit)
+          return 0;
+      } else if (process_state == WAIT_FAILED) {
+        LOG(ERROR) << "failed to query running WeaselServer state, error: "
+                   << GetLastError();
+        CloseHandle(running_server);
+        return 1;
+      } else {
+        DWORD window_process_id = 0;
+        const DWORD server_process_id = GetProcessId(running_server);
+        const bool owns_window =
+            running_window && server_process_id &&
+            GetWindowThreadProcessId(running_window, &window_process_id) &&
+            window_process_id == server_process_id;
+        if (!owns_window || !PostMessageW(running_window, WM_CLOSE, 0, 0)) {
+          // The old process may have exited between the zero-time wait and the
+          // window operation. Treat that race as a successful shutdown rather
+          // than failing a perfectly safe replacement.
+          if (WaitForSingleObject(running_server, 0) == WAIT_OBJECT_0) {
+            CloseHandle(running_server);
+            running_server = nullptr;
+            running_window = nullptr;
+            if (quit)
+              return 0;
+          } else {
+            LOG(ERROR) << "WeaselServer pipe is not ready and window shutdown failed, error: "
+                       << GetLastError();
+            CloseHandle(running_server);
+            return 1;
+          }
+        }
+      }
     }
 
     if (running_server) {

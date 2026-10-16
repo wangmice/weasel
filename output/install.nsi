@@ -177,6 +177,7 @@ Function RestorePreviousProgramBackup
   IntCmp $R2 8 restore_program_failed restore_program_ok restore_program_failed
 restore_program_ok:
   IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 restore_program_failed
+  IfFileExists "$PreviousInstallDir\WeaselServer.exe" 0 restore_program_failed
   Return
 restore_program_failed:
   StrCpy $ProgramRestoreFailed "1"
@@ -231,7 +232,6 @@ rollback_after_config:
   ; for manual/retry recovery and restore only the non-runnable base metadata.
   StrCmp $ProgramRestoreFailed "1" rollback_restore_base_registry
 
-rollback_register_old:
   IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 rollback_registration_failed
   ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /i' $R2
   ${If} $R2 != 0
