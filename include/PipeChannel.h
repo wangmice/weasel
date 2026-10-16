@@ -10,6 +10,20 @@
 
 namespace weasel {
 
+/* A failed transaction is only safe to replay when the request write never
+ * completed. Once the write succeeds, a later response failure is ambiguous:
+ * the server may already have processed the command. */
+class PipeTransactionError {
+ public:
+  PipeTransactionError(DWORD error_code,
+                       bool request_may_have_been_delivered) noexcept
+      : error_code(error_code),
+        request_may_have_been_delivered(request_may_have_been_delivered) {}
+
+  DWORD error_code;
+  bool request_may_have_been_delivered;
+};
+
 /* Release a named pipe handle: disconnect the server end (no-op for a
  * client end) and close the kernel handle. Idempotent. */
 inline void FinalizePipeHandle(HANDLE& p) {
@@ -163,20 +177,28 @@ class PipeChannel : public PipeChannelBase {
   _TyRes Transact(Msg& msg) {
     PipeHandleOwner* phandle = _GetPipeHandle();
     if (!_Ensure()) {
-      // Server unreachable: drop any staged body so the next request starts
-      // clean instead of appending to the leftover one.
+      // The request never reached WriteFile, so callers that can safely
+      // reconstruct the operation may retry it after recovery.
       ClearBufferStream();
-      throw (DWORD)ERROR_FILE_NOT_FOUND;  // server unreachable
+      throw PipeTransactionError(ERROR_FILE_NOT_FOUND, false);
     }
+
+    bool request_sent = false;
     try {
       _Send(phandle->handle, msg);
+      request_sent = true;
       return _ReceiveResponse();
+    } catch (DWORD error) {
+      // Preserve whether the request write completed before the failure.
+      // A response-stage failure is ambiguous and must never be replayed
+      // blindly; a send-stage failure is definitely not delivered.
+      ClearBufferStream();
+      _Reconnect();
+      throw PipeTransactionError(error, request_sent);
     } catch (...) {
-      // The connection died mid-request. Drop the request (it may already
-      // have been delivered) and re-establish so the next call can proceed.
-      // A staged-but-unsent body is dropped too: keeping it would make the
-      // next START_SESSION carry two client info blocks, or let it ride
-      // along with the next body-less command.
+      // Non-Win32 failures remain conservative: after a successful write the
+      // server may have processed the request, so preserve the original error
+      // and let callers treat it as ambiguous.
       ClearBufferStream();
       _Reconnect();
       throw;
@@ -230,8 +252,8 @@ class PipeChannel : public PipeChannelBase {
     // exceeds buff_size here
     size_t data_sz = ctx->has_body ? (_MsgSize + body_bytes) : _MsgSize;
 
-    // No resend on failure: a request may already have been delivered, and
-    // duplicating it would process one keystroke twice.
+    // A failed synchronous message-mode WriteFile did not complete this
+    // request; Transact records the write as delivered only after this returns.
     _WritePipe(pipe, data_sz, pbuff);
     ClearBufferStream();
   }

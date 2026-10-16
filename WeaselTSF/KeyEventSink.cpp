@@ -7,6 +7,17 @@
 bool WeaselTSF::_ProcessKeyEventWithRecovery(
     const weasel::KeyEvent& keyEvent) {
   auto result = m_client.ProcessKeyEventEx(keyEvent);
+
+  if (result == weasel::KeyEventResult::TransportNotDelivered) {
+    // The pipe write never completed, so the server definitely did not see
+    // this key. Recover the server/session and replay this physical key once.
+    // Ambiguous TransportError is intentionally excluded: after a successful
+    // write the server may already have processed the key.
+    if (!_EnsureServerConnected())
+      return false;
+    result = m_client.ProcessKeyEventEx(keyEvent);
+  }
+
   if (result == weasel::KeyEventResult::InvalidSession) {
     // The server rejected the stale session before librime saw this key.
     // Start a replacement session on the still-live pipe and retry once.

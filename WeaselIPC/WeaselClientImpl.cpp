@@ -89,14 +89,27 @@ void ClientImpl::ShutdownServer() {
 
 KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
   if (!_Active())
-    return KeyEventResult::TransportError;
+    return KeyEventResult::TransportNotDelivered;
 
   const UINT64 response_serial = channel.ResponseSerial();
-  LRESULT ret =
-      _SendMessage(WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, _SessionId());
+  LRESULT ret = 0;
+  try {
+    PipeMessage req{WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, _SessionId()};
+    ret = channel.Transact(req);
+  } catch (const PipeTransactionError& error) {
+    _SetSessionId(0);
+    return error.request_may_have_been_delivered
+               ? KeyEventResult::TransportError
+               : KeyEventResult::TransportNotDelivered;
+  } catch (...) {
+    // Unknown transport failures stay conservative: without delivery-stage
+    // evidence, replaying could process one physical key twice.
+    _SetSessionId(0);
+    return KeyEventResult::TransportError;
+  }
 
-  // _SendMessage clears session_id after a pipe exception. The server may
-  // already have processed that key, so this case must never be replayed.
+  // Another thread may have invalidated the session after a successful
+  // transaction. The request was already sent, so replay would be ambiguous.
   if (!_Active())
     return KeyEventResult::TransportError;
 

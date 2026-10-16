@@ -42,11 +42,15 @@ enum WEASEL_IPC_COMMAND {
 
 namespace weasel {
 // Typed key result for callers that need to distinguish a normal unhandled
-// key from session invalidation and an ambiguous transport failure.
+// key from session invalidation and transport delivery ambiguity.
 enum class KeyEventResult {
   Handled,
   Unhandled,
   InvalidSession,
+  // The request write never completed, so this key is safe to replay after
+  // reconnecting to a replacement server.
+  TransportNotDelivered,
+  // The request may already have reached the server; replay is unsafe.
   TransportError,
 };
 
