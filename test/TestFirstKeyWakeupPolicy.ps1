@@ -15,8 +15,8 @@ if ($ensure -match '_reconnectRetry\s*>?=\s*6') {
 if ($ensure -notmatch 'count_server_process_in_current_session\(\)\s*==\s*0[\s\S]*?std::thread') {
   throw 'first failed reconnect must trigger serialized server recovery immediately when the server is absent'
 }
-if ($tsf -notmatch 'constexpr\s+ULONGLONG\s+kFirstKeyRecoveryTimeoutMs\s*=\s*[1-9][0-9]*') {
-  throw 'first-key recovery must use an explicit bounded timeout'
+if ($tsf -notmatch 'constexpr\s+ULONGLONG\s+kFirstKeyRecoveryTimeoutMs\s*=\s*1000') {
+  throw 'first-key recovery must allow up to one second for server startup'
 }
 if ($tsf -notmatch 'constexpr\s+DWORD\s+kFirstKeyRecoveryPollMs\s*=\s*[1-9][0-9]*') {
   throw 'first-key recovery must use a bounded reconnect polling interval'

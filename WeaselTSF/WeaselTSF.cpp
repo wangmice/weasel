@@ -300,7 +300,7 @@ static int count_server_process_in_current_session() {
 namespace {
 constexpr ULONGLONG kServerLaunchObservationTimeoutMs = 5000;
 constexpr DWORD kServerLaunchObservationPollMs = 50;
-constexpr ULONGLONG kFirstKeyRecoveryTimeoutMs = 500;
+constexpr ULONGLONG kFirstKeyRecoveryTimeoutMs = 1000;
 constexpr DWORD kFirstKeyRecoveryPollMs = 25;
 
 void launch_server_serialized(std::wstring dir, std::wstring mutex_name) {
