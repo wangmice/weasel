@@ -11,6 +11,7 @@
 
 namespace weasel {
 class PipeServer;
+class ServerImplTestAccess;
 
 typedef CWinTraits<WS_DISABLED, WS_EX_TRANSPARENT> ServerWinTraits;
 
@@ -104,6 +105,8 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   }
 
  private:
+  friend class ServerImplTestAccess;
+
   using PPhysicalToLogicalPointForPerMonitorDPI =
       BOOL(WINAPI*)(HWND, LPPOINT);
 

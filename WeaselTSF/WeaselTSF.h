@@ -11,6 +11,7 @@
 class CCandidateList;
 class CLangBarItemButton;
 class CCompartmentEventSink;
+class WeaselTSFTestAccess;
 
 class WeaselTSF : public ITfTextInputProcessorEx,
                   public ITfThreadMgrEventSink,
@@ -218,6 +219,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                         bool* const scroll_next);
 
  private:
+  friend class WeaselTSFTestAccess;
+
   /* ui callback functions private */
   void _SelectCandidateOnCurrentPage(const size_t index);
   void _HandleMouseHoverEvent(const size_t index);

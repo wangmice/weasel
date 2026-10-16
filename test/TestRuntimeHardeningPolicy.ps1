@@ -6,6 +6,10 @@ $pipeCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\PipeChannel.cpp'
 $pipeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
+$serverCommandsTest = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\TestServerCommands.cpp') -Raw
+$serverCommandsXmake = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\xmake.lua') -Raw
+$weaselTsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
+$serverImplHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.h') -Raw
 
 foreach ($sink in @(
   '_pKeyboardCompartmentSink',
@@ -39,6 +43,25 @@ if ($pipeCpp -notmatch 'success\s*&&\s*lread\s*!=\s*rec_len') {
 }
 if ($pipeHeader -notmatch '_TyRes\s+result\s*\{\s*\}\s*;') {
   throw 'PipeChannel::_ReceiveResponse must zero-initialize its scalar response'
+}
+
+if ($serverCommandsTest -match '(?m)^\s*#define\s+private\s+public\s*$') {
+  throw 'TestServerCommands must use scoped friend accessors instead of macroizing private'
+}
+if ($serverCommandsXmake -match 'add_forceincludes\s*\(') {
+  throw 'TestServerCommands must not force-include a private-access shim into every translation unit'
+}
+if ($weaselTsfHeader -notmatch 'friend\s+class\s+WeaselTSFTestAccess\s*;') {
+  throw 'WeaselTSF must grant access only to the dedicated test accessor'
+}
+if ($serverImplHeader -notmatch 'friend\s+class\s+ServerImplTestAccess\s*;') {
+  throw 'ServerImpl must grant access only to the dedicated test accessor'
+}
+if ($serverCommandsTest -notmatch 'WeaselTSFTestAccess::ProcessKeyEventWithRecovery') {
+  throw 'TestServerCommands must route private key recovery checks through WeaselTSFTestAccess'
+}
+if ($serverCommandsTest -notmatch 'ServerImplTestAccess::HandlePipeMessage') {
+  throw 'TestServerCommands must route private server dispatch checks through ServerImplTestAccess'
 }
 
 $resizeStart = $d2d.IndexOf('void D2D::OnResize')
