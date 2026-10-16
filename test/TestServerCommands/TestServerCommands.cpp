@@ -7,7 +7,6 @@
 #include <WeaselUtility.h>
 #include <KeyEvent.h>
 #include <ResponseParser.h>
-#include <logging.h>
 #include <boost/interprocess/streams/bufferstream.hpp>
 #include <boost/thread/tss.hpp>
 #include <atomic>
