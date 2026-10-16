@@ -18,14 +18,16 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   using Respond = std::function<void(Msg)>;
   using ServerHandler = std::function<void(PipeMessage, Respond)>;
 
-  PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s = NULL);
+  PipeServer(std::wstring&& pn_cmd,
+             SECURITY_ATTRIBUTES* s = NULL,
+             std::wstring compatibility_alias = {});
   ~PipeServer();
 
  public:
   void Listen(ServerHandler const& handler);
   /* Get a server runner */
   ServerRunner GetServerRunner(ServerHandler const& handler);
-  /* Unblock a listener blocked in ConnectNamedPipe (self-connection) */
+  /* Unblock listeners blocked in ConnectNamedPipe (self-connection) */
   void WakeListener();
   /* Interrupt and join a thread running Listen(). Repeats both self-wake and
    * synchronous-I/O cancellation so shutdown cannot miss the window between
@@ -44,6 +46,12 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
 
   using WorkerId = std::uint64_t;
 
+  void _ListenOn(std::wstring& pipe_name,
+                 ServerHandler const& handler,
+                 bool compatibility_alias);
+  void _WakeListener(const std::wstring& pipe_name);
+  void _StopListenerThread(boost::thread& listener,
+                           const std::wstring& pipe_name);
   void _ProcessPipeThread(WorkerId worker_id,
                           HANDLE pipe,
                           ServerHandler const& handler);
@@ -59,6 +67,7 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   WorkerId m_next_worker_id = 0;
   bool m_reaper_stop = false;
   std::shared_ptr<boost::thread> m_reaper_thread;
+  std::shared_ptr<boost::thread> m_alias_listener;
 };
 
 }  // namespace weasel

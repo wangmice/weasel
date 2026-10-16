@@ -138,43 +138,47 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     return 0;
   }
 
-  // command line option /q stops the running server
+  // Retain the existing process for both /quit and a normal restart. The pipe
+  // disappears before process teardown releases ServerImpl's singleton mutex,
+  // so pipe disappearance alone is not a safe restart boundary.
   bool quit = !wcscmp(L"/q", lpstrCmdLine) || !wcscmp(L"/quit", lpstrCmdLine);
   HANDLE running_server = nullptr;
-  if (quit && !OpenRunningServerProcess(running_server)) {
+  if (!OpenRunningServerProcess(running_server)) {
     LOG(ERROR) << "failed to retain the running WeaselServer process";
     return 1;
   }
 
-  // restart if already running
+  // Restart if already running. A process observed without a connectable pipe
+  // may already be shutting down; still wait for that exact process before a
+  // replacement is allowed to contend for the singleton.
   {
     weasel::Client client;
-    if (client.Connect())  // try to connect to running server
-    {
-      client.ShutdownServer();
-      if (quit) {
-        // Release the helper's pipe before waiting: server teardown drains pipe
-        // workers, so keeping this client connected would only delay shutdown.
-        client.Disconnect();
-        if (!WaitForRunningServerExit(running_server)) {
-          LOG(ERROR) << "timed out waiting for WeaselServer to exit";
+    const bool connected = client.Connect();
+    if (connected) {
+      // A server can appear between the first window probe and Connect(). If
+      // that happened, capture it now so the restart still has a process-exit
+      // barrier rather than reverting to the old pipe-only race.
+      if (!running_server) {
+        if (!OpenRunningServerProcess(running_server) || !running_server) {
+          LOG(ERROR) << "connected to WeaselServer but could not retain its process";
+          client.Disconnect();
           return 1;
         }
-        return 0;
       }
-      int retry = 0;
-      while (client.Connect() && retry < 10) {
-        client.ShutdownServer();
-        retry++;
-        Sleep(50);
-      }
-      if (retry >= 10)
-        return 0;
-    } else if (quit) {
-      if (running_server) {
-        CloseHandle(running_server);
+      client.ShutdownServer();
+    }
+
+    if (running_server) {
+      // Release our pipe before waiting: server teardown drains pipe workers,
+      // so keeping this client connected would only delay shutdown.
+      client.Disconnect();
+      if (!WaitForRunningServerExit(running_server)) {
+        LOG(ERROR) << "timed out waiting for WeaselServer to exit";
         return 1;
       }
+      if (quit)
+        return 0;
+    } else if (quit) {
       return 0;
     }
   }

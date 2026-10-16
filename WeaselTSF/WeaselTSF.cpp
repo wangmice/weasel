@@ -261,7 +261,11 @@ void WeaselTSF::_Reconnect() {
   _ConsumeResponseIfFresh();
 }
 
-static int count_server_process() {
+static int count_server_process_in_current_session() {
+  DWORD current_session_id = 0;
+  const bool have_current_session =
+      GetCurrentWindowsSessionId(current_session_id);
+
   int count = 0;
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snap == INVALID_HANDLE_VALUE)
@@ -270,8 +274,23 @@ static int count_server_process() {
   pe.dwSize = sizeof(pe);
   if (Process32First(snap, &pe)) {
     do {
-      if (_wcsicmp(pe.szExeFile, L"WeaselServer.exe") == 0)
+      if (_wcsicmp(pe.szExeFile, L"WeaselServer.exe") != 0)
+        continue;
+
+      // If the current session id could not be resolved, preserve the older
+      // conservative behavior and count every server rather than risking a
+      // duplicate launch. Normally only the matching RDP/console session is
+      // relevant to this TSF instance.
+      if (!have_current_session) {
         count++;
+        continue;
+      }
+
+      DWORD process_session_id = 0;
+      if (ProcessIdToSessionId(pe.th32ProcessID, &process_session_id) &&
+          process_session_id == current_session_id) {
+        count++;
+      }
     } while (Process32Next(snap, &pe));
   }
   CloseHandle(snap);
@@ -287,12 +306,13 @@ bool WeaselTSF::_EnsureServerConnected() {
   _Reconnect();
   if (!m_client.IsSessionActive()) {
     if (++_reconnectRetry >= 6) {
+      const std::wstring launch_mutex_name = GetServerLaunchMutexName();
       HANDLE hMutex =
-          CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
+          CreateMutex(NULL, TRUE, launch_mutex_name.c_str());
       // Read GetLastError right after CreateMutex: any later pipe call
       // would overwrite the ERROR_ALREADY_EXISTS indicator.
       bool alreadyLaunching = (GetLastError() == ERROR_ALREADY_EXISTS);
-      if (!alreadyLaunching && count_server_process() == 0) {
+      if (!alreadyLaunching && count_server_process_in_current_session() == 0) {
         std::wstring dir = _GetRootDir();
         // The detached thread must not capture this: it can outlive the
         // TIP object while the host app tears down. It only starts the

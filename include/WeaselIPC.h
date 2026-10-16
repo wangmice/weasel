@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <functional>
 #include <memory>
+#include <string>
 #include <KeyEvent.h>
 
 #define WEASEL_IPC_WINDOW L"WeaselIPCWindow_1.0"
@@ -195,12 +196,52 @@ class Server {
   ServerImpl* m_pImpl;
 };
 
-inline std::wstring GetPipeName() {
-  std::wstring pipe_name;
-  pipe_name += L"\\\\.\\pipe\\";
+inline bool GetCurrentWindowsSessionId(DWORD& session_id) noexcept {
+  session_id = 0;
+  return ::ProcessIdToSessionId(::GetCurrentProcessId(), &session_id) != FALSE;
+}
+
+// Keep the pre-session-scoping endpoint available during upgrades: processes
+// that already loaded an older TSF DLL cannot change their pipe name until the
+// host reloads the input method.
+inline std::wstring GetLegacyPipeName() {
+  std::wstring pipe_name = L"\\\\.\\pipe\\";
   pipe_name += getUsername();
   pipe_name += L"\\";
   pipe_name += WEASEL_IPC_PIPE_NAME;
   return pipe_name;
+}
+
+inline std::wstring GetPipeName() {
+  DWORD session_id = 0;
+  if (!GetCurrentWindowsSessionId(session_id))
+    return GetLegacyPipeName();
+
+  std::wstring pipe_name = GetLegacyPipeName();
+  pipe_name += L"-session-";
+  pipe_name += std::to_wstring(session_id);
+  return pipe_name;
+}
+
+inline std::wstring GetServerInstanceName() {
+  std::wstring name = L"(WEASEL)Furandōru-Sukāretto-";
+  name += getUsername();
+  DWORD session_id = 0;
+  if (GetCurrentWindowsSessionId(session_id)) {
+    name += L"-session-";
+    name += std::to_wstring(session_id);
+  }
+  return name;
+}
+
+inline std::wstring GetServerLaunchMutexName() {
+  std::wstring name = L"WeaselServerLaunch-";
+  name += getUsername();
+  DWORD session_id = 0;
+  if (GetCurrentWindowsSessionId(session_id)) {
+    name += L"-session-";
+    name += std::to_wstring(session_id);
+  }
+  return name;
 }
 }  // namespace weasel

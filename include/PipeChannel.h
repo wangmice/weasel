@@ -55,7 +55,10 @@ class PipeChannelBase {
           resp_serial(0) {}
   };
 
-  PipeChannelBase(std::wstring&& pn_cmd, size_t bs, SECURITY_ATTRIBUTES* s);
+  PipeChannelBase(std::wstring&& pn_cmd,
+                  size_t bs,
+                  SECURITY_ATTRIBUTES* s,
+                  std::wstring fallback_pn = {});
   ~PipeChannelBase();
 
  protected:
@@ -66,7 +69,7 @@ class PipeChannelBase {
   /* To reconnect message pipe */
   void _Reconnect();
   /* Try to connect for one time */
-  HANDLE _TryConnect();
+  HANDLE _TryConnect(const wchar_t* name);
   size_t _WritePipe(HANDLE p, size_t s, char* b);
   void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len);
   /* Try to get a connection from client */
@@ -93,6 +96,9 @@ class PipeChannelBase {
 
  protected:
   std::wstring pname;
+  // Optional compatibility endpoint. Clients try it only when the scoped
+  // primary endpoint cannot be reached; PipeServer may expose it as an alias.
+  std::wstring fallback_pname;
   // Thread-local pipe handle; its owner closes it when the thread exits
   mutable boost::thread_specific_ptr<PipeHandleOwner> hpipe_ptr;
   const size_t buff_size;
@@ -123,8 +129,9 @@ class PipeChannel : public PipeChannelBase {
  public:
   PipeChannel(std::wstring&& pn_cmd,
               SECURITY_ATTRIBUTES* s = NULL,
-              size_t bs = 64 * 1024)
-      : PipeChannelBase(std::move(pn_cmd), bs, s) {}
+              size_t bs = 64 * 1024,
+              std::wstring fallback_pn = {})
+      : PipeChannelBase(std::move(pn_cmd), bs, s, std::move(fallback_pn)) {}
 
  public:
   /* Common pipe operations */

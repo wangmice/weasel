@@ -4,6 +4,12 @@ $repo = Split-Path -Parent $PSScriptRoot
 $compartment = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Compartment.cpp') -Raw
 $pipeCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\PipeChannel.cpp') -Raw
 $pipeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
+$pipeServerHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeServer.h') -Raw
+$ipcHeader = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
+$clientImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
+$serverMain = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServer.cpp') -Raw
+$serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
+$tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
 $serverCommandsTest = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\TestServerCommands.cpp') -Raw
@@ -139,6 +145,70 @@ if ($runBody -notmatch 'ConfigureResult::Failed[\s\S]*?config_failed\s*=\s*true'
 }
 if ($runBody -notmatch 'return\s+\(config_failed\s*\|\|\s*deploy_result\s*!=\s*0\)\s*\?\s*1\s*:\s*0\s*;') {
   throw 'Configurator::Run must return failure when either configuration or deployment failed'
+}
+
+# A restart must wait for the old process, not merely for its pipe to vanish:
+# ServerImpl keeps the singleton mutex until process teardown completes.
+$restartStart = $serverMain.IndexOf('// Retain the existing process for both /quit and a normal restart.')
+$restartEnd = $serverMain.IndexOf('  bool check_updates =', $restartStart)
+if ($restartStart -lt 0 -or $restartEnd -le $restartStart) {
+  throw 'unable to isolate WeaselServer restart flow'
+}
+$restartFlow = $serverMain.Substring($restartStart, $restartEnd - $restartStart)
+$openProcess = $restartFlow.IndexOf('OpenRunningServerProcess(running_server)')
+$shutdown = $restartFlow.IndexOf('client.ShutdownServer()')
+$disconnect = $restartFlow.IndexOf('client.Disconnect()', $shutdown)
+$waitExit = $restartFlow.IndexOf('WaitForRunningServerExit(running_server)', $disconnect)
+if ($openProcess -lt 0 -or $shutdown -lt 0 -or $disconnect -lt 0 -or $waitExit -lt 0 -or
+    -not ($openProcess -lt $shutdown -and $shutdown -lt $disconnect -and $disconnect -lt $waitExit)) {
+  throw 'normal server restart must retain the old process handle, disconnect the pipe, and wait for process exit'
+}
+if ($restartFlow -match 'if\s*\(quit\s*&&\s*!OpenRunningServerProcess') {
+  throw 'old-process tracking must apply to normal restart as well as /quit'
+}
+if ($restartFlow -match 'while\s*\(client\.Connect\(\)') {
+  throw 'restart must not treat pipe disappearance as proof that the old server process exited'
+}
+
+# IPC must be scoped by Windows session while retaining the legacy endpoint for
+# already-loaded pre-upgrade TSF clients in the current session.
+foreach ($required in @(
+  'GetCurrentWindowsSessionId',
+  'GetLegacyPipeName',
+  'GetServerInstanceName',
+  'GetServerLaunchMutexName'
+)) {
+  if ($ipcHeader -notmatch ([regex]::Escape($required) + '\s*\(')) {
+    throw "IPC session scoping is missing $required"
+  }
+}
+if ($ipcHeader -notmatch 'GetPipeName\([\s\S]*?session-[\s\S]*?session_id') {
+  throw 'primary named pipe must include the current Windows session id'
+}
+if ($clientImpl -notmatch 'channel\(GetPipeName\(\),\s*NULL,\s*64\s*\*\s*1024,\s*GetLegacyPipeName\(\)\)') {
+  throw 'new clients must fall back to the legacy pipe for upgrade compatibility'
+}
+if ($serverImpl -notmatch 'PipeServer>\(GetPipeName\(\),\s*sa\.get_attr\(\),\s*GetLegacyPipeName\(\)\)') {
+  throw 'server must listen on both the scoped pipe and the legacy compatibility alias'
+}
+if ($pipeServerHeader -notmatch 'compatibility_alias|m_alias_listener') {
+  throw 'PipeServer must retain the compatibility alias while the scoped listener is active'
+}
+if ($serverImpl -notmatch 'ERROR_ACCESS_DENIED[\s\S]*?return') {
+  throw 'legacy alias listener must stop after a permanent cross-session access denial'
+}
+if ($serverImpl -notmatch 'const\s+std::wstring\s+instanceName\s*=\s*GetServerInstanceName\(\)' -or
+    $serverImpl -notmatch 'CreateMutex\(NULL,\s*FALSE,\s*instanceName\.c_str\(\)\)') {
+  throw 'server singleton mutex must use the same Windows-session scope as IPC'
+}
+if ($tsf -notmatch 'count_server_process_in_current_session') {
+  throw 'TSF recovery must count only WeaselServer processes in the current Windows session'
+}
+if ($tsf -notmatch 'ProcessIdToSessionId\(pe\.th32ProcessID,\s*&process_session_id\)') {
+  throw 'TSF recovery process enumeration must filter by Terminal Services session id'
+}
+if ($tsf -notmatch 'GetServerLaunchMutexName\(\)') {
+  throw 'TSF recovery launch serialization must be scoped to the current Windows session'
 }
 
 Write-Host 'Runtime hardening policy: PASS'

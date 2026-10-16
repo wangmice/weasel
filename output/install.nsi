@@ -44,6 +44,7 @@ Var PreviousProgramBackupDir
 Var HadPreviousInstall
 Var UpgradeSlotId
 Var RollbackFailed
+Var ProgramRestoreFailed
 
 ; The name of the installer
 Name "小狼毫 ${WEASEL_VERSION}"
@@ -164,6 +165,7 @@ LangString ARM64NOTSUPPORTED ${LANG_ENGLISH} "This package supports x86/x64 Wind
 ; rollback refill a partially removed same-version directory without trying to
 ; rewrite an unchanged DLL that is still mapped by another process.
 Function RestorePreviousProgramBackup
+  StrCpy $ProgramRestoreFailed "0"
   StrCmp $PreviousProgramBackupDir "" restore_program_failed
   IfFileExists "$PreviousProgramBackupDir\WeaselSetup.exe" 0 restore_program_failed
   CreateDirectory "$PreviousInstallDir"
@@ -177,6 +179,7 @@ restore_program_ok:
   IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 restore_program_failed
   Return
 restore_program_failed:
+  StrCpy $ProgramRestoreFailed "1"
   StrCpy $RollbackFailed "1"
 FunctionEnd
 
@@ -186,6 +189,7 @@ FunctionEnd
 ; because a successful retry before reboot could otherwise be deleted later.
 Function RollbackPreviousInstall
   StrCpy $RollbackFailed "0"
+  StrCpy $ProgramRestoreFailed "0"
   StrCmp $HadPreviousInstall "1" 0 rollback_fresh_only
 
   ; Best effort: remove any partial registration produced by the new Setup.
@@ -214,23 +218,37 @@ rollback_remove_other_path:
 rollback_restore_program:
   Call RestorePreviousProgramBackup
 
-  IfFileExists "$TEMP\weasel-hkcu-backup.reg" 0 rollback_register_old
+  ; HKCU preferences are independent of program-tree usability and can still be
+  ; restored even when a locked/damaged file prevents a runnable rollback.
+  IfFileExists "$TEMP\weasel-hkcu-backup.reg" 0 rollback_after_config
   ExecWait 'reg import "$TEMP\weasel-hkcu-backup.reg"' $R2
   ${If} $R2 != 0
     StrCpy $RollbackFailed "1"
   ${EndIf}
+
+rollback_after_config:
+  ; Never register or launch a partially restored program tree. Keep its backup
+  ; for manual/retry recovery and restore only the non-runnable base metadata.
+  StrCmp $ProgramRestoreFailed "1" rollback_restore_base_registry
 
 rollback_register_old:
   IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 rollback_registration_failed
   ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /i' $R2
   ${If} $R2 != 0
     StrCpy $RollbackFailed "1"
+    GoTo rollback_restore_base_registry
   ${EndIf}
-  GoTo rollback_restore_registry
+  GoTo rollback_restore_runtime_registry
 rollback_registration_failed:
   StrCpy $RollbackFailed "1"
+  GoTo rollback_restore_base_registry
 
-rollback_restore_registry:
+rollback_restore_base_registry:
+  StrCmp $PreviousBaseDir "" rollback_cleanup_temp 0
+  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$PreviousBaseDir"
+  GoTo rollback_cleanup_temp
+
+rollback_restore_runtime_registry:
   StrCmp $PreviousBaseDir "" +2 0
   WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$PreviousBaseDir"
   ${If} ${IsNativeARM64}
@@ -361,6 +379,7 @@ Function .onInit
   StrCpy $PreviousProgramBackupDir ""
   StrCpy $UpgradeSlotId ""
   StrCpy $RollbackFailed "0"
+  StrCpy $ProgramRestoreFailed "0"
 
 !ifndef WEASEL_HAS_ARM64_PAYLOAD
   ; Reject before reading/removing an existing installation or copying files.

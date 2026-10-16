@@ -16,26 +16,37 @@ using namespace boost;
   }
 
 PipeChannelBase::PipeChannelBase(std::wstring&& pn_cmd,
-                                 size_t bs = 4 * 1024,
-                                 SECURITY_ATTRIBUTES* s = NULL)
-    : pname(pn_cmd), buff_size(bs), sa(s) {}
+                                 size_t bs,
+                                 SECURITY_ATTRIBUTES* s,
+                                 std::wstring fallback_pn)
+    : pname(std::move(pn_cmd)),
+      fallback_pname(std::move(fallback_pn)),
+      buff_size(bs),
+      sa(s) {}
 
 PipeChannelBase::~PipeChannelBase() {
   // Thread-specific pointers are cleaned up automatically
 }
 
 bool PipeChannelBase::_Ensure() {
+  PipeHandleOwner* owner = _GetPipeHandle();
+  if (!_Invalid(owner->handle))
+    return true;
+
   try {
-    PipeHandleOwner* owner = _GetPipeHandle();
-    if (_Invalid(owner->handle)) {
-      owner->handle = _Connect(pname.c_str());
-      return !_Invalid(owner->handle);
-    }
+    owner->handle = _Connect(pname.c_str());
+    return !_Invalid(owner->handle);
+  } catch (...) {
+    if (fallback_pname.empty() || fallback_pname == pname)
+      return false;
+  }
+
+  try {
+    owner->handle = _Connect(fallback_pname.c_str());
+    return !_Invalid(owner->handle);
   } catch (...) {
     return false;
   }
-
-  return true;
 }
 
 HANDLE PipeChannelBase::_Connect(const wchar_t* name) {
@@ -43,7 +54,7 @@ HANDLE PipeChannelBase::_Connect(const wchar_t* name) {
   // not pin the caller's (input) thread indefinitely.
   static constexpr int kMaxBusyWaits = 6;  // ~3s
   HANDLE pipe = INVALID_HANDLE_VALUE;
-  for (int waits = 0; _Invalid(pipe = _TryConnect()); ++waits) {
+  for (int waits = 0; _Invalid(pipe = _TryConnect(name)); ++waits) {
     // FALSE also covers "pipe does not exist at all": fail fast, the
     // server is gone rather than busy.
     if (!::WaitNamedPipe(name, 500))
@@ -66,8 +77,8 @@ void PipeChannelBase::_Reconnect() {
   _Ensure();
 }
 
-HANDLE PipeChannelBase::_TryConnect() {
-  auto pipe = ::CreateFile(pname.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,
+HANDLE PipeChannelBase::_TryConnect(const wchar_t* name) {
+  auto pipe = ::CreateFile(name, GENERIC_READ | GENERIC_WRITE, 0, NULL,
                            OPEN_EXISTING, 0, NULL);
   if (!_Invalid(pipe)) {
     // connected to the pipe

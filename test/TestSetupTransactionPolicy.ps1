@@ -219,4 +219,50 @@ if ($init -match 'WeaselServer\.exe"\s+/quit|WeaselSetup\.exe"\s+/u') {
   throw '.onInit must remain non-destructive; old shutdown/uninstall belongs in PreparePreviousInstall'
 }
 
+# A failed program-tree restore must never be treated as a runnable rollback.
+if ($installer -notmatch '(?m)^Var ProgramRestoreFailed$') {
+  throw 'installer must track program-tree restoration separately from aggregate rollback status'
+}
+$restoreStart = $installer.IndexOf('Function RestorePreviousProgramBackup')
+$restoreEnd = $installer.IndexOf('FunctionEnd', $restoreStart)
+if ($restoreStart -lt 0 -or $restoreEnd -le $restoreStart) {
+  throw 'unable to isolate RestorePreviousProgramBackup'
+}
+$restoreProgram = $installer.Substring($restoreStart, $restoreEnd - $restoreStart)
+if ($restoreProgram -notmatch 'restore_program_failed:[\s\S]*?StrCpy \$ProgramRestoreFailed "1"[\s\S]*?StrCpy \$RollbackFailed "1"') {
+  throw 'program restore failures must set both the dedicated and aggregate rollback failure flags'
+}
+
+$rollbackStart = $installer.IndexOf('Function RollbackPreviousInstall')
+$rollbackEnd = $installer.IndexOf('FunctionEnd', $rollbackStart)
+if ($rollbackStart -lt 0 -or $rollbackEnd -le $rollbackStart) {
+  throw 'unable to isolate RollbackPreviousInstall'
+}
+$rollback = $installer.Substring($rollbackStart, $rollbackEnd - $rollbackStart)
+$restoreCall = $rollback.IndexOf('  Call RestorePreviousProgramBackup')
+$programFailureGuard = $rollback.IndexOf('  StrCmp $ProgramRestoreFailed "1" rollback_restore_base_registry', $restoreCall)
+$registerOld = $rollback.IndexOf('rollback_register_old:', $restoreCall)
+if ($restoreCall -lt 0 -or $programFailureGuard -lt 0 -or $registerOld -lt 0 -or
+    -not ($restoreCall -lt $programFailureGuard -and $programFailureGuard -lt $registerOld)) {
+  throw 'rollback must gate old registration on successful program-tree restoration'
+}
+if ($rollback -notmatch 'rollback_registration_failed:[\s\S]*?StrCpy \$RollbackFailed "1"[\s\S]*?GoTo rollback_restore_base_registry') {
+  throw 'failed old-version registration must skip runtime autorun/server restoration'
+}
+$baseRegistryStart = $rollback.IndexOf('rollback_restore_base_registry:')
+$runtimeRegistryStart = $rollback.IndexOf('rollback_restore_runtime_registry:', $baseRegistryStart)
+$cleanupStart = $rollback.IndexOf('rollback_cleanup_temp:', $baseRegistryStart)
+if ($baseRegistryStart -lt 0 -or $runtimeRegistryStart -lt 0 -or $cleanupStart -lt 0) {
+  throw 'rollback must separate base registry recovery from runnable registration recovery'
+}
+$baseOnly = $rollback.Substring($baseRegistryStart, $runtimeRegistryStart - $baseRegistryStart)
+if ($baseOnly -match 'CurrentVersion\\Run|Exec\s+''"\$PreviousInstallDir\\WeaselServer\.exe"''') {
+  throw 'a failed program or registration restore must not publish autorun or start WeaselServer'
+}
+$runtimeRestore = $rollback.Substring($runtimeRegistryStart, $cleanupStart - $runtimeRegistryStart)
+if ($runtimeRestore -notmatch 'CurrentVersion\\Run' -or
+    $runtimeRestore -notmatch 'Exec\s+''"\$PreviousInstallDir\\WeaselServer\.exe"''') {
+  throw 'a fully restored and registered rollback must still restore autorun and restart WeaselServer'
+}
+
 Write-Host 'Setup transaction policy: PASS'

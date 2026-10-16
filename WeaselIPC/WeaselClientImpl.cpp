@@ -34,7 +34,9 @@ bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
 }  // namespace
 
 ClientImpl::ClientImpl()
-    : session_id(0), channel(GetPipeName()), is_ime(false) {
+    : session_id(0),
+      channel(GetPipeName(), NULL, 64 * 1024, GetLegacyPipeName()),
+      is_ime(false) {
   _InitializeClientInfo();
 }
 

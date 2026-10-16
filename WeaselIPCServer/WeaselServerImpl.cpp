@@ -25,7 +25,8 @@ static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 ServerImpl::ServerImpl()
     : m_pRequestHandler(NULL),
       m_darkMode(IsUserDarkMode()),
-      channel(std::make_unique<PipeServer>(GetPipeName(), sa.get_attr())) {
+      channel(std::make_unique<PipeServer>(GetPipeName(), sa.get_attr(),
+                                           GetLegacyPipeName())) {
   m_hUser32Module = GetModuleHandle(_T("user32.dll"));
   m_pPhysicalToLogicalPointForPerMonitorDPI =
       reinterpret_cast<PPhysicalToLogicalPointForPerMonitorDPI>(
@@ -170,8 +171,7 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
 }
 
 HWND ServerImpl::Start() {
-  std::wstring instanceName = L"(WEASEL)Furandōru-Sukāretto-";
-  instanceName += getUsername();
+  const std::wstring instanceName = GetServerInstanceName();
   HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE, instanceName.c_str());
   const DWORD mutexError = ::GetLastError();
   if (!hMutexOneInstance) {
@@ -470,15 +470,22 @@ void ServerImpl::HandlePipeMessage(PipeMessage pipe_msg, _Resp resp) {
   resp(result);
 }
 
-PipeServer::PipeServer(std::wstring&& pn_cmd, SECURITY_ATTRIBUTES* s)
-    : PipeChannel(std::move(pn_cmd), s) {
+PipeServer::PipeServer(std::wstring&& pn_cmd,
+                       SECURITY_ATTRIBUTES* s,
+                       std::wstring compatibility_alias)
+    : PipeChannel(std::move(pn_cmd), s, 64 * 1024,
+                  std::move(compatibility_alias)) {
   m_reaper_thread = std::make_shared<boost::thread>(
       [this] { _WorkerReaperLoop(); });
 }
 
 PipeServer::~PipeServer() {
-  // Normal ServerImpl teardown already drains after joining the listener.
-  // Keep this idempotent fallback for direct/test users of PipeServer.
+  // Normal ServerImpl teardown already stops both listeners and drains workers.
+  // Keep the alias cleanup idempotent for direct/test users of PipeServer.
+  if (m_alias_listener && m_alias_listener->joinable()) {
+    _StopListenerThread(*m_alias_listener, fallback_pname);
+  }
+  m_alias_listener.reset();
   DrainWorkers();
   {
     std::lock_guard<std::mutex> lock(m_workers_mutex);
@@ -490,13 +497,33 @@ PipeServer::~PipeServer() {
 }
 
 void PipeServer::Listen(ServerHandler const& handler) {
+  // Keep the old per-user endpoint alive for already-loaded TSF DLLs during an
+  // upgrade. In another Windows session the legacy endpoint belongs to that
+  // session's logon SID and CreateNamedPipe will be denied; the alias listener
+  // exits while the session-scoped primary listener remains healthy.
+  if (!fallback_pname.empty() && fallback_pname != pname) {
+    m_alias_listener = std::make_shared<boost::thread>([this, handler] {
+      _ListenOn(fallback_pname, handler, true);
+    });
+  }
+  _ListenOn(pname, handler, false);
+}
+
+void PipeServer::_ListenOn(std::wstring& pipe_name,
+                           ServerHandler const& handler,
+                           bool compatibility_alias) {
   for (;;) {
     boost::this_thread::interruption_point();
     HANDLE pipe = INVALID_HANDLE_VALUE;
     try {
-      pipe = _ConnectServerPipe(pname);
+      pipe = _ConnectServerPipe(pipe_name);
       _LaunchWorker(pipe, handler);
-    } catch (...) {  // pipe errors and thread spawn failures alike
+    } catch (DWORD error) {
+      FinalizePipeHandle(pipe);
+      if (compatibility_alias && error == ERROR_ACCESS_DENIED)
+        return;
+      boost::this_thread::sleep_for(kListenRetryBackoff);
+    } catch (...) {  // thread spawn failures and non-Win32 exceptions alike
       FinalizePipeHandle(pipe);
       boost::this_thread::sleep_for(kListenRetryBackoff);
     }
@@ -504,16 +531,25 @@ void PipeServer::Listen(ServerHandler const& handler) {
   }
 }
 
-void PipeServer::WakeListener() {
+void PipeServer::_WakeListener(const std::wstring& pipe_name) {
+  if (pipe_name.empty())
+    return;
   // A client-side connection to our own pipe makes ConnectNamedPipe return
   // so an interrupted listener can reach its interruption point and exit.
-  HANDLE wake = ::CreateFileW(pname.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                              NULL, OPEN_EXISTING, 0, NULL);
+  HANDLE wake = ::CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                              0, NULL, OPEN_EXISTING, 0, NULL);
   if (wake != INVALID_HANDLE_VALUE)
     ::CloseHandle(wake);
 }
 
-void PipeServer::StopListener(boost::thread& listener) {
+void PipeServer::WakeListener() {
+  _WakeListener(pname);
+  if (fallback_pname != pname)
+    _WakeListener(fallback_pname);
+}
+
+void PipeServer::_StopListenerThread(boost::thread& listener,
+                                     const std::wstring& pipe_name) {
   listener.interrupt();
 
   // interrupt() is cooperative and cannot itself cancel a synchronous
@@ -522,7 +558,7 @@ void PipeServer::StopListener(boost::thread& listener) {
   // listener actually exits, cancelling whichever synchronous call is
   // current on each pass.
   while (listener.joinable()) {
-    WakeListener();
+    _WakeListener(pipe_name);
     const auto native_thread = listener.native_handle();
     if (native_thread)
       ::CancelSynchronousIo(native_thread);
@@ -530,6 +566,17 @@ void PipeServer::StopListener(boost::thread& listener) {
     if (listener.timed_join(boost::posix_time::milliseconds(50)))
       break;
   }
+}
+
+void PipeServer::StopListener(boost::thread& listener) {
+  // Join the primary first. Listen() creates the alias before entering the
+  // primary accept loop, so after this join m_alias_listener can no longer
+  // race from null to live behind shutdown's back.
+  _StopListenerThread(listener, pname);
+  if (m_alias_listener && m_alias_listener->joinable()) {
+    _StopListenerThread(*m_alias_listener, fallback_pname);
+  }
+  m_alias_listener.reset();
 }
 
 void PipeServer::DrainWorkers() {
