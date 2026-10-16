@@ -55,8 +55,9 @@ int _tmain(int argc, _TCHAR* argv[]) {
 }
 
 bool launch_server() {
-  int ret = (int)ShellExecute(NULL, L"open", L"TestWeaselIPC.exe", L"/start",
-                              NULL, SW_NORMAL);
+  const INT_PTR ret = reinterpret_cast<INT_PTR>(
+      ShellExecuteW(nullptr, L"open", L"TestWeaselIPC.exe", L"/start", nullptr,
+                    SW_NORMAL));
   if (ret <= 32) {
     std::cerr << "failed to launch server." << std::endl;
     return false;

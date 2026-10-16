@@ -8,11 +8,12 @@ set_runtimes("MT")  -- 设置运行时库为静态链接，避免/MD与/MT冲突
 add_defines("UNICODE", "_UNICODE")
 add_defines("WINDOWS")
 add_defines("MSVC")
-add_defines(
-  "VERSION_MAJOR=" .. (os.getenv("VERSION_MAJOR") or "0"),
-  "VERSION_MINOR=" .. (os.getenv("VERSION_MINOR") or "0"),
-  "VERSION_PATCH=" .. (os.getenv("VERSION_PATCH") or "0"),
-  "PRODUCT_VERSION=" .. (os.getenv("PRODUCT_VERSION") or "0.0.0.0")
+add_cxflags(
+  "/DVERSION_MAJOR=" .. (os.getenv("VERSION_MAJOR") or "0"),
+  "/DVERSION_MINOR=" .. (os.getenv("VERSION_MINOR") or "0"),
+  "/DVERSION_PATCH=" .. (os.getenv("VERSION_PATCH") or "0"),
+  "/DPRODUCT_VERSION=" .. (os.getenv("PRODUCT_VERSION") or "0.0.0.0"),
+  {force = true}
 )
 
 add_includedirs("$(projectdir)/include")

@@ -61,4 +61,6 @@ if (-not $rootXmake.Contains('target:add("ldflags", "/SUBSYSTEM:WINDOWS", {force
   throw 'xmake subsystem policy regression: windows subsystem flag is not forced'
 }
 
+& (Join-Path $PSScriptRoot 'TestBuildWarningPolicy.ps1')
+
 Write-Host 'Xmake target linker flag policy: PASS'
