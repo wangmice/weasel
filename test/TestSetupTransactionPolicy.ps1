@@ -220,7 +220,7 @@ if ($init -match 'WeaselServer\.exe"\s+/quit|WeaselSetup\.exe"\s+/u') {
 }
 
 # A failed program-tree restore must never be treated as a runnable rollback.
-if ($installer -notmatch '(?m)^Var ProgramRestoreFailed$') {
+if (-not $installer.Contains('Var ProgramRestoreFailed')) {
   throw 'installer must track program-tree restoration separately from aggregate rollback status'
 }
 $restoreStart = $installer.IndexOf('Function RestorePreviousProgramBackup')
