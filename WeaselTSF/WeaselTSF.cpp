@@ -300,6 +300,8 @@ static int count_server_process_in_current_session() {
 namespace {
 constexpr ULONGLONG kServerLaunchObservationTimeoutMs = 5000;
 constexpr DWORD kServerLaunchObservationPollMs = 50;
+constexpr ULONGLONG kFirstKeyRecoveryTimeoutMs = 500;
+constexpr DWORD kFirstKeyRecoveryPollMs = 25;
 
 void launch_server_serialized(std::wstring dir, std::wstring mutex_name) {
   HANDLE launch_mutex = CreateMutex(NULL, FALSE, mutex_name.c_str());
@@ -339,26 +341,39 @@ bool WeaselTSF::_EnsureServerConnected() {
     return true;
 
   _Reconnect();
-  if (!m_client.IsSessionActive()) {
-    if (++_reconnectRetry >= 6) {
-      if (count_server_process_in_current_session() == 0) {
-        std::wstring dir = _GetRootDir();
-        std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
-        // The detached thread owns launch arbitration. This keeps the named
-        // mutex held until WeaselServer becomes observable without blocking the
-        // TSF input thread on process startup.
-        std::thread th([dir = std::move(dir),
-                        launch_mutex_name = std::move(launch_mutex_name)]() mutable {
-          launch_server_serialized(std::move(dir),
-                                   std::move(launch_mutex_name));
-        });
-        th.detach();
-      }
+  if (m_client.IsSessionActive()) {
+    _reconnectRetry = 0;
+    return true;
+  }
+
+  // A missing server used to require six failed key events before recovery
+  // even started, which leaked those keys straight to the host as ASCII. Start
+  // recovery on the first failed reconnect. The detached launcher owns the
+  // session-scoped mutex, so concurrent TSF hosts still collapse to one launch.
+  if (count_server_process_in_current_session() == 0) {
+    std::wstring dir = _GetRootDir();
+    std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
+    std::thread th([dir = std::move(dir),
+                    launch_mutex_name = std::move(launch_mutex_name)]() mutable {
+      launch_server_serialized(std::move(dir), std::move(launch_mutex_name));
+    });
+    th.detach();
+  }
+
+  // Give this same key one short, bounded recovery window. Once the pipe and
+  // session are live, _ProcessKeyEvent continues normally and sends the current
+  // key exactly once. Healthy input never reaches this wait.
+  const ULONGLONG deadline =
+      GetTickCount64() + kFirstKeyRecoveryTimeoutMs;
+  while (GetTickCount64() < deadline) {
+    Sleep(kFirstKeyRecoveryPollMs);
+    _Reconnect();
+    if (m_client.IsSessionActive()) {
       _reconnectRetry = 0;
+      return true;
     }
-    return false;
   }
 
   _reconnectRetry = 0;
-  return true;
+  return false;
 }
