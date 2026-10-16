@@ -48,6 +48,7 @@ class ClientImpl {
   }
 
  private:
+  friend class ClientTestAccess;
   // Written by the connecting thread, read by every UI thread of the host
   // process (the pipe handle itself is thread-local); relaxed load/store
   // suffice: it is a plain value, no ordering is carried through it

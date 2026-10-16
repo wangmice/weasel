@@ -112,6 +112,7 @@ typedef std::function<bool()> CommandHandler;
 
 class ClientImpl;
 class ServerImpl;
+class ClientTestAccess;
 
 // IPC接口類
 
@@ -166,6 +167,7 @@ class Client {
   UINT64 ResponseSerial();
 
  private:
+  friend class ClientTestAccess;
   ClientImpl* m_pImpl;
 };
 

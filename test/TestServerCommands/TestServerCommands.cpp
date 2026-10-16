@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 #include <PipeChannel.h>
+#include "TestClientPrivateAccess.h"
 #include "../../WeaselIPCServer/SecurityAttribute.h"
 #include "../../WeaselUI/d2d.h"
 
@@ -29,9 +30,7 @@
 // This lets the test use an isolated pipe and the dispatcher's actual mutex
 // without adding test-only APIs to the production code.
 #define private public
-#include <WeaselIPC.h>
 #include <PipeServer.h>
-#include "../../WeaselIPC/WeaselClientImpl.h"
 #include "../../WeaselIPCServer/WeaselServerImpl.h"
 #include "../../WeaselTSF/WeaselTSF.h"
 #undef private
@@ -331,9 +330,11 @@ static void test_maintenance_session_recovery() {
   });
 
   WeaselTSF tsf;
-  TestChannelAccess::SetName(tsf.m_client.m_pImpl->channel, pipe_name);
+  TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(tsf.m_client),
+                             pipe_name);
   weasel::Client deployer;
-  TestChannelAccess::SetName(deployer.m_pImpl->channel, pipe_name);
+  TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(deployer),
+                             pipe_name);
   bool connected = connect_with_retry(tsf.m_client) &&
                    connect_with_retry(deployer);
   check(connected, "TSF and deployer connect to the isolated server");
@@ -341,7 +342,7 @@ static void test_maintenance_session_recovery() {
     return;
 
   tsf.m_client.StartSession();
-  DWORD original_session = tsf.m_client.m_pImpl->_SessionId();
+  DWORD original_session = weasel::ClientTestAccess::SessionId(tsf.m_client);
   check(original_session != 0, "TSF establishes its initial session");
 
   int echo_before = handler.echo_calls;
@@ -383,7 +384,7 @@ static void test_maintenance_session_recovery() {
   start_before = start_session_messages;
   check(tsf._ProcessKeyEventWithRecovery(weasel::KeyEvent('b')),
         "first post-maintenance key recovers the stale session");
-  check(tsf.m_client.m_pImpl->_SessionId() != original_session &&
+  check(weasel::ClientTestAccess::SessionId(tsf.m_client) != original_session &&
             handler.sessions_created == 2,
         "TSF replaces the invalid session without a focus switch or restart");
   check(key_messages == key_before + 2 &&

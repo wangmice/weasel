@@ -1,7 +1,5 @@
 target("TestServerCommands")
   set_kind("binary")
-  add_includedirs(".")
-  add_forceincludes("TestClientPrivateAccess.h", {sourcekinds = "cxx"})
   add_files("./*.cpp", "../../WeaselTSF/*.cpp")
   add_deps("WeaselIPC", "WeaselIPCServer", "WeaselUI")
   add_links("oleaut32")
