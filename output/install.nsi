@@ -264,10 +264,34 @@ uninst:
   StrCpy $PreviousInstallDir "$R1"
   StrCpy $PreviousBackupDir "$R1"
 
+  ; If a previous same-version upgrade already staged the old installation,
+  ; preserve its rollback snapshot instead of replacing it with current state.
+  StrCmp $PreviousInstallDir $NewInstallDir check_previous_backup backup_current_config
+check_previous_backup:
+  StrCpy $PreviousBackupDir "$PreviousInstallDir.weasel-upgrade-backup"
+  IfFileExists "$PreviousBackupDir\WeaselSetup.exe" previous_backup_exists 0
+  StrCpy $PreviousBackupDir "$PreviousInstallDir"
+backup_current_config:
+
   ; Backup per-user config before old /u clears it. Keep the .reg file until
   ; commit so rollback can import it a second time after cleaning a partial
-  ; new registration.
-  ExecWait 'reg export HKCU\Software\Rime\Weasel "$TEMP\weasel-hkcu-backup.reg" /y'
+  ; new registration. A stale file must never be mistaken for this run's
+  ; rollback snapshot.
+  Delete "$TEMP\weasel-hkcu-backup.reg"
+  ClearErrors
+  ExecWait 'reg export HKCU\Software\Rime\Weasel "$TEMP\weasel-hkcu-backup.reg" /y' $R2
+  ${If} ${Errors}
+    SetErrorLevel 1
+    Abort "$(SETUPFAILED)"
+  ${EndIf}
+  ${If} $R2 != 0
+    SetErrorLevel $R2
+    Abort "$(SETUPFAILED)"
+  ${EndIf}
+  IfFileExists "$TEMP\weasel-hkcu-backup.reg" backup_user_config_ok 0
+  SetErrorLevel 1
+  Abort "$(SETUPFAILED)"
+backup_user_config_ok:
 
   ; Backup user data for migration into the new version. The old program
   ; directory itself is also preserved below for rollback.

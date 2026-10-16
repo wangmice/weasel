@@ -5,9 +5,9 @@
 
 #include "resource.h"
 #include "WeaselUtility.h"
+#include <WeaselIPC.h>
 #include "PerUserReg.h"
 #include "SetupUtil.h"
-#include <thread>
 #include <vector>
 
 #include "InstallOptionsDlg.h"
@@ -70,6 +70,120 @@ static std::wstring install_dir() {
   dir.resize(pos);
   return dir;
 }
+
+namespace {
+constexpr DWORD kServerTransitionTimeoutMs = 30000;
+
+bool RunProcessAndWait(const std::wstring& executable,
+                       const std::wstring& parameters,
+                       DWORD timeout_ms,
+                       DWORD& exit_code) {
+  SHELLEXECUTEINFOW exec{};
+  exec.cbSize = sizeof(exec);
+  exec.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
+  exec.lpFile = executable.c_str();
+  exec.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+  exec.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&exec) || !exec.hProcess)
+    return false;
+
+  const DWORD wait_result = WaitForSingleObject(exec.hProcess, timeout_ms);
+  bool ok = wait_result == WAIT_OBJECT_0;
+  exit_code = ERROR_GEN_FAILURE;
+  if (ok && !GetExitCodeProcess(exec.hProcess, &exit_code))
+    ok = false;
+  CloseHandle(exec.hProcess);
+  return ok;
+}
+
+bool OpenRunningServerProcess(HANDLE& process) {
+  process = nullptr;
+  HWND hwnd = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
+  if (!hwnd)
+    return true;
+
+  DWORD process_id = 0;
+  GetWindowThreadProcessId(hwnd, &process_id);
+  if (!process_id)
+    return false;
+  process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
+  if (process)
+    return true;
+  // The server may have exited between FindWindow and OpenProcess. Treat that
+  // race as an already-stopped server; other access failures remain errors.
+  return GetLastError() == ERROR_INVALID_PARAMETER;
+}
+
+HANDLE LaunchProcess(const std::wstring& executable,
+                     const std::wstring& parameters) {
+  SHELLEXECUTEINFOW exec{};
+  exec.cbSize = sizeof(exec);
+  exec.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
+  exec.lpFile = executable.c_str();
+  exec.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+  exec.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&exec) || !exec.hProcess)
+    return nullptr;
+  return exec.hProcess;
+}
+
+bool WaitForServerReady(HANDLE server_process, DWORD timeout_ms) {
+  const std::wstring pipe_name = weasel::GetPipeName();
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+  while (GetTickCount64() < deadline) {
+    if (WaitForSingleObject(server_process, 0) == WAIT_OBJECT_0)
+      return false;
+    if (WaitNamedPipeW(pipe_name.c_str(), 100))
+      return true;
+    const DWORD error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_SEM_TIMEOUT &&
+        error != ERROR_PIPE_BUSY) {
+      return false;
+    }
+    Sleep(50);
+  }
+  return false;
+}
+
+bool RestartServerAndDeploy(const std::wstring& dir) {
+  const std::wstring server = dir + L"\\WeaselServer.exe";
+  const std::wstring deployer = dir + L"\\WeaselDeployer.exe";
+
+  HANDLE old_server = nullptr;
+  if (!OpenRunningServerProcess(old_server))
+    return false;
+  if (old_server) {
+    DWORD quit_exit_code = 0;
+    const bool quit_ok =
+        RunProcessAndWait(server, L"/q", kServerTransitionTimeoutMs,
+                          quit_exit_code) &&
+        quit_exit_code == 0;
+    if (!quit_ok) {
+      CloseHandle(old_server);
+      return false;
+    }
+    const DWORD stopped =
+        WaitForSingleObject(old_server, kServerTransitionTimeoutMs);
+    CloseHandle(old_server);
+    if (stopped != WAIT_OBJECT_0)
+      return false;
+  }
+
+  HANDLE new_server = LaunchProcess(server, L"");
+  if (!new_server)
+    return false;
+  const bool server_ready =
+      WaitForServerReady(new_server, kServerTransitionTimeoutMs);
+  CloseHandle(new_server);
+  if (!server_ready)
+    return false;
+
+  DWORD deploy_exit_code = 0;
+  return RunProcessAndWait(deployer, L"/deploy", INFINITE,
+                           deploy_exit_code) &&
+         deploy_exit_code == 0;
+}
+}  // namespace
 
 static int CustomInstall(bool installing) {
   std::wstring profile = L"hans";
@@ -181,22 +295,10 @@ static int CustomInstall(bool installing) {
   }
 
   std::wstring dir(install_dir());
-  // 服务重启+部署序列与"修改成功"提示并发执行（用户读提示的 1 秒里
-  // 服务已在重启），但必须 join：进程先退出会腰斩 detached 线程，
-  // 服务停在半重启状态
-  std::thread th([dir]() {
-    ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"/q",
-                  NULL, SW_SHOWNORMAL);
-    Sleep(500);
-    ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"",
-                  NULL, SW_SHOWNORMAL);
-    Sleep(500);
-    ShellExecuteW(NULL, NULL, (dir + L"\\WeaselDeployer.exe").c_str(),
-                  L"/deploy", NULL, SW_SHOWNORMAL);
-  });
+  if (!RestartServerAndDeploy(dir))
+    return 1;
   MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
              MB_ICONINFORMATION | MB_OK);
-  th.join();
 
   return 0;
 }

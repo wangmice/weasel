@@ -75,4 +75,28 @@ if ($modify -notmatch 'switch_registered_profile\(registered_profile,\s*profile,
   throw 'modify install must restore registry state when the profile switch fails'
 }
 
+if ($setup -match 'Sleep\(500\)') {
+  throw 'modify install must not rely on fixed 500ms sleeps for server/deployer sequencing'
+}
+if ($setup -notmatch 'ShellExecuteExW') {
+  throw 'modify install must retain process handles for restart/deploy status checks'
+}
+if ($setup -notmatch 'WaitForSingleObject') {
+  throw 'modify install must wait for child/old-server completion explicitly'
+}
+if ($setup -notmatch 'WaitNamedPipeW') {
+  throw 'modify install must wait until the restarted IPC pipe is ready'
+}
+if ($setup -notmatch 'GetExitCodeProcess') {
+  throw 'modify install must inspect helper/deployer exit codes'
+}
+$restartCall = $modify.IndexOf('RestartServerAndDeploy(dir)')
+$successMessage = $modify.IndexOf('IDS_STR_MODIFY_SUCCESS_INFO')
+if ($restartCall -lt 0 -or $successMessage -lt 0 -or $restartCall -ge $successMessage) {
+  throw 'modify install must finish restart/deploy successfully before showing the success message'
+}
+if ($modify -notmatch 'if\s*\(!RestartServerAndDeploy\(dir\)\)\s*return\s+1;') {
+  throw 'modify install must propagate restart/deploy failure to its exit code'
+}
+
 Write-Host 'Setup transaction policy: PASS'

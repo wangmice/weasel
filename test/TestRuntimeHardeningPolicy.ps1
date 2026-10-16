@@ -73,4 +73,49 @@ if ($updateBody -notmatch 'return\s+retval\s*;') {
   throw 'UpdateWorkspace must return its accumulated deployment result'
 }
 
+if ($configurator -notmatch 'enum\s+class\s+ConfigureResult\s*\{\s*Cancelled\s*,\s*Saved\s*,\s*Failed\s*\}') {
+  throw 'deployer settings steps must distinguish cancelled, saved, and failed outcomes'
+}
+
+$switcherStart = $configurator.IndexOf('static ConfigureResult configure_switcher')
+$uiStart = $configurator.IndexOf('static ConfigureResult configure_ui', $switcherStart)
+$runStart = $configurator.IndexOf('int Configurator::Run', $uiStart)
+if ($switcherStart -lt 0 -or $uiStart -le $switcherStart -or $runStart -le $uiStart) {
+  throw 'unable to isolate Configurator settings helper functions'
+}
+$helperBodies = @{
+  configure_switcher = $configurator.Substring($switcherStart, $uiStart - $switcherStart)
+  configure_ui = $configurator.Substring($uiStart, $runStart - $uiStart)
+}
+foreach ($functionName in $helperBodies.Keys) {
+  $body = $helperBodies[$functionName]
+  if ($body -notmatch '!api->load_settings\(settings\)[\s\S]*?ConfigureResult::Failed') {
+    throw "$functionName must propagate load_settings failure"
+  }
+  if ($body -notmatch '!api->save_settings\(settings\)[\s\S]*?ConfigureResult::Failed') {
+    throw "$functionName must propagate save_settings failure"
+  }
+  if ($body -notmatch 'ConfigureResult::Cancelled' -or $body -notmatch 'ConfigureResult::Saved') {
+    throw "$functionName must preserve cancel and saved outcomes separately"
+  }
+}
+
+$runEnd = $configurator.IndexOf('int Configurator::UpdateWorkspace', $runStart)
+if ($runEnd -le $runStart) {
+  throw 'unable to isolate Configurator::Run'
+}
+$runBody = $configurator.Substring($runStart, $runEnd - $runStart)
+if ($runBody -notmatch 'bool\s+config_failed\s*=\s*false') {
+  throw 'Configurator::Run must remember settings load/save failures'
+}
+if ($runBody -notmatch 'ConfigureResult::Saved[\s\S]*?reconfigured\s*=\s*true') {
+  throw 'Configurator::Run must deploy successfully saved settings'
+}
+if ($runBody -notmatch 'ConfigureResult::Failed[\s\S]*?config_failed\s*=\s*true') {
+  throw 'Configurator::Run must preserve a failed settings result'
+}
+if ($runBody -notmatch 'return\s+\(config_failed\s*\|\|\s*deploy_result\s*!=\s*0\)\s*\?\s*1\s*:\s*0\s*;') {
+  throw 'Configurator::Run must return failure when either configuration or deployment failed'
+}
+
 Write-Host 'Runtime hardening policy: PASS'

@@ -87,8 +87,10 @@ int main() {
   RegCloseKey(root);
 
   // 4) a different LANGID scans its own suffix range
-  check(FindIMEUnderKey(open_test_root(false), 0x0404, L"weasel.ime") == NULL,
+  root = open_test_root(false);
+  check(FindIMEUnderKey(root, 0x0404, L"weasel.ime") == NULL,
         "hant (0x0404) range is independent");
+  RegCloseKey(root);
 
   // 5) highest slot boundary is included in the scan
   set_layout(L"E0FF0804", L"boundary.ime");

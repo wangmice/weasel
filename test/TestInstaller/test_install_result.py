@@ -136,6 +136,26 @@ class InstallResultTests(unittest.TestCase):
         cancel = source.split("if (IDOK != dlg.DoModal())", 1)[1].split("profile =", 1)[0]
         self.assertIn("return ERROR_CANCELLED;", cancel)
 
+    def test_upgrade_verifies_fresh_registry_backup_before_old_uninstall(self):
+        source = (REPO / "output/install.nsi").read_text(encoding="utf-8-sig")
+        old_uninstall = source.index('  ExecWait \'"$R1\\WeaselSetup.exe" /u\' $R2')
+        prefix = source[:old_uninstall]
+        delete = prefix.rfind('  Delete "$TEMP\\weasel-hkcu-backup.reg"')
+        export = prefix.rfind(
+            '  ExecWait \'reg export HKCU\\Software\\Rime\\Weasel '
+            '"$TEMP\\weasel-hkcu-backup.reg" /y\' $R2')
+        stale_backup_guard = prefix.rfind(
+            '  IfFileExists "$PreviousBackupDir\\WeaselSetup.exe" '
+            'previous_backup_exists 0')
+        self.assertGreaterEqual(stale_backup_guard, 0)
+        self.assertLess(stale_backup_guard, delete)
+        self.assertGreaterEqual(delete, 0)
+        self.assertGreater(export, delete)
+        backup_guard = source[export:old_uninstall]
+        self.assertIn('${If} $R2 != 0', backup_guard)
+        self.assertIn('IfFileExists "$TEMP\\weasel-hkcu-backup.reg"', backup_guard)
+        self.assertIn('Abort "$(SETUPFAILED)"', backup_guard)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

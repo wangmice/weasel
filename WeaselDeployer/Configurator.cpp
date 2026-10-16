@@ -99,34 +99,41 @@ void Configurator::Initialize() {
   rime_api->deployer_initialize(NULL);
 }
 
-static bool configure_switcher(RimeLeversApi* api,
-                               RimeSwitcherSettings* switchcer_settings,
-                               bool* reconfigured) {
-  RimeCustomSettings* settings = (RimeCustomSettings*)switchcer_settings;
-  if (!api->load_settings(settings))
-    return false;
-  SwitcherSettingsDialog dialog(switchcer_settings);
-  if (dialog.DoModal() == IDOK) {
-    if (api->save_settings(settings))
-      *reconfigured = true;
-    return true;
+enum class ConfigureResult { Cancelled, Saved, Failed };
+
+static ConfigureResult configure_switcher(
+    RimeLeversApi* api,
+    RimeSwitcherSettings* switcher_settings) {
+  RimeCustomSettings* settings = (RimeCustomSettings*)switcher_settings;
+  if (!api->load_settings(settings)) {
+    LOG(ERROR) << "Failed to load switcher settings.";
+    return ConfigureResult::Failed;
   }
-  return false;
+  SwitcherSettingsDialog dialog(switcher_settings);
+  if (dialog.DoModal() != IDOK)
+    return ConfigureResult::Cancelled;
+  if (!api->save_settings(settings)) {
+    LOG(ERROR) << "Failed to save switcher settings.";
+    return ConfigureResult::Failed;
+  }
+  return ConfigureResult::Saved;
 }
 
-static bool configure_ui(RimeLeversApi* api,
-                         UIStyleSettings* ui_style_settings,
-                         bool* reconfigured) {
+static ConfigureResult configure_ui(RimeLeversApi* api,
+                                    UIStyleSettings* ui_style_settings) {
   RimeCustomSettings* settings = ui_style_settings->settings();
-  if (!api->load_settings(settings))
-    return false;
-  UIStyleSettingsDialog dialog(ui_style_settings);
-  if (dialog.DoModal() == IDOK) {
-    if (api->save_settings(settings))
-      *reconfigured = true;
-    return true;
+  if (!api->load_settings(settings)) {
+    LOG(ERROR) << "Failed to load UI style settings.";
+    return ConfigureResult::Failed;
   }
-  return false;
+  UIStyleSettingsDialog dialog(ui_style_settings);
+  if (dialog.DoModal() != IDOK)
+    return ConfigureResult::Cancelled;
+  if (!api->save_settings(settings)) {
+    LOG(ERROR) << "Failed to save UI style settings.";
+    return ConfigureResult::Failed;
+  }
+  return ConfigureResult::Saved;
 }
 
 int Configurator::Run(bool installing) {
@@ -138,6 +145,7 @@ int Configurator::Run(bool installing) {
     return 1;
 
   bool reconfigured = false;
+  bool config_failed = false;
 
   RimeSwitcherSettings* switcher_settings = api->switcher_settings_init();
   UIStyleSettings ui_style_settings;
@@ -147,22 +155,25 @@ int Configurator::Run(bool installing) {
   bool skip_ui_style_settings =
       installing && !api->is_first_run(ui_style_settings.settings());
 
-  // 两步独立执行：取消其中一个对话框不能跳过另一个（K18）。
-  // 各步仅在用户确认且保存成功时置 reconfigured，取消不影响退出码，
-  // 退出码仍由 installing/reconfigured 决定是否重新部署。
-  if (!skip_switcher_settings) {
-    configure_switcher(api, switcher_settings, &reconfigured);
-  }
-  if (!skip_ui_style_settings) {
-    configure_ui(api, &ui_style_settings, &reconfigured);
-  }
+  auto record_result = [&](ConfigureResult result) {
+    if (result == ConfigureResult::Saved)
+      reconfigured = true;
+    else if (result == ConfigureResult::Failed)
+      config_failed = true;
+  };
+
+  // 两步独立执行：取消或失败其中一步都不阻止另一步；成功保存的部分仍需部署。
+  if (!skip_switcher_settings)
+    record_result(configure_switcher(api, switcher_settings));
+  if (!skip_ui_style_settings)
+    record_result(configure_ui(api, &ui_style_settings));
 
   api->custom_settings_destroy((RimeCustomSettings*)switcher_settings);
 
-  if (installing || reconfigured) {
-    return UpdateWorkspace(reconfigured);
-  }
-  return 0;
+  int deploy_result = 0;
+  if (installing || reconfigured)
+    deploy_result = UpdateWorkspace(reconfigured);
+  return (config_failed || deploy_result != 0) ? 1 : 0;
 }
 
 int Configurator::UpdateWorkspace(bool report_errors) {
