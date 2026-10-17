@@ -36,7 +36,11 @@ def setup_result_block():
     start = source.index(command)
     if source[:start].endswith("  ClearErrors\n"):
         start -= len("  ClearErrors\n")
-    end = source.index("  ; Commit", start)
+    # The production success path jumps into the committed-install phase. The
+    # harmless harness has no such label; stop immediately before that jump so
+    # success naturally falls through to its scratch success marker while all
+    # failure/cancel rollback + Abort branches remain byte-for-byte production.
+    end = source.index("  GoTo install_commit", start)
     return source[start:end]
 
 
