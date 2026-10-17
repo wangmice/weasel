@@ -1,10 +1,10 @@
 #include "stdafx.h"
 #include <resource.h>
-#include <thread>
 #include <shellapi.h>
 #include "WeaselTSF.h"
 #include "LanguageBar.h"
 #include "CandidateList.h"
+#include "Globals.h"
 #include <WeaselUtility.h>
 
 static const DWORD LANGBARITEMSINK_COOKIE = 0x42424242;
@@ -329,11 +329,10 @@ void WeaselTSF::_HandleLangBarMenuSelect(UINT wID) {
       if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
                             L"WeaselRoot", dir) == ERROR_SUCCESS) {
         if (wID == ID_WEASELTRAY_RERUN_SERVICE) {
-          std::thread th([dir]() {
+          QueueDllBackgroundTask([dir]() {
             ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
                           NULL, dir.c_str(), SW_HIDE);
           });
-          th.detach();
         } else
           open(dir);
       }
