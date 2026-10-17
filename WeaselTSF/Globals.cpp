@@ -10,6 +10,14 @@ LONG g_cRefDll = -1;
 
 CRITICAL_SECTION g_cs;
 
+void DllAddRef() {
+  InterlockedIncrement(&g_cRefDll);
+}
+
+void DllRelease() {
+  InterlockedDecrement(&g_cRefDll);
+}
+
 namespace {
 
 struct DllBackgroundTaskContext {
@@ -97,8 +105,7 @@ const GUID c_guidLangBarItemButton = {
 const GUID c_guidDisplayAttributeInput = {
     0x2ac87e79,
     0x3260,
-    0x4b32,
-    {0x9d, 0xea, 0xf8, 0x39, 0x09, 0x76, 0xc2, 0x0b}};
+    {0x4781, 0xba20, 0x1c92, 0x6752, 0x9467, 0x0000}};
 
 #ifdef WEASEL_USING_OLDER_TSF_SDK
 
