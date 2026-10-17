@@ -5,14 +5,6 @@
 #include "WeaselTSF.h"
 #include <VersionHelpers.hpp>
 
-void DllAddRef() {
-  InterlockedIncrement(&g_cRefDll);
-}
-
-void DllRelease() {
-  InterlockedDecrement(&g_cRefDll);
-}
-
 class CClassFactory : public IClassFactory {
  public:
   // IUnknown methods

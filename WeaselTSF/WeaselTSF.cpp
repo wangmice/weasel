@@ -1,13 +1,13 @@
 ﻿#include "stdafx.h"
 
 #include <WeaselIPCData.h>
-#include <thread>
 #include <shellapi.h>
 #include <tlhelp32.h>
 #include "WeaselTSF.h"
 #include "CandidateList.h"
 #include "LanguageBar.h"
 #include "Compartment.h"
+#include "Globals.h"
 
 WeaselTSF::WeaselTSF() {
   _cRef = 1;
@@ -385,12 +385,11 @@ bool WeaselTSF::_EnsureServerConnected() {
 
     std::wstring dir = _GetRootDir();
     std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
-    std::thread th([dir = std::move(dir),
-                    launch_mutex_name = std::move(launch_mutex_name)]() mutable {
-      launch_server_serialized(std::move(dir), std::move(launch_mutex_name));
-    });
-    th.detach();
-    launch_started = true;
+    launch_started = QueueDllBackgroundTask(
+        [dir = std::move(dir),
+         launch_mutex_name = std::move(launch_mutex_name)]() mutable {
+          launch_server_serialized(std::move(dir), std::move(launch_mutex_name));
+        });
 #endif
   };
 
