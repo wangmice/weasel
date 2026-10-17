@@ -4,6 +4,10 @@
 #include <KeyEvent.h>
 #include "CandidateList.h"
 
+namespace {
+constexpr DWORD kInvalidSessionRecoveryTimeoutMs = 1000;
+}  // namespace
+
 bool WeaselTSF::_ProcessKeyEventWithRecovery(
     const weasel::KeyEvent& keyEvent) {
   auto result = m_client.ProcessKeyEventEx(keyEvent);
@@ -21,7 +25,7 @@ bool WeaselTSF::_ProcessKeyEventWithRecovery(
   if (result == weasel::KeyEventResult::InvalidSession) {
     // The server rejected the stale session before librime saw this key.
     // Start a replacement session on the still-live pipe and retry once.
-    m_client.StartSession();
+    m_client.StartSession(kInvalidSessionRecoveryTimeoutMs);
     _ConsumeResponseIfFresh();
     if (!m_client.IsSessionActive())
       return false;
