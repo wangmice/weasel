@@ -164,6 +164,7 @@ jobs:
           .\test\TestRemainingRuntimePolicy.ps1
           .\test\TestFirstKeyWakeupPolicy.ps1
           .\test\TestSetupTransactionPolicy.ps1
+          .\test\TestFinalTransactionPolicy.ps1
           .\test\TestResourcePolicy.ps1
           python .\test\TestInstaller\test_install_result.py
           if ($LASTEXITCODE -ne 0) { throw 'installer rollback tests failed' }

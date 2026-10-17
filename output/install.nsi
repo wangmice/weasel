@@ -45,6 +45,7 @@ Var HadPreviousInstall
 Var UpgradeSlotId
 Var RollbackFailed
 Var ProgramRestoreFailed
+Var SetupCommitted
 
 ; The name of the installer
 Name "小狼毫 ${WEASEL_VERSION}"
@@ -272,9 +273,17 @@ rollback_keep_temp:
   Return
 
 rollback_fresh_only:
-  ; A fresh Setup has its own registration transaction. Remove only staged
-  ; program files here; do not run /u, which would erase pre-existing HKCU
-  ; preferences on a machine that did not have Weasel installed.
+  ; Before replacement Setup succeeds, a fresh install has only staged files;
+  ; after it succeeds, a later deployment failure must unregister that state
+  ; before the program tree is removed. This still leaves unrelated/pre-existing
+  ; HKCU preferences alone when Setup never committed.
+  StrCmp $SetupCommitted "1" 0 rollback_fresh_remove_files
+  IfFileExists "$INSTDIR\WeaselSetup.exe" 0 rollback_fresh_remove_files
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $R2
+  ${If} $R2 != 0
+    StrCpy $RollbackFailed "1"
+  ${EndIf}
+rollback_fresh_remove_files:
   SetOutPath $TEMP
   ClearErrors
   RMDir /r "$INSTDIR"
@@ -383,6 +392,7 @@ Function .onInit
   StrCpy $UpgradeSlotId ""
   StrCpy $RollbackFailed "0"
   StrCpy $ProgramRestoreFailed "0"
+  StrCpy $SetupCommitted "0"
 
 !ifndef WEASEL_HAS_ARM64_PAYLOAD
   ; Reject before reading/removing an existing installation or copying files.
@@ -622,7 +632,8 @@ program_files:
     MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
     Abort "$(SETUPFAILED)"
   ${EndIf}
-  GoTo install_commit
+  StrCpy $SetupCommitted "1"
+  GoTo install_deploy
 
 install_files_failed:
   Call RollbackPreviousInstall
@@ -632,11 +643,41 @@ install_files_failed:
   MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
   Abort "$(SETUPFAILED)"
 
+install_deploy:
+  ; Deployment is part of the install transaction. Keep the old program/config
+  ; backup intact until this process exits successfully, because deploy failure
+  ; can otherwise leave a newly registered but unusable replacement in place.
+  ClearErrors
+  IfSilent deploy_silently
+  ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3
+  GoTo deploy_check
+
+deploy_silently:
+  ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3
+
+deploy_check:
+  ${If} ${Errors}
+    StrCpy $R3 "1"
+    GoTo install_deploy_failed
+  ${EndIf}
+  ${If} $R3 != 0
+    GoTo install_deploy_failed
+  ${EndIf}
+  GoTo install_commit
+
+install_deploy_failed:
+  Call RollbackPreviousInstall
+  SetErrorLevel $R3
+  StrCmp $RollbackFailed "1" 0 +3
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
+  Abort "$(SETUPFAILED)"
+
 install_commit:
-  ; Commit only after the replacement Setup has completed successfully. For a
-  ; cross-version upgrade the old version directory is now obsolete; for a
-  ; same-version in-place replacement it is the live new directory and must not
-  ; be removed.
+  ; Commit only after both replacement Setup and deployment have completed
+  ; successfully. For a cross-version upgrade the old version directory is now
+  ; obsolete; for a same-version in-place replacement it is the live new
+  ; directory and must not be removed.
   StrCmp $HadPreviousInstall "1" 0 upgrade_committed
   SetOutPath $TEMP
   StrCmp $PreviousInstallDir $INSTDIR cleanup_upgrade_backup 0
@@ -665,15 +706,6 @@ upgrade_committed:
   WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
-
-  ; run as user...
-  IfSilent deploy_silently
-  ExecWait "$INSTDIR\WeaselDeployer.exe /install"
-  GoTo deploy_done
-
-  deploy_silently:
-  ExecWait "$INSTDIR\WeaselDeployer.exe /deploy"
-  deploy_done:
 
   ; don't redirect on 64 bit system for auto run setting
   ${If} ${IsNativeARM64}

@@ -227,7 +227,7 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
 
   RIME_STRUCT(RimeStatus, status);
   if (rime_api->get_status(session_id, &status)) {
-    std::string schema_id = status.schema_id;
+    const std::string schema_id = status.schema_id ? status.schema_id : "";
     m_last_schema_id = schema_id;
     _LoadSchemaSpecificSettings(ipc_id, schema_id);
     _LoadAppInlinePreeditSet(ipc_id, true);
@@ -287,7 +287,8 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   for (auto& pair : m_session_status_map) {
     RIME_STRUCT(RimeStatus, status);
     if (rime_api->get_status(to_session_id(pair.first), &status)) {
-      _LoadSchemaSpecificSettings(pair.first, std::string(status.schema_id));
+      _LoadSchemaSpecificSettings(
+          pair.first, status.schema_id ? status.schema_id : "");
       _LoadAppInlinePreeditSet(pair.first, true);
       _UpdateInlinePreeditStatus(pair.first);
       pair.second.status = status;
@@ -746,7 +747,7 @@ void RimeWithWeaselHandler::_LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
     // load from schema.
     RIME_STRUCT(RimeStatus, status);
     if (rime_api->get_status(session_id, &status)) {
-      std::string schema_id = status.schema_id;
+      const std::string schema_id = status.schema_id ? status.schema_id : "";
       RimeConfig config;
       if (rime_api->schema_open(schema_id.c_str(), &config)) {
         Bool value = False;
