@@ -1,11 +1,76 @@
 #include "stdafx.h"
 #include "Globals.h"
 
+#include <new>
+#include <utility>
+
 HINSTANCE g_hInst;
 
 LONG g_cRefDll = -1;
 
 CRITICAL_SECTION g_cs;
+
+namespace {
+
+struct DllBackgroundTaskContext {
+  std::function<void()> task;
+  HMODULE module = nullptr;
+};
+
+void CALLBACK RunDllBackgroundTask(PTP_CALLBACK_INSTANCE instance,
+                                   PVOID raw_context) noexcept {
+  auto* context = static_cast<DllBackgroundTaskContext*>(raw_context);
+  const HMODULE module = context ? context->module : nullptr;
+
+  // The logical DllAddRef below keeps DllCanUnloadNow() false while the task
+  // is pending/running. The loader reference is released by the threadpool
+  // only after this callback has completely returned, closing the final
+  // epilogue window where COM could otherwise unload code still on the stack.
+  if (module)
+    FreeLibraryWhenCallbackReturns(instance, module);
+
+  if (context) {
+    try {
+      context->task();
+    } catch (...) {
+      // Background service launch is best-effort; never let an exception cross
+      // the Windows threadpool callback boundary.
+    }
+    delete context;
+  }
+
+  DllRelease();
+}
+
+}  // namespace
+
+bool QueueDllBackgroundTask(std::function<void()> task) {
+  if (!task)
+    return false;
+
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(&g_cRefDll), &module)) {
+    return false;
+  }
+
+  auto* context = new (std::nothrow)
+      DllBackgroundTaskContext{std::move(task), module};
+  if (!context) {
+    FreeLibrary(module);
+    return false;
+  }
+
+  DllAddRef();
+  if (!TrySubmitThreadpoolCallback(RunDllBackgroundTask, context, nullptr)) {
+    DllRelease();
+    delete context;
+    FreeLibrary(module);
+    return false;
+  }
+
+  return true;
+}
 
 // {A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}
 const CLSID c_clsidTextService = {
