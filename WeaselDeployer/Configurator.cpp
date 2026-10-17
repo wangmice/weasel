@@ -5,6 +5,7 @@
 #include "UIStyleSettings.h"
 #include "UIStyleSettingsDialog.h"
 #include "DictManagementDialog.h"
+#include "DeployerDiagnostics.h"
 #include <WeaselConstants.h>
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
@@ -76,6 +77,7 @@ static bool BeginMaintenanceIfConnected(weasel::Client& client,
 Configurator::Configurator() {
   CreateFileIfNotExist("default.custom.yaml");
   CreateFileIfNotExist("weasel.custom.yaml");
+  AppendDeployerDiagnostic(L"Configurator constructed");
 }
 
 void Configurator::Initialize() {
@@ -94,9 +96,13 @@ void Configurator::Initialize() {
   weasel_traits.log_dir = log_dir.c_str();
   RimeApi* rime_api = rime_get_api();
   assert(rime_api);
+  AppendDeployerDiagnostic(L"before rime_api->setup");
   rime_api->setup(&weasel_traits);
+  AppendDeployerDiagnostic(L"after rime_api->setup");
   LOG(INFO) << "WeaselDeployer reporting.";
+  AppendDeployerDiagnostic(L"before deployer_initialize");
   rime_api->deployer_initialize(NULL);
+  AppendDeployerDiagnostic(L"after deployer_initialize");
 }
 
 enum class ConfigureResult { Cancelled, Saved, Failed };
@@ -137,12 +143,18 @@ static ConfigureResult configure_ui(RimeLeversApi* api,
 }
 
 int Configurator::Run(bool installing) {
+  AppendDeployerDiagnosticValue(L"Configurator::Run entered installing",
+                                installing ? 1 : 0);
   RimeModule* levers = rime_get_api()->find_module("levers");
-  if (!levers)
+  if (!levers) {
+    AppendDeployerDiagnostic(L"Configurator::Run failed: levers module not found");
     return 1;
+  }
   RimeLeversApi* api = (RimeLeversApi*)levers->get_api();
-  if (!api)
+  if (!api) {
+    AppendDeployerDiagnostic(L"Configurator::Run failed: levers API unavailable");
     return 1;
+  }
 
   bool reconfigured = false;
   bool config_failed = false;
@@ -154,6 +166,10 @@ int Configurator::Run(bool installing) {
       installing && !api->is_first_run((RimeCustomSettings*)switcher_settings);
   bool skip_ui_style_settings =
       installing && !api->is_first_run(ui_style_settings.settings());
+  AppendDeployerDiagnosticValue(L"Configurator::Run skip_switcher_settings",
+                                skip_switcher_settings ? 1 : 0);
+  AppendDeployerDiagnosticValue(L"Configurator::Run skip_ui_style_settings",
+                                skip_ui_style_settings ? 1 : 0);
 
   auto record_result = [&](ConfigureResult result) {
     if (result == ConfigureResult::Saved)
@@ -169,21 +185,36 @@ int Configurator::Run(bool installing) {
     record_result(configure_ui(api, &ui_style_settings));
 
   api->custom_settings_destroy((RimeCustomSettings*)switcher_settings);
+  AppendDeployerDiagnosticValue(L"Configurator::Run reconfigured",
+                                reconfigured ? 1 : 0);
+  AppendDeployerDiagnosticValue(L"Configurator::Run config_failed",
+                                config_failed ? 1 : 0);
 
   int deploy_result = 0;
-  if (installing || reconfigured)
+  if (installing || reconfigured) {
+    AppendDeployerDiagnostic(L"before UpdateWorkspace");
     deploy_result = UpdateWorkspace(reconfigured);
-  return (config_failed || deploy_result != 0) ? 1 : 0;
+    AppendDeployerDiagnosticValue(L"after UpdateWorkspace result",
+                                  deploy_result);
+  }
+  const int final_result = (config_failed || deploy_result != 0) ? 1 : 0;
+  AppendDeployerDiagnosticValue(L"Configurator::Run final_result",
+                                final_result);
+  return final_result;
 }
 
 int Configurator::UpdateWorkspace(bool report_errors) {
+  AppendDeployerDiagnosticValue(L"UpdateWorkspace entered report_errors",
+                                report_errors ? 1 : 0);
   HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
   if (!hMutex) {
     LOG(ERROR) << "Error creating WeaselDeployerMutex.";
+    AppendDeployerDiagnostic(L"UpdateWorkspace failed: create mutex");
     return 1;
   }
   if (GetLastError() == ERROR_ALREADY_EXISTS) {
     LOG(WARNING) << "another deployer process is running; aborting operation.";
+    AppendDeployerDiagnostic(L"UpdateWorkspace failed: mutex already exists");
     CloseHandle(hMutex);
     if (report_errors) {
       // MessageBox(NULL,
@@ -197,30 +228,46 @@ int Configurator::UpdateWorkspace(bool report_errors) {
 
   weasel::Client client;
   bool maintenance_started = false;
+  AppendDeployerDiagnostic(L"before BeginMaintenanceIfConnected");
   if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
+    AppendDeployerDiagnostic(L"BeginMaintenanceIfConnected failed");
     CloseHandle(hMutex);
     return 1;
   }
+  AppendDeployerDiagnosticValue(L"after BeginMaintenanceIfConnected maintenance_started",
+                                maintenance_started ? 1 : 0);
 
   int retval = 0;
   {
     MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     // initialize default config, preset schemas
-    if (!rime->deploy()) {
+    AppendDeployerDiagnostic(L"before rime->deploy");
+    const bool workspace_deploy_ok = rime->deploy();
+    AppendDeployerDiagnosticValue(L"after rime->deploy result",
+                                  workspace_deploy_ok ? 1 : 0);
+    if (!workspace_deploy_ok) {
       LOG(ERROR) << "Error deploying Rime workspace.";
       retval = 1;
     }
     // initialize weasel config
-    if (!rime->deploy_config_file("weasel.yaml", "config_version")) {
+    AppendDeployerDiagnostic(L"before deploy_config_file");
+    const bool weasel_config_deploy_ok =
+        rime->deploy_config_file("weasel.yaml", "config_version");
+    AppendDeployerDiagnosticValue(L"after deploy_config_file result",
+                                  weasel_config_deploy_ok ? 1 : 0);
+    if (!weasel_config_deploy_ok) {
       LOG(ERROR) << "Error deploying weasel.yaml.";
       retval = 1;
     }
     // Even on failure, wait for any maintenance work spawned by the successful
     // portions above before releasing the mutex and resuming WeaselServer.
+    AppendDeployerDiagnostic(L"before join_maintenance_thread");
     rime->join_maintenance_thread();
+    AppendDeployerDiagnostic(L"after join_maintenance_thread");
     CloseHandle(hMutex);  // should be closed before resuming service.
   }
+  AppendDeployerDiagnosticValue(L"UpdateWorkspace return", retval);
   return retval;
 }
 

@@ -678,17 +678,23 @@ install_deploy:
   StrCpy $DeployExitCode "0"
   ClearErrors
   IfSilent deploy_silently
+  DetailPrint "[diagnostic] before ExecWait /install; INSTDIR=$INSTDIR; had_previous=$HadPreviousInstall"
   ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3
   GoTo deploy_check
 
 deploy_silently:
+  DetailPrint "[diagnostic] before ExecWait /deploy; INSTDIR=$INSTDIR; had_previous=$HadPreviousInstall"
   ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3
 
 deploy_check:
   ${If} ${Errors}
+    DetailPrint "[diagnostic] ExecWait errors=1; exit_code=$R3"
     StrCpy $DeployExitCode "1"
   ${ElseIf} $R3 != 0
+    DetailPrint "[diagnostic] ExecWait errors=0 exit_code=$R3"
     StrCpy $DeployExitCode "$R3"
+  ${Else}
+    DetailPrint "[diagnostic] ExecWait errors=0 exit_code=0"
   ${EndIf}
 
   ; don't redirect on 64 bit system for auto run setting

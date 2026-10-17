@@ -5,6 +5,7 @@
 #include <fstream>
 #include "WeaselDeployer.h"
 #include "Configurator.h"
+#include "DeployerDiagnostics.h"
 #include <ShellScalingApi.h>
 
 CAppModule _Module;
@@ -16,6 +17,7 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
                        LPTSTR lpCmdLine,
                        int nCmdShow) {
   UNREFERENCED_PARAMETER(hPrevInstance);
+  AppendDeployerDiagnosticText(L"process started; command_line", lpCmdLine);
   LoadWeaselLogLevelFromRegistry();
   SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
   LANGID langId = get_language_id();
@@ -51,7 +53,9 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
     LOG(WARNING) << "another deployer process is running; aborting operation.";
     ret = 1;
   } else {
+    AppendDeployerDiagnostic(L"before Run");
     ret = Run(lpCmdLine);
+    AppendDeployerDiagnosticValue(L"after Run result", ret);
   }
 
   if (hMutex) {
@@ -60,12 +64,16 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
   _Module.Term();
   ::CoUninitialize();
 
+  AppendDeployerDiagnosticValue(L"process exiting", ret);
   return ret;
 }
 
 static int Run(LPTSTR lpCmdLine) {
+  AppendDeployerDiagnosticText(L"Run entered; command_line", lpCmdLine);
   Configurator configurator;
+  AppendDeployerDiagnostic(L"before Configurator::Initialize");
   configurator.Initialize();
+  AppendDeployerDiagnostic(L"after Configurator::Initialize");
 
   if (!wcscmp(L"/?", lpCmdLine) || !wcscmp(L"/help", lpCmdLine)) {
     WCHAR msg[1024] = {0};
@@ -82,24 +90,33 @@ static int Run(LPTSTR lpCmdLine) {
                  L"/install		- Install Weasel (Initial deployment)",
                  L"Weasel Deployer", MB_ICONINFORMATION | MB_OK);
     }
+    AppendDeployerDiagnosticValue(L"Run help result", 0);
     return 0;
   }
 
   bool deployment_scheduled = !wcscmp(L"/deploy", lpCmdLine);
   if (deployment_scheduled) {
-    return configurator.UpdateWorkspace();
+    const int result = configurator.UpdateWorkspace();
+    AppendDeployerDiagnosticValue(L"Run /deploy result", result);
+    return result;
   }
 
   bool dict_management = !wcscmp(L"/dict", lpCmdLine);
   if (dict_management) {
-    return configurator.DictManagement();
+    const int result = configurator.DictManagement();
+    AppendDeployerDiagnosticValue(L"Run /dict result", result);
+    return result;
   }
 
   bool sync_user_dict = !wcscmp(L"/sync", lpCmdLine);
   if (sync_user_dict) {
-    return configurator.SyncUserData();
+    const int result = configurator.SyncUserData();
+    AppendDeployerDiagnosticValue(L"Run /sync result", result);
+    return result;
   }
 
   bool installing = !wcscmp(L"/install", lpCmdLine);
-  return configurator.Run(installing);
+  const int result = configurator.Run(installing);
+  AppendDeployerDiagnosticValue(L"Run Configurator::Run result", result);
+  return result;
 }
