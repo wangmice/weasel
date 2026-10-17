@@ -88,6 +88,31 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            ${{ env.BOOST_ROOT }}
+          key: ${{ runner.os }}-boost-${{ env.boost_version }}-b2v2
+
+      - name: Install Boost source
+        if: steps.cache-boost.outputs.cache-hit != 'true'
+        shell: bash
+        run: ./install_boost.bat
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          sdk: ${{ env.SDKVER }}
+
+      - name: Validate Boost source, B2, and staged libraries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build.bat boost arm64
+          if ($LASTEXITCODE -ne 0) { throw 'Boost validation/build failed' }
+
+      # bundled winsparkle v0.9.2 to disable auto open ReleaseNoteUrl in default browser
+      - name: cache bundled winsparkle
+        id: cache-winsparkle
+        uses: actions/cache@v4
+        with:
+          path: |
             ${{ github.workspace }}\winsparkle\x64\Release\WinSparkle.dll
             ${{ github.workspace }}\winsparkle\x64\Release\WinSparkle.lib
             ${{ github.workspace }}\winsparkle\Release\WinSparkle.dll
@@ -160,6 +185,7 @@ jobs:
           .\test\TestXmakeToolchainPolicy.ps1
           .\test\TestXmakeTargetLinkFlagsPolicy.ps1
           .\test\TestRuntimeHardeningPolicy.ps1
+          .\test\TestBackgroundAndDeployerPolicy.ps1
           .\test\TestRestartRollbackRegressionPolicy.ps1
           .\test\TestRemainingRuntimePolicy.ps1
           .\test\TestFirstKeyWakeupPolicy.ps1
