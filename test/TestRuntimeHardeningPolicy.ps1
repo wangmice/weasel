@@ -44,7 +44,7 @@ if ($setOpen.Groups['body'].Value -match 'ITfCompartment\s*\*\s*pCompartment') {
   throw '_SetKeyboardOpen still owns the GetCompartment reference as a raw pointer'
 }
 
-if ($pipeCpp -notmatch 'success\s*&&\s*lread\s*!=\s*rec_len') {
+if ($pipeCpp -notmatch '!result\.error\s*&&\s*result\.bytes\s*!=\s*rec_len') {
   throw 'PipeChannelBase::_Receive must reject successful short fixed-header reads'
 }
 if ($pipeHeader -notmatch '_TyRes\s+result\s*\{\s*\}\s*;') {
@@ -56,6 +56,12 @@ if ($serverCommandsTest -match '(?m)^\s*#define\s+private\s+public\s*$') {
 }
 if ($serverCommandsXmake -match 'add_forceincludes\s*\(') {
   throw 'TestServerCommands must not force-include a private-access shim into every translation unit'
+}
+if ($serverCommandsXmake -notmatch 'add_defines\("WEASEL_TEST_DISABLE_SERVER_LAUNCH"\)') {
+  throw 'TestServerCommands must compile out the real server launcher'
+}
+if ($tsf -notmatch 'try_start_recovery\s*=\s*\[&\]\(\)\s*\{\s*#if !defined\(WEASEL_TEST_DISABLE_SERVER_LAUNCH\)') {
+  throw 'the test build must disable recovery launch before process and registry access'
 }
 if ($weaselTsfHeader -notmatch 'friend\s+class\s+WeaselTSFTestAccess\s*;') {
   throw 'WeaselTSF must grant access only to the dedicated test accessor'

@@ -31,14 +31,46 @@ if ($tsf -notmatch 'constexpr\s+DWORD\s+kFirstKeyRecoveryPollMs\s*=\s*[1-9][0-9]
 if ($ensure -notmatch 'deadline\s*=\s*GetTickCount64\(\)\s*\+\s*kFirstKeyRecoveryTimeoutMs') {
   throw 'first failed key must establish a bounded recovery deadline'
 }
-if ($ensure -notmatch 'while\s*\(GetTickCount64\(\)\s*<\s*deadline\)[\s\S]*?Sleep\(kFirstKeyRecoveryPollMs\)[\s\S]*?_Reconnect\(\)[\s\S]*?IsSessionActive\(\)[\s\S]*?return\s+true;') {
-  throw 'first failed key must reconnect until a session is active or the deadline expires'
+
+$loopStart = $ensure.IndexOf('while (GetTickCount64() < deadline)')
+if ($loopStart -lt 0) {
+  throw 'first failed key must retry only while the shared deadline remains live'
 }
-if ($ensure -notmatch 'while\s*\(GetTickCount64\(\)\s*<\s*deadline\)[\s\S]*?try_start_recovery\(\)') {
+$loopEnd = $ensure.IndexOf('return false;', $loopStart)
+if ($loopEnd -lt 0) {
+  throw 'unable to isolate the bounded first-key recovery loop'
+}
+$recoveryLoop = $ensure.Substring($loopStart, $loopEnd - $loopStart)
+if ($recoveryLoop -notmatch 'RemainingRecoveryTime\(deadline\)') {
+  throw 'first-key retry loop must consume the remaining shared deadline budget'
+}
+if ($recoveryLoop -notmatch 'Sleep\([\s\S]*?kFirstKeyRecoveryPollMs') {
+  throw 'first-key retry loop must retain bounded polling sleeps'
+}
+if ($recoveryLoop -notmatch 'if\s*\(reconnect_until\(deadline\)\)\s*\{[\s\S]*?return\s+true;') {
+  throw 'first failed key must reconnect until a session is active or the shared deadline expires'
+}
+if ($recoveryLoop -notmatch 'try_start_recovery\(\)') {
   throw 'first-key recovery must re-check for an exiting server becoming absent during the same key'
 }
 if ($ensure -notmatch 'return\s+false;') {
   throw 'timed-out recovery must still release the key to the host'
+}
+
+# Recovery enters Disconnect only after IsSessionActive() is false. In that
+# state Disconnect is a transport reset and must not retire SessionKey, or a
+# lost START_SESSION response cannot be retried idempotently.
+$disconnectStart = $client.IndexOf('void ClientImpl::Disconnect()')
+$shutdownStart = $client.IndexOf('void ClientImpl::ShutdownServer()', $disconnectStart)
+if ($disconnectStart -lt 0 -or $shutdownStart -le $disconnectStart) {
+  throw 'unable to isolate ClientImpl::Disconnect'
+}
+$disconnectBody = $client.Substring($disconnectStart, $shutdownStart - $disconnectStart)
+if ($disconnectBody -match 'channel\.Disconnect\(\);\s*_RetireSessionKey\(\)') {
+  throw 'inactive transport disconnect must preserve SessionKey for START retry'
+}
+if ($disconnectBody -notmatch 'if\s*\(_Active\(\)\)[\s\S]*?EndSession\(\)[\s\S]*?channel\.Disconnect\(\)') {
+  throw 'active Disconnect must still end the established logical session before closing transport'
 }
 
 # A stale local pipe handle after WeaselServer exits is not proof that the
@@ -50,7 +82,7 @@ if ($ipc -notmatch 'TransportNotDelivered') {
 if ($pipe -notmatch 'class\s+PipeTransactionError[\s\S]*?request_may_have_been_delivered') {
   throw 'pipe transaction failures must carry request-delivery ambiguity'
 }
-if ($pipe -notmatch 'bool\s+request_sent\s*=\s*false[\s\S]*?_Send\([^;]+;[\s\S]*?request_sent\s*=\s*true[\s\S]*?_ReceiveResponse\(\)') {
+if ($pipe -notmatch 'bool\s+request_sent\s*=\s*false[\s\S]*?_Send\([^;]+;[\s\S]*?request_sent\s*=\s*true[\s\S]*?_ReceiveResponse\(deadline\)') {
   throw 'pipe transaction must mark delivery only after the request write succeeds'
 }
 if ($client -notmatch 'catch\s*\(const\s+PipeTransactionError&[\s\S]*?request_may_have_been_delivered[\s\S]*?TransportNotDelivered') {

@@ -404,7 +404,7 @@ static void test_transact_recovery_without_resend() {
   check(threw, "1.6: request on dropped connection fails");
   check(echo_count.load() == 1, "1.6: failed request not resent");
 
-  // Transact reconnected internally; the next request must succeed
+  // Reconnect lazily on the next call; failure handling must not add a wait.
   bool recovered = false;
   try {
     recovered = (client.Transact(req) == 2);
@@ -847,7 +847,163 @@ static void test_listener_stop_cancels_blocked_accept() {
   server.DrainWorkers();
 }
 
+static void test_pending_write_timeout_is_ambiguous() {
+  const std::wstring name = unique_pipe_name(L"write_timeout");
+  DWORD handles_before = 0;
+  GetProcessHandleCount(GetCurrentProcess(), &handles_before);
+  for (int round = 0; round < 8; ++round) {
+    HANDLE instance = CreateNamedPipeW(
+        name.c_str(), PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+        1, 1024, 1024, 0, NULL);
+    check(instance != INVALID_HANDLE_VALUE, "write timeout: create small pipe");
+    if (instance == INVALID_HANDLE_VALUE)
+      return;
+    ClientChannel client{std::wstring(name)};
+    check(client.Connect(), "write timeout: connect without a reading peer");
+    ConnectNamedPipe(instance, NULL);
+    client << std::wstring(30000, L'x');
+    weasel::PipeMessage request{WEASEL_IPC_PROCESS_KEY_EVENT, 'a', 1};
+    bool ambiguous_timeout = false;
+    const ULONGLONG started = GetTickCount64();
+    try {
+      client.Transact(request, 100);
+    } catch (const weasel::PipeTransactionError& error) {
+      ambiguous_timeout = error.error_code == ERROR_TIMEOUT &&
+                          error.request_may_have_been_delivered;
+    }
+    check(ambiguous_timeout && GetTickCount64() - started < 1000,
+          "write timeout: pending write is cancelled without claiming safe replay");
+    check(!client.Connected(), "write timeout: partial connection is closed");
+    CloseHandle(instance);
+  }
+  DWORD handles_after = 0;
+  GetProcessHandleCount(GetCurrentProcess(), &handles_after);
+  check(handles_after <= handles_before,
+        "write timeout: repeated cancellation does not leak events or pipes");
+}
+
+static void test_connect_and_reply_share_deadline() {
+  const std::wstring name = unique_pipe_name(L"shared_deadline");
+  HANDLE instance = CreateNamedPipeW(
+      name.c_str(), PIPE_ACCESS_DUPLEX,
+      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+      1, 1024, 1024, 0, NULL);
+  check(instance != INVALID_HANDLE_VALUE, "deadline: create single-instance pipe");
+  if (instance == INVALID_HANDLE_VALUE)
+    return;
+  HANDLE holder = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                              0, NULL, OPEN_EXISTING, 0, NULL);
+  check(holder != INVALID_HANDLE_VALUE, "deadline: occupy the only instance");
+  if (holder == INVALID_HANDLE_VALUE) {
+    CloseHandle(instance);
+    return;
+  }
+  ConnectNamedPipe(instance, NULL);
+  boost::thread peer([&] {
+    Sleep(300);
+    DisconnectNamedPipe(instance);
+    CloseHandle(holder);
+    if (!ConnectNamedPipe(instance, NULL) && GetLastError() != ERROR_PIPE_CONNECTED)
+      return;
+    weasel::PipeMessage request{};
+    DWORD transferred = 0;
+    if (ReadFile(instance, &request, sizeof(request), &transferred, NULL)) {
+      Sleep(300);
+      DWORD reply = 42;
+      WriteFile(instance, &reply, sizeof(reply), &transferred, NULL);
+    }
+  });
+  ClientChannel client{std::wstring(name)};
+  weasel::PipeMessage request{WEASEL_IPC_ECHO, 0, 0};
+  bool timed_out_after_send = false;
+  const ULONGLONG started = GetTickCount64();
+  try {
+    client.Transact(request, 450);
+  } catch (const weasel::PipeTransactionError& error) {
+    timed_out_after_send = error.error_code == ERROR_TIMEOUT &&
+                           error.request_may_have_been_delivered;
+  }
+  check(timed_out_after_send && GetTickCount64() - started < 700,
+        "deadline: connection waiting consumes the response budget too");
+  if (!peer.timed_join(boost::posix_time::seconds(2))) {
+    check(false, "deadline: private peer exits after the bounded exchange");
+    CancelSynchronousIo(peer.native_handle());
+    DisconnectNamedPipe(instance);
+    peer.join();
+  }
+  client.Disconnect();
+  CloseHandle(instance);
+}
+
+static void test_explicit_long_transaction_budget() {
+  const std::wstring name = unique_pipe_name(L"long_budget");
+  weasel::PipeServer server{std::wstring(name)};
+  auto handler = [](weasel::PipeMessage, weasel::PipeServer::Respond respond) {
+    Sleep(1250);
+    respond(42);
+  };
+  boost::thread listener([&] { server.Listen(handler); });
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "long budget: connect");
+  weasel::PipeMessage request{WEASEL_IPC_START_MAINTENANCE, 0, 0};
+  bool completed = false;
+  try {
+    completed = client.Transact(request, 2500) == 42;
+  } catch (...) {
+  }
+  check(completed, "long budget: slow maintenance can use an explicit deadline");
+  client.Disconnect();
+  server.StopListener(listener);
+  server.DrainWorkers();
+}
+
+static void test_response_timeout_does_not_resend() {
+  std::wstring name = unique_pipe_name(L"response_timeout");
+  weasel::PipeServer server{std::wstring(name)};
+  std::atomic<int> requests{0};
+  auto handler = [&](weasel::PipeMessage, weasel::PipeServer::Respond respond) {
+    const int request = ++requests;
+    if (request == 1)
+      Sleep(3000);  // Also bounds the old implementation's failing test.
+    respond(request);
+  };
+  boost::thread listener([&] { server.Listen(handler); });
+  ClientChannel client{std::wstring(name)};
+  check(connect_with_retry(client), "timeout: private client connects");
+  weasel::PipeMessage request{WEASEL_IPC_PROCESS_KEY_EVENT, 'a', 1};
+  bool timed_out = false;
+  bool possibly_delivered = false;
+  const ULONGLONG started = GetTickCount64();
+  try {
+    client.Transact(request);
+  } catch (const weasel::PipeTransactionError& error) {
+    timed_out = error.error_code == ERROR_TIMEOUT;
+    possibly_delivered = error.request_may_have_been_delivered;
+  }
+  const ULONGLONG elapsed = GetTickCount64() - started;
+  check(timed_out && elapsed < 2000,
+        "timeout: unresponsive peer cannot pin a transaction indefinitely");
+  check(possibly_delivered,
+        "timeout: a sent key with no reply must not be safe to replay");
+  check(!client.Connected(), "timeout: cancelled connection is discarded");
+  bool recovered = false;
+  try {
+    recovered = client.Transact(request) == 2;
+  } catch (...) {
+  }
+  check(recovered && requests == 2,
+        "timeout: next request reconnects without resending the timed-out key");
+  client.Disconnect();
+  server.StopListener(listener);
+  server.DrainWorkers();
+}
+
 int main() {
+  test_response_timeout_does_not_resend();
+  test_pending_write_timeout_is_ambiguous();
+  test_connect_and_reply_share_deadline();
+  test_explicit_long_transaction_budget();
   test_roundtrip();
   test_pipe_connected_race();
   test_hung_client_does_not_freeze_others();

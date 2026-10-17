@@ -1,5 +1,8 @@
 // Exercise the production command dispatcher and TSF reconnect path on a
 // private pipe. No live service, registration, or Rime data is touched.
+#if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
+#error TestServerCommands requires the no-launch TSF build for isolation
+#endif
 #include "../../WeaselTSF/stdafx.h"
 #include "../../WeaselIPCServer/stdafx.h"
 #include <WeaselIPCData.h>
@@ -43,6 +46,7 @@ class TestChannelAccess : public weasel::PipeChannelBase {
   static void SetName(weasel::PipeChannelBase& channel,
                       const std::wstring& name) {
     channel.*&TestChannelAccess::pname = name;
+    channel.*&TestChannelAccess::fallback_pname = std::wstring();
   }
 };
 
@@ -203,6 +207,8 @@ class SessionHandler : public weasel::RequestHandler {
       return FALSE;
     }
     ++accepted_keys;
+    if (delay_key_reply)
+      Sleep(1500);
     return TRUE;
   }
   void SetOption(DWORD id, const std::string& opt, bool val) override {
@@ -218,6 +224,7 @@ class SessionHandler : public weasel::RequestHandler {
   std::atomic<int> echo_calls{0};
   std::atomic<int> sessions_created{0};
   std::atomic<int> accepted_keys{0};
+  std::atomic<bool> delay_key_reply{false};
   std::atomic<int> invalid_keys{0};
   std::atomic<int> option_calls{0};
   DWORD last_session = 0;
@@ -293,6 +300,52 @@ static bool connect_with_retry(weasel::Client& client) {
     Sleep(25);
   }
   return false;
+}
+
+static void test_unavailable_private_server_stays_isolated() {
+  WeaselTSF tsf;
+  auto& client = WeaselTSFTestAccess::Client(tsf);
+  const std::wstring name = weasel::GetPipeName() + L"_UnavailablePrivateTest_" +
+                            std::to_wstring(GetCurrentProcessId());
+  TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(client), name);
+  check(!tsf._EnsureServerConnected(),
+        "missing private server fails recovery without launching the real service");
+  check(!client.IsSessionActive(),
+        "missing private server leaves the test client inactive");
+}
+
+static void test_client_lifecycle_timeout_budgets() {
+  const std::wstring name = weasel::GetPipeName() + L"_LifecycleTimeoutTest_" +
+                            std::to_wstring(GetCurrentProcessId());
+  weasel::PipeServer server{std::wstring(name)};
+  auto handler = [](weasel::PipeMessage message,
+                     weasel::PipeServer::Respond respond) {
+    if (message.Msg == WEASEL_IPC_START_MAINTENANCE ||
+        message.Msg == WEASEL_IPC_END_MAINTENANCE)
+      Sleep(1250);
+    else if (message.Msg == WEASEL_IPC_END_SESSION)
+      Sleep(600);
+    respond(message.Msg == WEASEL_IPC_START_SESSION ? 42 : 1);
+  };
+  boost::thread listener([&] { server.Listen(handler); });
+  weasel::Client client;
+  TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(client), name);
+  check(connect_with_retry(client), "lifecycle: isolated client connects");
+  check(client.StartMaintenance(),
+        "lifecycle: maintenance may take longer than the input timeout");
+  ULONGLONG started = GetTickCount64();
+  client.EndMaintenance();
+  check(GetTickCount64() - started >= 1000 &&
+            weasel::ClientTestAccess::Channel(client).Connected(),
+        "lifecycle: resume also uses the longer maintenance budget");
+  client.StartSession();
+  check(client.IsSessionActive(), "lifecycle: establish a session before teardown");
+  started = GetTickCount64();
+  client.Disconnect();
+  check(GetTickCount64() - started < 500 && !client.IsSessionActive(),
+        "lifecycle: slow EndSession cannot pin Disconnect or destruction");
+  server.StopListener(listener);
+  server.DrainWorkers();
 }
 
 static void test_maintenance_session_recovery() {
@@ -395,15 +448,21 @@ static void test_maintenance_session_recovery() {
             handler.invalid_keys == invalid_before + 1,
         "recovered key reaches the input engine exactly once");
 
-  // Transport failure is ambiguous: the server may already have processed
-  // the request, so the current-key path must never replay it.
+  // A request accepted by the engine whose reply exceeds the deadline is
+  // ambiguous: TSF must release it without rebuilding or replaying this key.
   start_before = start_session_messages;
-  weasel::ServerImplTestAccess::StopPipeServer(server);
+  accepted_before = handler.accepted_keys;
+  handler.delay_key_reply = true;
+  const ULONGLONG started = GetTickCount64();
   check(!WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
             tsf, weasel::KeyEvent('c')),
-        "transport failure is released instead of replayed");
+        "response timeout is released instead of replayed");
+  check(GetTickCount64() - started < 1400,
+        "TSF returns before the slow engine reply");
   check(start_session_messages == start_before && !tsf_client.IsSessionActive(),
-        "transport failure does not rebuild the session");
+        "response timeout does not rebuild the session");
+  check(handler.accepted_keys == accepted_before + 1,
+        "response timeout delivers the physical key at most once");
 }
 
 int main() {
@@ -415,6 +474,8 @@ int main() {
   test_pending_ui_generation_rejects_stale_extent();
   test_pipe_ascii_commands();
   test_window_ascii_commands();
+  test_unavailable_private_server_stays_isolated();
+  test_client_lifecycle_timeout_budgets();
   test_maintenance_session_recovery();
   test_panel_recreate_reapplies_window_size();
   CoUninitialize();
