@@ -137,6 +137,18 @@ foreach ($marker in $configuratorMarkers) {
     throw "missing configurator diagnostic marker: $marker"
   }
 }
+
+if ($configurator -notmatch 'enum class ConfigureResult \{ Cancelled, Unchanged, Saved, Failed \};') {
+  throw 'deployer settings results must distinguish unchanged from failure'
+}
+if (([regex]::Matches($configurator, 'return ConfigureResult::Unchanged;')).Count -lt 2) {
+  throw 'both deployer settings dialogs must treat save_settings(false) as unchanged'
+}
+if ($configurator -match 'Failed to save switcher settings' -or
+    $configurator -match 'Failed to save UI style settings') {
+  throw 'save_settings(false) means unchanged in librime and must not be logged as failure'
+}
+
 if ($configurator -notmatch 'CreateMutex\(NULL, TRUE, L"WeaselDeployerMutex"\)') {
   throw 'diagnostics must preserve the existing WeaselDeployerMutex policy'
 }
