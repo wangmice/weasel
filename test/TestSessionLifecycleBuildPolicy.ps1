@@ -9,6 +9,14 @@ $pipeServer = Get-Content -LiteralPath (Join-Path $repo 'include\PipeServer.h') 
 $rimeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\RimeWithWeasel.h') -Raw
 $rimeUtility = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\WeaselUtility.cpp') -Raw
 
+# WeaselIPC contains function-local non-trivial statics (for example the
+# Deserializer factory registry). C++11 requires those initializers to be
+# serialized. Never opt the MSVC build out of that guarantee: doing so races
+# the first ResponseParser construction in multi-threaded host processes.
+if ($ipcProject -match '/Zc:threadSafeInit-') {
+  throw 'WeaselIPC must not disable thread-safe local static initialization'
+}
+
 # xmake picks up implementation sources through the directory glob, while the
 # legacy MSBuild project uses an explicit source list. Both build paths must
 # compile the SessionKey implementation or the MSBuild path will link with
