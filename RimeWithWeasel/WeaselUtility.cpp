@@ -1,7 +1,25 @@
 #include "stdafx.h"
 #include <filesystem>
 #include <string>
+#include <RimeWithWeasel.h>
 #include <WeaselUtility.h>
+
+DWORD RimeWithWeaselHandler::DestroySession(WeaselSessionId ipc_id) {
+  const RimeSessionId session_id = to_session_id(ipc_id);
+  if (m_active_session == ipc_id) {
+    if (m_ui)
+      m_ui->Hide();
+    m_active_session = 0;
+  }
+
+  if (!m_disabled && session_id) {
+    RimeApi* api = rime_get_api();
+    if (api)
+      api->destroy_session(session_id);
+  }
+  m_session_status_map.erase(ipc_id);
+  return 0;
+}
 
 fs::path WeaselUserDataPath() {
   WCHAR _path[MAX_PATH] = {0};

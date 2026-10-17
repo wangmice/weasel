@@ -303,6 +303,13 @@ constexpr DWORD kServerLaunchObservationPollMs = 50;
 constexpr ULONGLONG kFirstKeyRecoveryTimeoutMs = 1000;
 constexpr DWORD kFirstKeyRecoveryPollMs = 25;
 
+DWORD RemainingRecoveryTime(ULONGLONG deadline) {
+  const ULONGLONG now = GetTickCount64();
+  if (now >= deadline)
+    return 0;
+  return static_cast<DWORD>(deadline - now);
+}
+
 void launch_server_serialized(std::wstring dir, std::wstring mutex_name) {
   HANDLE launch_mutex = CreateMutex(NULL, FALSE, mutex_name.c_str());
   if (!launch_mutex)
@@ -340,8 +347,29 @@ bool WeaselTSF::_EnsureServerConnected() {
   if (m_client.IsSessionActive())
     return true;
 
-  _Reconnect();
-  if (m_client.IsSessionActive()) {
+  // One absolute deadline bounds the complete first-key recovery sequence.
+  // Connect and StartSession receive only the time still available from it.
+  const ULONGLONG deadline =
+      GetTickCount64() + kFirstKeyRecoveryTimeoutMs;
+  const auto reconnect_until = [&](ULONGLONG recovery_deadline) {
+    m_client.Disconnect();
+
+    DWORD remaining = RemainingRecoveryTime(recovery_deadline);
+    if (!remaining || !m_client.Connect(remaining))
+      return false;
+
+    remaining = RemainingRecoveryTime(recovery_deadline);
+    if (!remaining) {
+      m_client.Disconnect();
+      return false;
+    }
+
+    m_client.StartSession(remaining);
+    _ConsumeResponseIfFresh();
+    return m_client.IsSessionActive();
+  };
+
+  if (reconnect_until(deadline)) {
     _reconnectRetry = 0;
     return true;
   }
@@ -351,6 +379,7 @@ bool WeaselTSF::_EnsureServerConnected() {
   // key, so recovery does not need a second physical keystroke to start.
   bool launch_started = false;
   const auto try_start_recovery = [&]() {
+#if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
     if (launch_started || count_server_process_in_current_session() != 0)
       return;
 
@@ -362,6 +391,7 @@ bool WeaselTSF::_EnsureServerConnected() {
     });
     th.detach();
     launch_started = true;
+#endif
   };
 
   try_start_recovery();
@@ -369,12 +399,13 @@ bool WeaselTSF::_EnsureServerConnected() {
   // Give this same key one short, bounded recovery window. Once the pipe and
   // session are live, _ProcessKeyEvent continues normally and sends the current
   // key exactly once. Healthy input never reaches this wait.
-  const ULONGLONG deadline =
-      GetTickCount64() + kFirstKeyRecoveryTimeoutMs;
   while (GetTickCount64() < deadline) {
-    Sleep(kFirstKeyRecoveryPollMs);
-    _Reconnect();
-    if (m_client.IsSessionActive()) {
+    const DWORD remaining = RemainingRecoveryTime(deadline);
+    if (!remaining)
+      break;
+    Sleep(remaining < kFirstKeyRecoveryPollMs ? remaining
+                                             : kFirstKeyRecoveryPollMs);
+    if (reconnect_until(deadline)) {
       _reconnectRetry = 0;
       return true;
     }

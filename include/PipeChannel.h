@@ -53,6 +53,7 @@ struct PipeHandleOwner {
 class PipeChannelBase {
  public:
   using Stream = boost::interprocess::wbufferstream;
+  static constexpr DWORD kDefaultTransactionTimeoutMs = 1000;
 
   struct ChannelContext {
     std::unique_ptr<char[]> buffer;
@@ -77,15 +78,14 @@ class PipeChannelBase {
 
  protected:
   /* To ensure connection before operation */
-  bool _Ensure();
+  bool _Ensure(ULONGLONG deadline = 0);
   /* Connect pipe as client */
-  HANDLE _Connect(const wchar_t* name);
-  /* To reconnect message pipe */
-  void _Reconnect();
+  HANDLE _Connect(const wchar_t* name, ULONGLONG deadline = 0);
   /* Try to connect for one time */
   HANDLE _TryConnect(const wchar_t* name);
-  size_t _WritePipe(HANDLE p, size_t s, char* b);
-  void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len);
+  size_t _WritePipe(HANDLE p, size_t s, char* b, ULONGLONG deadline = 0);
+  void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len,
+                ULONGLONG deadline = 0);
   /* Try to get a connection from client */
   HANDLE _ConnectServerPipe(std::wstring& pn);
   /* Create a new server-side pipe instance */
@@ -151,6 +151,9 @@ class PipeChannel : public PipeChannelBase {
   /* Common pipe operations */
 
   bool Connect() { return _Ensure(); }
+  bool Connect(DWORD timeout_ms) {
+    return _Ensure(GetTickCount64() + timeout_ms);
+  }
   bool Connected() const {
     return !_Invalid(_GetPipeHandle()->handle);
   }
@@ -174,33 +177,42 @@ class PipeChannel : public PipeChannelBase {
     return *this;
   }
 
-  _TyRes Transact(Msg& msg) {
+  _TyRes Transact(Msg& msg,
+                  DWORD timeout_ms = kDefaultTransactionTimeoutMs) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
     PipeHandleOwner* phandle = _GetPipeHandle();
-    if (!_Ensure()) {
+    if (!_Ensure(deadline)) {
       // The request never reached WriteFile, so callers that can safely
       // reconstruct the operation may retry it after recovery.
+      const DWORD error = GetLastError();
       ClearBufferStream();
-      throw PipeTransactionError(ERROR_FILE_NOT_FOUND, false);
+      throw PipeTransactionError(error ? error : ERROR_FILE_NOT_FOUND, false);
     }
 
     bool request_sent = false;
     try {
-      _Send(phandle->handle, msg);
+      _Send(phandle->handle, msg, deadline);
       request_sent = true;
-      return _ReceiveResponse();
+      return _ReceiveResponse(deadline);
+    } catch (const PipeTransactionError&) {
+      // A cancelled pending write may have raced delivery. Preserve the
+      // transport's conservative classification instead of replaying it.
+      ClearBufferStream();
+      phandle->Finalize();
+      throw;
     } catch (DWORD error) {
       // Preserve whether the request write completed before the failure.
       // A response-stage failure is ambiguous and must never be replayed
-      // blindly; a send-stage failure is definitely not delivered.
+      // blindly; pre-submission failures are definitely not delivered.
       ClearBufferStream();
-      _Reconnect();
+      phandle->Finalize();
       throw PipeTransactionError(error, request_sent);
     } catch (...) {
       // Non-Win32 failures remain conservative: after a successful write the
       // server may have processed the request, so preserve the original error
       // and let callers treat it as ambiguous.
       ClearBufferStream();
-      _Reconnect();
+      phandle->Finalize();
       throw;
     }
   }
@@ -227,7 +239,7 @@ class PipeChannel : public PipeChannelBase {
   }
 
  protected:
-  void _Send(HANDLE pipe, Msg& msg) {
+  void _Send(HANDLE pipe, Msg& msg, ULONGLONG deadline = 0) {
     auto ctx = _GetContext();
     char* pbuff = ctx->buffer.get();
     DWORD lwritten = 0;
@@ -252,15 +264,14 @@ class PipeChannel : public PipeChannelBase {
     // exceeds buff_size here
     size_t data_sz = ctx->has_body ? (_MsgSize + body_bytes) : _MsgSize;
 
-    // A failed synchronous message-mode WriteFile did not complete this
-    // request; Transact records the write as delivered only after this returns.
-    _WritePipe(pipe, data_sz, pbuff);
+    // Pending overlapped write failures carry their own delivery ambiguity.
+    _WritePipe(pipe, data_sz, pbuff, deadline);
     ClearBufferStream();
   }
 
-  _TyRes _ReceiveResponse() {
+  _TyRes _ReceiveResponse(ULONGLONG deadline) {
     _TyRes result{};
-    _Receive(_GetPipeHandle()->handle, &result, sizeof(result));
+    _Receive(_GetPipeHandle()->handle, &result, sizeof(result), deadline);
     return result;
   }
 

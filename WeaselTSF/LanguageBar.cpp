@@ -318,6 +318,10 @@ std::wstring WeaselTSF::_GetRootDir() {
 }
 
 void WeaselTSF::_HandleLangBarMenuSelect(UINT wID) {
+#if defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
+  if (wID == ID_WEASELTRAY_RERUN_SERVICE)
+    return;
+#endif
   std::wstring dir{};
   switch (wID) {
     case ID_WEASELTRAY_RERUN_SERVICE:

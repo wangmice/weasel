@@ -7,7 +7,9 @@
 #include <boost/thread.hpp>
 #include <PipeChannel.h>
 
+#include "ClientProcessTracker.h"
 #include "SecurityAttribute.h"
+#include "SessionRoutingHandler.h"
 
 namespace weasel {
 class PipeServer;
@@ -95,13 +97,15 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   int Run();
 
   void SetRequestHandler(RequestHandler* pHandler) {
-    m_pRequestHandler = pHandler;
+    session_router.SetBackend(pHandler);
+    m_pRequestHandler = pHandler ? static_cast<RequestHandler*>(&session_router)
+                                : nullptr;
   }
   void AddMenuHandler(UINT uID, CommandHandler& handler) {
     m_MenuHandlers[uID] = handler;
   }
   void SetTrayRefreshCallback(std::function<void()> callback) {
-    m_trayRefreshCallback = callback;
+    m_trayRefreshCallback = std::move(callback);
   }
 
  private:
@@ -111,6 +115,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
       BOOL(WINAPI*)(HWND, LPPOINT);
 
   void _Finailize();
+  void _OnClientProcessExit(ClientProcessToken token);
   // Caller must hold g_api_mutex for commands that change handler options.
   LRESULT _HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled);
   /* Interrupt and join the pipe listener and its workers; idempotent */
@@ -123,7 +128,11 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   SecurityAttribute sa;
   std::unique_ptr<PipeServer> channel;
   std::unique_ptr<boost::thread> pipeThread;
-  RequestHandler* m_pRequestHandler;  // reference
+  SessionRoutingHandler session_router;
+  // Declared after the router so it is destroyed first; _Finailize also stops
+  // it explicitly after pipe workers drain and before the handler/UI may die.
+  ClientProcessTracker process_tracker;
+  RequestHandler* m_pRequestHandler;  // points at session_router while active
   std::map<UINT, CommandHandler> m_MenuHandlers;
   std::function<void()> m_trayRefreshCallback;
   HMODULE m_hUser32Module;
