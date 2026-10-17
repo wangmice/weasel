@@ -77,4 +77,24 @@ if ($tsf -notmatch 'reconnect_until\s*=\s*\[&\]\(ULONGLONG\s+recovery_deadline\)
   throw 'Connect and StartSession must consume one shared first-key deadline'
 }
 
+# StartSession(timeout_ms) itself is also an end-to-end budget. If an active
+# session triggers an Echo preflight, that Echo must consume the caller's
+# budget rather than taking an independent default one-second transaction
+# before START receives a fresh timeout.
+$startSessionStart = $clientCpp.IndexOf('void ClientImpl::StartSession(DWORD timeout_ms)')
+$endSessionStart = $clientCpp.IndexOf('void ClientImpl::EndSession()', $startSessionStart)
+if ($startSessionStart -lt 0 -or $endSessionStart -le $startSessionStart) {
+  throw 'unable to isolate bounded ClientImpl::StartSession'
+}
+$startSessionBody = $clientCpp.Substring($startSessionStart, $endSessionStart - $startSessionStart)
+if ($startSessionBody -notmatch 'deadline\s*=\s*GetTickCount64\(\)\s*\+\s*timeout_ms') {
+  throw 'StartSession(timeout_ms) must create one absolute operation deadline'
+}
+if ($startSessionBody -notmatch 'RemainingTransactionTime\(deadline\)[\s\S]*?WEASEL_IPC_ECHO[\s\S]*?remaining') {
+  throw 'StartSession Echo preflight must consume the remaining caller budget'
+}
+if ($startSessionBody -notmatch 'RemainingTransactionTime\(deadline\)[\s\S]*?WEASEL_IPC_START_SESSION[\s\S]*?remaining') {
+  throw 'START_SESSION must consume only the budget left after Echo/client-info staging'
+}
+
 Write-Host 'Pipe deadline policy: PASS'

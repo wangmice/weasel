@@ -94,5 +94,11 @@ if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnected\(\)[
 if ($keySink -match 'TransportError\s*\|\||\|\|\s*[^\r\n]*TransportError') {
   throw 'ambiguous TransportError must never be grouped into the safe replay path'
 }
+if ($keySink -notmatch 'kInvalidSessionRecoveryTimeoutMs\s*=\s*1000') {
+  throw 'invalid-session recovery must use the one-second first-key budget'
+}
+if ($keySink -notmatch 'InvalidSession[\s\S]*?StartSession\(kInvalidSessionRecoveryTimeoutMs\)') {
+  throw 'invalid-session recovery must not fall back to the three-second default StartSession budget'
+}
 
 Write-Host 'First-key wakeup policy: PASS'
