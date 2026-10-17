@@ -160,6 +160,7 @@ jobs:
           .\test\TestXmakeToolchainPolicy.ps1
           .\test\TestXmakeTargetLinkFlagsPolicy.ps1
           .\test\TestRuntimeHardeningPolicy.ps1
+          .\test\TestBackgroundAndDeployerPolicy.ps1
           .\test\TestRestartRollbackRegressionPolicy.ps1
           .\test\TestRemainingRuntimePolicy.ps1
           .\test\TestFirstKeyWakeupPolicy.ps1

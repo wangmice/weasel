@@ -99,7 +99,7 @@ void Configurator::Initialize() {
   rime_api->deployer_initialize(NULL);
 }
 
-enum class ConfigureResult { Cancelled, Saved, Failed };
+enum class ConfigureResult { Cancelled, Unchanged, Saved, Failed };
 
 static ConfigureResult configure_switcher(
     RimeLeversApi* api,
@@ -112,10 +112,10 @@ static ConfigureResult configure_switcher(
   SwitcherSettingsDialog dialog(switcher_settings);
   if (dialog.DoModal() != IDOK)
     return ConfigureResult::Cancelled;
-  if (!api->save_settings(settings)) {
-    LOG(ERROR) << "Failed to save switcher settings.";
-    return ConfigureResult::Failed;
-  }
+  // librime's CustomSettings::Save() returns false when nothing was modified;
+  // the boolean does not report file-I/O status.
+  if (!api->save_settings(settings))
+    return ConfigureResult::Unchanged;
   return ConfigureResult::Saved;
 }
 
@@ -129,10 +129,8 @@ static ConfigureResult configure_ui(RimeLeversApi* api,
   UIStyleSettingsDialog dialog(ui_style_settings);
   if (dialog.DoModal() != IDOK)
     return ConfigureResult::Cancelled;
-  if (!api->save_settings(settings)) {
-    LOG(ERROR) << "Failed to save UI style settings.";
-    return ConfigureResult::Failed;
-  }
+  if (!api->save_settings(settings))
+    return ConfigureResult::Unchanged;
   return ConfigureResult::Saved;
 }
 
@@ -162,7 +160,7 @@ int Configurator::Run(bool installing) {
       config_failed = true;
   };
 
-  // 两步独立执行：取消或失败其中一步都不阻止另一步；成功保存的部分仍需部署。
+  // 两步独立执行：取消、未修改或失败其中一步都不阻止另一步；成功保存的部分仍需部署。
   if (!skip_switcher_settings)
     record_result(configure_switcher(api, switcher_settings));
   if (!skip_ui_style_settings)
