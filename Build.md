@@ -3,7 +3,7 @@ build.bat weasel
 # 获取rime.dll
 pwsh -File .\get-rime.ps1 -tag latest -use dev
 # 打包安装包
-powershell -ExecutionPolicy Bypass -File .\make-installer.ps1 -Release
+pwsh -ExecutionPolicy Bypass -File .\make-installer.ps1 -Release
 
 `make-installer.ps1 -Build` 只编译 x64/x86。若 `output` 中缺少
 `weaselARM.dll`、`weaselARM64.dll`、`weaselARM64X.dll` 中的任意一个，生成的
