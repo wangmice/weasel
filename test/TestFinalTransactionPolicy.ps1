@@ -4,11 +4,17 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $rimePath = Join-Path $repoRoot 'RimeWithWeasel\RimeWithWeasel.cpp'
 $setupPath = Join-Path $repoRoot 'WeaselSetup\WeaselSetup.cpp'
 $imeSetupPath = Join-Path $repoRoot 'WeaselSetup\imesetup.cpp'
+$cleanupPath = Join-Path $repoRoot 'WeaselSetup\RegistrationCleanup.h'
 $installerPath = Join-Path $repoRoot 'output\install.nsi'
 
 $rime = Get-Content -LiteralPath $rimePath -Raw
 $setup = Get-Content -LiteralPath $setupPath -Raw
 $imeSetup = Get-Content -LiteralPath $imeSetupPath -Raw
+$cleanup = if (Test-Path -LiteralPath $cleanupPath) {
+  Get-Content -LiteralPath $cleanupPath -Raw
+} else {
+  ''
+}
 $installer = Get-Content -LiteralPath $installerPath -Raw
 
 function Assert-Policy {
@@ -34,26 +40,40 @@ $guardedSchemaUses = [regex]::Matches(
 Assert-Policy ($guardedSchemaUses -ge 3) `
   'all schema_id reads outside response/status conversion must explicitly accept NULL'
 
-# The installer transaction must remain recoverable until deployment succeeds.
-Assert-Policy ($installer.Contains('Var SetupCommitted')) `
-  'installer must track whether replacement WeaselSetup completed before rollback'
-Assert-Policy ($installer.Contains('StrCpy $SetupCommitted "1"')) `
-  'installer must mark successful replacement setup before deployment'
-Assert-Policy ($installer.Contains('ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3')) `
+# Deployment is not rollback-safe: librime can mutate the user workspace before
+# returning failure. Commit the installed program first, then report deployment
+# failure without reverting to an older binary or running fresh-install /u.
+Assert-Policy (-not $installer.Contains('Var SetupCommitted')) `
+  'installer must not model deployment as part of the reversible setup transaction'
+Assert-Policy ($installer.Contains('Var DeployExitCode')) `
+  'installer must retain deployment status after the program commit'
+$rollbackFreshStart = $installer.IndexOf('rollback_fresh_only:')
+$rollbackFreshEnd = $installer.IndexOf('FunctionEnd', $rollbackFreshStart)
+$rollbackFresh = $installer.Substring(
+  $rollbackFreshStart,
+  $rollbackFreshEnd - $rollbackFreshStart
+)
+Assert-Policy (-not $rollbackFresh.Contains('WeaselSetup.exe" /u')) `
+  'fresh rollback must not erase pre-existing HKCU state through WeaselSetup /u'
+
+$commit = $installer.IndexOf('install_commit:')
+$deploy = $installer.IndexOf('install_deploy:', $commit)
+Assert-Policy ($commit -ge 0 -and $deploy -gt $commit) `
+  'deployment must run only after the new installation has been committed'
+$deployEnd = $installer.IndexOf('; option CheckForUpdates:', $deploy)
+$deployBlock = $installer.Substring($deploy, $deployEnd - $deploy)
+Assert-Policy ($deployBlock.Contains('ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3')) `
   'interactive deployment must capture WeaselDeployer exit status'
-Assert-Policy ($installer.Contains('ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3')) `
+Assert-Policy ($deployBlock.Contains('ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3')) `
   'silent deployment must capture WeaselDeployer exit status'
-Assert-Policy ($installer.Contains('install_deploy_failed:')) `
-  'installer must have an explicit deployment failure rollback path'
-$deployFailure = $installer.IndexOf('install_deploy_failed:')
-$rollbackAfterDeployFailure = $installer.IndexOf('Call RollbackPreviousInstall', $deployFailure)
-$backupCleanup = $installer.IndexOf('cleanup_upgrade_backup:')
-Assert-Policy ($deployFailure -ge 0 -and $rollbackAfterDeployFailure -gt $deployFailure) `
-  'deployment failure must call the installer rollback transaction'
-Assert-Policy ($backupCleanup -gt $deployFailure) `
-  'upgrade backup must survive until deployment has succeeded'
-Assert-Policy ($installer.Contains('StrCmp $SetupCommitted "1" 0 rollback_fresh_remove_files')) `
-  'fresh-install rollback after deployment failure must unregister successful replacement setup'
+Assert-Policy (-not $deployBlock.Contains('Call RollbackPreviousInstall')) `
+  'deployment failure must not roll an already-mutated workspace back to older binaries'
+Assert-Policy (-not $deployBlock.Contains('Abort "$(SETUPFAILED)"')) `
+  'post-commit deployment failure must keep the committed installation recoverable'
+Assert-Policy ($installer.Contains('SetErrorLevel $DeployExitCode')) `
+  'deployment failure must still propagate a non-zero installer exit code'
+Assert-Policy ($installer.Contains('$(DEPLOYFAILED)')) `
+  'interactive deployment failure must have a distinct warning instead of setup rollback'
 
 # Modify-install must roll persistent/profile state back when runtime restart or
 # deployment fails, and a deployment failure must reload the restored state.
@@ -68,13 +88,28 @@ Assert-Policy ([regex]::Matches($setup, 'rollback_modify_state\(\);').Count -ge 
 Assert-Policy ($setup.Contains('(void)RestartServer(dir);')) `
   'deployment failure rollback must best-effort reload the restored registry state'
 
-# Missing TSF DLLs must not make uninstall permanently non-idempotent. The
-# service can be removed from TSF without loading the deleted COM server.
+# Missing TSF DLLs must not make uninstall permanently non-idempotent. TSF
+# unregister removes profiles/categories, while the executable must also delete
+# stale COM/TIP registry trees that DllUnregisterServer normally owns.
 Assert-Policy ($imeSetup.Contains('unregister_text_service_without_dll')) `
   'uninstall must support TSF cleanup when the primary DLL is already missing'
 Assert-Policy ($imeSetup.Contains('GetFileAttributesW(path.c_str())')) `
   'uninstall must distinguish a missing DLL from a real unregister failure'
 Assert-Policy ($imeSetup.Contains('pProfiles->Unregister(c_clsidTextService)')) `
   'missing-DLL cleanup must unregister the text service through TSF directly'
+Assert-Policy ($setup.Contains('#include "RegistrationCleanup.h"')) `
+  'WeaselSetup must include post-uninstall registration cleanup'
+Assert-Policy ($setup.Contains('CleanupTextServiceRegistrationAfterUninstall')) `
+  'successful uninstall must remove stale COM/TIP registration without loading the DLL'
+Assert-Policy ($cleanup.Contains('Software\\Classes\\CLSID\\')) `
+  'cleanup must remove the COM CLSID tree normally owned by DllUnregisterServer'
+Assert-Policy ($cleanup.Contains('Software\\Microsoft\\CTF\\TIP\\')) `
+  'cleanup must remove the registered TSF TIP tree'
+Assert-Policy ($cleanup.Contains('Software\\Classes\\Software\\Microsft\\CTF\\TIP\\')) `
+  'cleanup must remove the historical misspelled TIP tree'
+Assert-Policy ($cleanup.Contains('KEY_WOW64_64KEY') -and $cleanup.Contains('KEY_WOW64_32KEY')) `
+  'cleanup must cover both registry views on 64-bit Windows'
+Assert-Policy ($cleanup.Contains('per_user_root()') -and $cleanup.Contains('per_user_subkey(L"Software\\Classes")')) `
+  'cleanup must keep per-user class removal bound to the original invoking user across UAC elevation'
 
 Write-Host 'Final transaction policy checks passed.'

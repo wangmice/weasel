@@ -7,6 +7,7 @@
 #include "WeaselUtility.h"
 #include <WeaselIPC.h>
 #include "PerUserReg.h"
+#include "RegistrationCleanup.h"
 #include "SetupUtil.h"
 #include <vector>
 
@@ -374,10 +375,15 @@ static int Run(LPTSTR lpCmdLine) {
   }
   bool uninstalling = !wcscmp(L"/u", lpCmdLine);
   if (uninstalling) {
-    if (IsProcAdmin())
-      return uninstall(silent);
-    else
+    if (IsProcAdmin()) {
+      const int result = uninstall(silent);
+      if (result != 0)
+        return result;
+      return weasel::setup::CleanupTextServiceRegistrationAfterUninstall() ? 0
+                                                                           : 1;
+    } else {
       return RestartAsAdmin(lpCmdLine);
+    }
   }
 
   if (auto res = GetParamByPrefix(lpCmdLine, L"/userdir:")) {

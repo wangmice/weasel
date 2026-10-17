@@ -45,7 +45,7 @@ Var HadPreviousInstall
 Var UpgradeSlotId
 Var RollbackFailed
 Var ProgramRestoreFailed
-Var SetupCommitted
+Var DeployExitCode
 
 ; The name of the installer
 Name "小狼毫 ${WEASEL_VERSION}"
@@ -103,6 +103,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_TRADCHINESE} "您的系统不被支持，�
 LangString AUTOCHKUPDATE ${LANG_TRADCHINESE} "自動檢查版本更新？"
 LangString SETUPCANCELLED ${LANG_TRADCHINESE} "已取消安裝，不會繼續部署或啟動服務。"
 LangString SETUPFAILED ${LANG_TRADCHINESE} "輸入法安裝失敗，不會繼續部署或啟動服務。"
+LangString DEPLOYFAILED ${LANG_TRADCHINESE} "小狼毫已安裝，但部署 Rime 工作區失敗。程式與卸載資訊已保留，請稍後執行「重新部署」或檢查日誌。"
 LangString UNINSTALLFAILED ${LANG_TRADCHINESE} "小狼毫卸載未能完整完成。已保留安裝資訊與程式檔案，請關閉使用輸入法的程式後重試；必要時請先登出或重新啟動 Windows。"
 LangString FILESINUSE ${LANG_TRADCHINESE} "無法替換正在使用中的小狼毫程式檔案。請關閉所有使用輸入法的程式後重試；若仍失敗，請登出 Windows 後重新登入再安裝。舊版本已嘗試恢復。"
 LangString ROLLBACKFAILED ${LANG_TRADCHINESE} "安裝回滾未能完整完成。請先登出或重新啟動 Windows，再重新執行安裝程式。暫存備份會保留以供恢復。"
@@ -126,6 +127,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_SIMPCHINESE} "您的系統不被支持，�
 LangString AUTOCHKUPDATE ${LANG_SIMPCHINESE} "自动检查版本更新？"
 LangString SETUPCANCELLED ${LANG_SIMPCHINESE} "已取消安装，不会继续部署或启动服务。"
 LangString SETUPFAILED ${LANG_SIMPCHINESE} "输入法安装失败，不会继续部署或启动服务。"
+LangString DEPLOYFAILED ${LANG_SIMPCHINESE} "小狼毫已安装，但部署 Rime 工作区失败。程序和卸载信息已保留，请稍后执行“重新部署”或检查日志。"
 LangString UNINSTALLFAILED ${LANG_SIMPCHINESE} "小狼毫卸载未能完整完成。已保留安装信息和程序文件，请关闭正在使用输入法的程序后重试；必要时请先注销或重新启动 Windows。"
 LangString FILESINUSE ${LANG_SIMPCHINESE} "无法替换正在使用中的小狼毫程序文件。请关闭所有正在使用输入法的程序后重试；如果仍然失败，请注销 Windows 后重新登录再安装。旧版本已尝试恢复。"
 LangString ROLLBACKFAILED ${LANG_SIMPCHINESE} "安装回滚未能完整完成。请先注销或重新启动 Windows，再重新运行安装程序。临时备份会保留以供恢复。"
@@ -149,6 +151,7 @@ LangString SYSTEMVERSIONNOTOK ${LANG_ENGLISH} "Your system not supported, minimi
 LangString AUTOCHKUPDATE ${LANG_ENGLISH} "Automatically check for updates?"
 LangString SETUPCANCELLED ${LANG_ENGLISH} "Installation cancelled. Deployment and service startup will not continue."
 LangString SETUPFAILED ${LANG_ENGLISH} "Input method setup failed. Deployment and service startup will not continue."
+LangString DEPLOYFAILED ${LANG_ENGLISH} "Weasel was installed, but deploying the Rime workspace failed. Program and uninstall metadata were kept; run Deploy again later or inspect the logs."
 LangString UNINSTALLFAILED ${LANG_ENGLISH} "Weasel could not be completely uninstalled. Installation metadata and program files were retained so you can retry. Close applications using the input method and try again; sign out or restart Windows if necessary."
 LangString FILESINUSE ${LANG_ENGLISH} "Weasel program files are still in use and cannot be replaced. Close applications using the input method and retry. If the files remain locked, sign out of Windows and sign back in before installing again. The previous version has been restored where possible."
 LangString ROLLBACKFAILED ${LANG_ENGLISH} "Installation rollback could not complete. Sign out or restart Windows, then run the installer again. The temporary backup has been retained for recovery."
@@ -273,17 +276,9 @@ rollback_keep_temp:
   Return
 
 rollback_fresh_only:
-  ; Before replacement Setup succeeds, a fresh install has only staged files;
-  ; after it succeeds, a later deployment failure must unregister that state
-  ; before the program tree is removed. This still leaves unrelated/pre-existing
-  ; HKCU preferences alone when Setup never committed.
-  StrCmp $SetupCommitted "1" 0 rollback_fresh_remove_files
-  IfFileExists "$INSTDIR\WeaselSetup.exe" 0 rollback_fresh_remove_files
-  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $R2
-  ${If} $R2 != 0
-    StrCpy $RollbackFailed "1"
-  ${EndIf}
-rollback_fresh_remove_files:
+  ; Fresh rollback is reachable only before WeaselSetup commits. Do not invoke
+  ; /u here: a machine can have pre-existing HKCU preferences even without a
+  ; valid NSIS installation, and uninstall would erase that unrelated state.
   SetOutPath $TEMP
   ClearErrors
   RMDir /r "$INSTDIR"
@@ -392,7 +387,7 @@ Function .onInit
   StrCpy $UpgradeSlotId ""
   StrCpy $RollbackFailed "0"
   StrCpy $ProgramRestoreFailed "0"
-  StrCpy $SetupCommitted "0"
+  StrCpy $DeployExitCode "0"
 
 !ifndef WEASEL_HAS_ARM64_PAYLOAD
   ; Reject before reading/removing an existing installation or copying files.
@@ -632,8 +627,7 @@ program_files:
     MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
     Abort "$(SETUPFAILED)"
   ${EndIf}
-  StrCpy $SetupCommitted "1"
-  GoTo install_deploy
+  GoTo install_commit
 
 install_files_failed:
   Call RollbackPreviousInstall
@@ -643,41 +637,10 @@ install_files_failed:
   MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
   Abort "$(SETUPFAILED)"
 
-install_deploy:
-  ; Deployment is part of the install transaction. Keep the old program/config
-  ; backup intact until this process exits successfully, because deploy failure
-  ; can otherwise leave a newly registered but unusable replacement in place.
-  ClearErrors
-  IfSilent deploy_silently
-  ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3
-  GoTo deploy_check
-
-deploy_silently:
-  ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3
-
-deploy_check:
-  ${If} ${Errors}
-    StrCpy $R3 "1"
-    GoTo install_deploy_failed
-  ${EndIf}
-  ${If} $R3 != 0
-    GoTo install_deploy_failed
-  ${EndIf}
-  GoTo install_commit
-
-install_deploy_failed:
-  Call RollbackPreviousInstall
-  SetErrorLevel $R3
-  StrCmp $RollbackFailed "1" 0 +3
-  IfSilent +2
-  MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
-  Abort "$(SETUPFAILED)"
-
 install_commit:
-  ; Commit only after both replacement Setup and deployment have completed
-  ; successfully. For a cross-version upgrade the old version directory is now
-  ; obsolete; for a same-version in-place replacement it is the live new
-  ; directory and must not be removed.
+  ; WeaselSetup success is the reversible transaction boundary. Deployment can
+  ; mutate the Rime user workspace before reporting failure, so never restore an
+  ; older program tree after deployment has started.
   StrCmp $HadPreviousInstall "1" 0 upgrade_committed
   SetOutPath $TEMP
   StrCmp $PreviousInstallDir $INSTDIR cleanup_upgrade_backup 0
@@ -694,7 +657,8 @@ cleanup_upgrade_backup:
   RMDir "$SMPROGRAMS\$(DISPLAYNAME)"
 upgrade_committed:
 
-  ; Write the uninstall keys for Windows
+  ; Write the uninstall keys for Windows before deployment so a post-commit
+  ; deploy failure always leaves a complete, retryable installation behind.
   WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$InstallBaseDir"
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayName" "$(DISPLAYNAME)"
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayIcon" '"$INSTDIR\WeaselServer.exe"'
@@ -707,6 +671,26 @@ upgrade_committed:
   WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
+install_deploy:
+  ; Deployment is post-commit. Capture failure for the installer exit status,
+  ; but keep the new binaries/registration because the workspace may already
+  ; have been partially mutated by librime.
+  StrCpy $DeployExitCode "0"
+  ClearErrors
+  IfSilent deploy_silently
+  ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3
+  GoTo deploy_check
+
+deploy_silently:
+  ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3
+
+deploy_check:
+  ${If} ${Errors}
+    StrCpy $DeployExitCode "1"
+  ${ElseIf} $R3 != 0
+    StrCpy $DeployExitCode "$R3"
+  ${EndIf}
+
   ; don't redirect on 64 bit system for auto run setting
   ${If} ${IsNativeARM64}
     SetRegView 64
@@ -715,7 +699,8 @@ upgrade_committed:
   ${Endif}
   ; Write autorun key
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer" "$INSTDIR\WeaselServer.exe"
-  ; Start WeaselServer
+  ; Start WeaselServer even when deployment failed. The committed installation
+  ; remains the only version compatible with any workspace mutations already made.
   Exec "$INSTDIR\WeaselServer.exe"
 
   ; option CheckForUpdates: keep the stored preference on upgrades (restored
@@ -731,6 +716,11 @@ DisableAutoCheckUpdate:
   EnableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "1"
 end:
+  StrCmp $DeployExitCode "0" install_done
+  SetErrorLevel $DeployExitCode
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$(DEPLOYFAILED)"
+install_done:
 
 SectionEnd
 
