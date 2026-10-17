@@ -145,9 +145,8 @@ bool WaitForServerReady(HANDLE server_process, DWORD timeout_ms) {
   return false;
 }
 
-bool RestartServerAndDeploy(const std::wstring& dir) {
+bool RestartServer(const std::wstring& dir) {
   const std::wstring server = dir + L"\\WeaselServer.exe";
-  const std::wstring deployer = dir + L"\\WeaselDeployer.exe";
 
   HANDLE old_server = nullptr;
   if (!OpenRunningServerProcess(old_server))
@@ -175,9 +174,11 @@ bool RestartServerAndDeploy(const std::wstring& dir) {
   const bool server_ready =
       WaitForServerReady(new_server, kServerTransitionTimeoutMs);
   CloseHandle(new_server);
-  if (!server_ready)
-    return false;
+  return server_ready;
+}
 
+bool RunDeployer(const std::wstring& dir) {
+  const std::wstring deployer = dir + L"\\WeaselDeployer.exe";
   DWORD deploy_exit_code = 0;
   return RunProcessAndWait(deployer, L"/deploy", INFINITE,
                            deploy_exit_code) &&
@@ -257,6 +258,19 @@ static int CustomInstall(bool installing) {
     for (auto it = registry.rbegin(); it != registry.rend(); ++it)
       it->Restore();
   };
+  bool profile_switched = false;
+  auto rollback_modify_state = [&]() {
+    if (profile_switched &&
+        switch_registered_profile(profile, registered_profile, true) != 0) {
+      // switch_registered_profile is itself transactional. A failed reverse
+      // switch leaves the new profile state in place; keep the matching new
+      // registry values rather than creating a registry/TSF split-brain state.
+      LOG(ERROR) << "failed to restore the previous TSF profile after modify-install failure";
+      return false;
+    }
+    restore_registry();
+    return true;
+  };
 
   ret = SetRegKeyValue(per_user_root(), user_key.c_str(), L"RimeUserDir",
                        user_dir.c_str(), REG_SZ, false);
@@ -292,11 +306,22 @@ static int CustomInstall(bool installing) {
       restore_registry();
       return 1;
     }
+    profile_switched = true;
   }
 
   std::wstring dir(install_dir());
-  if (!RestartServerAndDeploy(dir))
+  if (!RestartServer(dir)) {
+    (void)rollback_modify_state();
     return 1;
+  }
+  if (!RunDeployer(dir)) {
+    (void)rollback_modify_state();
+    // The server was started after the tentative registry/profile update. Once
+    // those values are restored, restart it again so its process-local paths
+    // and Rime state no longer reference the failed modification.
+    (void)RestartServer(dir);
+    return 1;
+  }
   MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
              MB_ICONINFORMATION | MB_OK);
 

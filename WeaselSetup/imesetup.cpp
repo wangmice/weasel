@@ -295,6 +295,23 @@ int install_ime_file(std::wstring& srcPath,
   return retval;
 }
 
+static HRESULT unregister_text_service_without_dll() {
+  ITfInputProcessorProfiles* pProfiles = NULL;
+  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
+                                CLSCTX_INPROC_SERVER,
+                                IID_ITfInputProcessorProfiles,
+                                (LPVOID*)&pProfiles);
+  if (FAILED(hr))
+    return hr;
+
+  // This does not load the COM server DLL. It removes the text service and its
+  // language profiles directly through TSF, so a DLL that was already deleted
+  // cannot make uninstall permanently fail on every retry.
+  hr = pProfiles->Unregister(c_clsidTextService);
+  pProfiles->Release();
+  return hr;
+}
+
 int uninstall_ime_file(const std::wstring& ext,
                        const std::wstring& profile,
                        bool silent,
@@ -302,6 +319,30 @@ int uninstall_ime_file(const std::wstring& ext,
   int retval = 0;
   auto unregister_and_delete = [&](const std::wstring& path, bool is_wow64,
                                    bool is_wowarm32) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+      const DWORD error = GetLastError();
+      if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+        ++retval;
+        return;
+      }
+
+      // Only the native/primary unregister call owns TSF profile removal.
+      // Secondary WOW DLLs carry the same registration but do not manage the
+      // profile in register_text_service(). If the primary DLL is already
+      // gone, remove the text service directly instead of invoking regsvr32 on
+      // a path that can never load.
+      if (!is_wow64 && !is_wowarm32 &&
+          FAILED(unregister_text_service_without_dll())) {
+        ++retval;
+      }
+      return;
+    }
+    if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+      ++retval;
+      return;
+    }
+
     const int unregister_result =
         func(path, false, is_wow64, is_wowarm32, profile, silent);
     retval += unregister_result;
