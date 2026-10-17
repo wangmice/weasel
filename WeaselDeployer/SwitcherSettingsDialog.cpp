@@ -8,12 +8,22 @@
 #include <WeaselUtility.h>
 #include "WeaselDeployer.h"
 
+namespace {
+
+constexpr ULONGLONG kInstallSchemataTimeoutMs = 60u * 1000;
+constexpr UINT kInstallSchemataPollMs = 100;
+constexpr UINT_PTR kInstallSchemataTimerId = 0x5749;
+
+}  // namespace
+
 SwitcherSettingsDialog::SwitcherSettingsDialog(RimeSwitcherSettings* settings)
     : settings_(settings), loaded_(false), modified_(false) {
   api_ = (RimeLeversApi*)rime_get_api()->find_module("levers")->get_api();
 }
 
-SwitcherSettingsDialog::~SwitcherSettingsDialog() {}
+SwitcherSettingsDialog::~SwitcherSettingsDialog() {
+  StopSchemataInstallMonitor();
+}
 
 void SwitcherSettingsDialog::Populate() {
   if (!settings_)
@@ -111,15 +121,80 @@ LRESULT SwitcherSettingsDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
   return TRUE;
 }
 
+void SwitcherSettingsDialog::StopSchemataInstallMonitor() {
+  if (schemata_timer_id_ != 0) {
+    if (m_hWnd)
+      KillTimer(schemata_timer_id_);
+    schemata_timer_id_ = 0;
+  }
+  if (schemata_process_) {
+    CloseHandle(schemata_process_);
+    schemata_process_ = nullptr;
+  }
+  schemata_started_at_ = 0;
+  if (get_schemata_.IsWindow())
+    get_schemata_.EnableWindow(TRUE);
+}
+
 LRESULT SwitcherSettingsDialog::OnClose(UINT, WPARAM, LPARAM, BOOL&) {
+  StopSchemataInstallMonitor();
   EndDialog(IDCANCEL);
   return 0;
 }
 
-// rime-install.bat 的最长等待：超时后放弃等待并继续，避免卡死 UI 线程
-static constexpr DWORD kInstallSchemataTimeoutMs = 60u * 1000;
+LRESULT SwitcherSettingsDialog::OnTimer(UINT,
+                                        WPARAM wParam,
+                                        LPARAM,
+                                        BOOL&) {
+  if (schemata_timer_id_ == 0 || wParam != schemata_timer_id_ ||
+      !schemata_process_) {
+    return 0;
+  }
 
-LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
+  const DWORD wait_result = WaitForSingleObject(schemata_process_, 0);
+  if (wait_result == WAIT_TIMEOUT) {
+    if (GetTickCount64() - schemata_started_at_ < kInstallSchemataTimeoutMs)
+      return 0;
+
+    LOG(WARNING) << "Timed out observing rime-install.bat; installer continues "
+                    "in background.";
+    StopSchemataInstallMonitor();
+    return 0;
+  }
+
+  if (wait_result != WAIT_OBJECT_0) {
+    LOG(ERROR) << "Failed to observe rime-install.bat process completion: "
+               << GetLastError();
+    StopSchemataInstallMonitor();
+    return 0;
+  }
+
+  DWORD exit_code = ERROR_GEN_FAILURE;
+  const bool have_exit_code =
+      GetExitCodeProcess(schemata_process_, &exit_code) != FALSE;
+  StopSchemataInstallMonitor();
+
+  if (!have_exit_code || exit_code != 0) {
+    LOG(WARNING) << "rime-install.bat exited unsuccessfully: "
+                 << (have_exit_code ? exit_code : GetLastError());
+    return 0;
+  }
+
+  if (!api_->load_settings(reinterpret_cast<RimeCustomSettings*>(settings_))) {
+    LOG(ERROR) << "Failed to reload switcher settings after schema retrieval.";
+    return 0;
+  }
+  Populate();
+  return 0;
+}
+
+LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD,
+                                               WORD,
+                                               HWND hWndCtl,
+                                               BOOL&) {
+  if (schemata_process_)
+    return 0;
+
   LPCWSTR hPath = is_wow64() ? L"Software\\WOW6432Node\\Rime\\Weasel"
                              : L"Software\\Rime\\Weasel";
   // RegGetStringValue 内部走 RegGetValueW，保证结果以 NUL 结尾
@@ -132,7 +207,7 @@ LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
   WCHAR parameters[MAX_PATH + 37];
   wcscpy_s<_countof(parameters)>(
       parameters,
-      (L"/k \"" + weaselRoot + L"\\rime-install.bat\"").c_str());
+      (L"/c \"" + weaselRoot + L"\\rime-install.bat\"").c_str());
   SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO),
                            SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
                            hWndCtl,
@@ -152,15 +227,19 @@ LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
     LOG(ERROR) << "Error launching rime-install.bat.";
     return 0;
   }
-  if (cmd.hProcess) {
-    if (WaitForSingleObject(cmd.hProcess, kInstallSchemataTimeoutMs) !=
-        WAIT_OBJECT_0) {
-      LOG(WARNING) << "Timed out waiting for rime-install.bat; continuing.";
-    }
-    CloseHandle(cmd.hProcess);
+  if (!cmd.hProcess) {
+    LOG(ERROR) << "rime-install.bat launch returned no process handle.";
+    return 0;
   }
-  api_->load_settings(reinterpret_cast<RimeCustomSettings*>(settings_));
-  Populate();
+
+  schemata_process_ = cmd.hProcess;
+  schemata_started_at_ = GetTickCount64();
+  get_schemata_.EnableWindow(FALSE);
+  schemata_timer_id_ = SetTimer(kInstallSchemataTimerId, kInstallSchemataPollMs);
+  if (schemata_timer_id_ == 0) {
+    LOG(ERROR) << "Unable to start asynchronous rime-install.bat monitor.";
+    StopSchemataInstallMonitor();
+  }
   return 0;
 }
 
@@ -185,6 +264,7 @@ LRESULT SwitcherSettingsDialog::OnOK(WORD, WORD code, HWND, BOOL&) {
     }
     api_->select_schemas(settings_, selection.data(), (int)selection.size());
   }
+  StopSchemataInstallMonitor();
   EndDialog(code);
   return 0;
 }
