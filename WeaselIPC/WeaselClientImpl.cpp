@@ -32,6 +32,13 @@ DWORD TransactionTimeoutForCommand(WEASEL_IPC_COMMAND command) {
   }
 }
 
+DWORD RemainingTransactionTime(ULONGLONG deadline) {
+  const ULONGLONG now = GetTickCount64();
+  if (now >= deadline)
+    return 0;
+  return static_cast<DWORD>(deadline - now);
+}
+
 bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
                                UINT64 previous_serial) {
   if (channel.ResponseSerial() == previous_serial)
@@ -256,8 +263,27 @@ void ClientImpl::StartSession() {
 }
 
 void ClientImpl::StartSession(DWORD timeout_ms) {
-  if (_Active() && Echo())
-    return;
+  if (!timeout_ms)
+    timeout_ms = TransactionTimeoutForCommand(WEASEL_IPC_START_SESSION);
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+
+  if (_Active()) {
+    const UINT expected_session = _SessionId();
+    const DWORD remaining = RemainingTransactionTime(deadline);
+    if (!remaining)
+      return;
+
+    const DWORD echo_timeout =
+        remaining < PipeChannelBase::kDefaultTransactionTimeoutMs
+            ? remaining
+            : PipeChannelBase::kDefaultTransactionTimeoutMs;
+    const UINT server_echo = static_cast<UINT>(
+        _SendMessage(WEASEL_IPC_ECHO, 0, expected_session, echo_timeout));
+    if (weasel::interaction_policy::EchoConfirmsSession(
+            expected_session, _SessionId(), server_echo)) {
+      return;
+    }
+  }
 
   std::uint64_t generation = 0;
   if (!_WriteClientInfo(&generation)) {
@@ -266,8 +292,14 @@ void ClientImpl::StartSession(DWORD timeout_ms) {
     return;
   }
 
-  const UINT ret =
-      static_cast<UINT>(_SendMessage(WEASEL_IPC_START_SESSION, 0, 0, timeout_ms));
+  const DWORD remaining = RemainingTransactionTime(deadline);
+  if (!remaining) {
+    channel.ClearBufferStream();
+    return;
+  }
+
+  const UINT ret = static_cast<UINT>(
+      _SendMessage(WEASEL_IPC_START_SESSION, 0, 0, remaining));
   if (!ret)
     return;
 
