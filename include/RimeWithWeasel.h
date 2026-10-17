@@ -58,7 +58,17 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   virtual void Finalize();
   virtual DWORD FindSession(WeaselSessionId ipc_id);
   virtual DWORD AddSession(LPWSTR buffer, EatLine eat = 0);
+  virtual bool RespondSession(WeaselSessionId ipc_id, EatLine eat) {
+    if (m_disabled || !_ValidateRimeSession(ipc_id, true))
+      return false;
+    if (eat && !_Respond(ipc_id, eat))
+      return false;
+    _UpdateUI(ipc_id);
+    m_active_session = ipc_id;
+    return true;
+  }
   virtual DWORD RemoveSession(WeaselSessionId ipc_id);
+  DWORD DestroySession(WeaselSessionId ipc_id) override;
   virtual BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent,
                                WeaselSessionId ipc_id,
                                EatLine eat);

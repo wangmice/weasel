@@ -7,6 +7,31 @@ using namespace weasel;
 
 namespace {
 
+constexpr DWORD kStateChangingTransactionTimeoutMs = 3000;
+constexpr DWORD kMaintenanceTransactionTimeoutMs = 30000;
+constexpr DWORD kTeardownTransactionTimeoutMs = 100;
+
+DWORD TransactionTimeoutForCommand(WEASEL_IPC_COMMAND command) {
+  switch (command) {
+    case WEASEL_IPC_START_MAINTENANCE:
+    case WEASEL_IPC_END_MAINTENANCE:
+      return kMaintenanceTransactionTimeoutMs;
+    case WEASEL_IPC_START_SESSION:
+    case WEASEL_IPC_SHUTDOWN_SERVER:
+    case WEASEL_IPC_COMMIT_COMPOSITION:
+    case WEASEL_IPC_CLEAR_COMPOSITION:
+    case WEASEL_IPC_TRAY_COMMAND:
+    case WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE:
+    case WEASEL_IPC_HIGHLIGHT_CANDIDATE_ON_CURRENT_PAGE:
+    case WEASEL_IPC_CHANGE_PAGE:
+      return kStateChangingTransactionTimeoutMs;
+    case WEASEL_IPC_END_SESSION:
+      return kTeardownTransactionTimeoutMs;
+    default:
+      return PipeChannelBase::kDefaultTransactionTimeoutMs;
+  }
+}
+
 bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
                                UINT64 previous_serial) {
   if (channel.ResponseSerial() == previous_serial)
@@ -35,17 +60,21 @@ bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
 
 ClientImpl::ClientImpl()
     : session_id(0),
-      channel(GetPipeName(), NULL, 64 * 1024, GetLegacyPipeName()),
-      is_ime(false) {
+      session_key_generator_(GenerateSessionKey),
+      is_ime(false),
+      channel(GetPipeName(), NULL, 64 * 1024, GetLegacyPipeName()) {
   _InitializeClientInfo();
 }
 
 ClientImpl::~ClientImpl() {
   if (channel.Connected())
     Disconnect();
+  // Destruction is always a final logical-session boundary, including a
+  // failed START whose transport was already torn down.
+  _RetireSessionKey();
 }
 
-// http://stackoverflow.com/questions/557081/how-do-i-get-the-hmodule-for-the-currently-executing-code
+// http://stackoverflow.com/questions/557081/how-do-i-get-the-hmodule-for-the-currently-executed-code
 HMODULE GetCurrentModule() {  // NB: XP+ solution!
   HMODULE hModule = NULL;
   GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -77,7 +106,15 @@ bool ClientImpl::Connect() {
   return channel.Connect();
 }
 
+bool ClientImpl::Connect(DWORD timeout_ms) {
+  return channel.Connect(timeout_ms);
+}
+
 void ClientImpl::Disconnect() {
+  // If a logical session is established, Disconnect remains a full teardown.
+  // If transport/session routing is already inactive (the recovery path),
+  // close only this thread's pipe and preserve SessionKey so START_SESSION can
+  // retry the same logical identity after a lost response.
   if (_Active())
     EndSession();
   channel.Disconnect();
@@ -88,35 +125,44 @@ void ClientImpl::ShutdownServer() {
 }
 
 KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
-  if (!_Active())
+  const UINT request_session = _SessionId();
+  if (!_Connected() || request_session == 0)
     return KeyEventResult::TransportNotDelivered;
 
   const UINT64 response_serial = channel.ResponseSerial();
   LRESULT ret = 0;
   try {
-    PipeMessage req{WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, _SessionId()};
+    PipeMessage req{WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, request_session};
     ret = channel.Transact(req);
   } catch (const PipeTransactionError& error) {
-    _SetSessionId(0);
+    _ClearSessionIdIf(request_session);
     return error.request_may_have_been_delivered
                ? KeyEventResult::TransportError
                : KeyEventResult::TransportNotDelivered;
   } catch (...) {
     // Unknown transport failures stay conservative: without delivery-stage
     // evidence, replaying could process one physical key twice.
-    _SetSessionId(0);
+    _ClearSessionIdIf(request_session);
     return KeyEventResult::TransportError;
   }
 
-  // Another thread may have invalidated the session after a successful
-  // transaction. The request was already sent, so replay would be ambiguous.
-  if (!_Active())
+  // Another thread may have replaced/ended the logical session after this
+  // request was sent. Never apply or replay an old-session result as though it
+  // belonged to the newer routing id.
+  if (!_Connected() || _SessionId() != request_session)
     return KeyEventResult::TransportError;
 
   // InvalidSession is emitted only before librime receives the key, making a
-  // single caller-controlled retry safe.
+  // single caller-controlled retry safe. Retire the key only if this response
+  // still names the current session; a newer concurrent session must survive.
   if (HasInvalidSessionResponse(channel, response_serial)) {
-    _SetSessionId(0);
+    {
+      std::lock_guard<std::mutex> lock(session_key_mutex_);
+      if (_SessionId() == request_session) {
+        _SetSessionId(0);
+        _RetireSessionKeyLocked();
+      }
+    }
     return KeyEventResult::InvalidSession;
   }
 
@@ -206,28 +252,62 @@ void ClientImpl::TrayCommand(UINT menuId) {
 }
 
 void ClientImpl::StartSession() {
+  StartSession(TransactionTimeoutForCommand(WEASEL_IPC_START_SESSION));
+}
+
+void ClientImpl::StartSession(DWORD timeout_ms) {
   if (_Active() && Echo())
     return;
 
-  _WriteClientInfo();
-  UINT ret = _SendMessage(WEASEL_IPC_START_SESSION, 0, 0);
-  _SetSessionId(ret);
+  std::uint64_t generation = 0;
+  if (!_WriteClientInfo(&generation)) {
+    const UINT current = _SessionId();
+    _ClearSessionIdIf(current);
+    return;
+  }
+
+  const UINT ret =
+      static_cast<UINT>(_SendMessage(WEASEL_IPC_START_SESSION, 0, 0, timeout_ms));
+  if (!ret)
+    return;
+
+  bool published = false;
+  {
+    std::lock_guard<std::mutex> lock(session_key_mutex_);
+    if (session_key_ && session_generation_ == generation) {
+      _SetSessionId(ret);
+      published = true;
+    }
+  }
+
+  if (!published) {
+    // EndSession/maintenance retired this logical generation while START was
+    // in flight. Do not revive it with a late response; clean up the concrete
+    // server session best-effort without touching a newer shared routing id.
+    _EndSessionId(ret);
+  }
 }
 
 void ClientImpl::EndSession() {
-  _SendMessage(WEASEL_IPC_END_SESSION, 0, _SessionId());
-  _SetSessionId(0);
+  UINT ending = 0;
+  {
+    std::lock_guard<std::mutex> lock(session_key_mutex_);
+    ending = _SessionId();
+    _RetireSessionKeyLocked();
+    _ClearSessionIdIf(ending);
+  }
+  _EndSessionId(ending);
 }
 
 bool ClientImpl::StartMaintenance() {
   const LRESULT ret = _SendMessage(WEASEL_IPC_START_MAINTENANCE, 0, 0);
-  _SetSessionId(0);
+  _InvalidateLogicalSession();
   return ret != 0;
 }
 
 void ClientImpl::EndMaintenance() {
   _SendMessage(WEASEL_IPC_END_MAINTENANCE, 0, 0);
-  _SetSessionId(0);
+  _InvalidateLogicalSession();
 }
 
 bool ClientImpl::Echo() {
@@ -249,24 +329,95 @@ bool ClientImpl::GetResponseData(ResponseHandler const& handler) {
   return channel.HandleResponseData(handler);
 }
 
+bool ClientImpl::_EnsureSessionKey() {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  if (session_key_)
+    return true;
+  if (!session_key_generator_)
+    return false;
+
+  const std::optional<SessionKey> generated = session_key_generator_();
+  if (!generated)
+    return false;
+  session_key_ = *generated;
+  return true;
+}
+
+void ClientImpl::_RetireSessionKeyLocked() {
+  session_key_.reset();
+  ++session_generation_;
+  if (session_generation_ == 0)
+    ++session_generation_;
+}
+
+void ClientImpl::_RetireSessionKey() {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  _RetireSessionKeyLocked();
+}
+
+void ClientImpl::_InvalidateLogicalSession() {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  _SetSessionId(0);
+  _RetireSessionKeyLocked();
+}
+
 bool ClientImpl::_WriteClientInfo() {
+  return _WriteClientInfo(nullptr);
+}
+
+bool ClientImpl::_WriteClientInfo(std::uint64_t* generation) {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  if (!session_key_) {
+    if (!session_key_generator_) {
+      channel.ClearBufferStream();
+      return false;
+    }
+    const std::optional<SessionKey> generated = session_key_generator_();
+    if (!generated) {
+      channel.ClearBufferStream();
+      return false;
+    }
+    session_key_ = *generated;
+  }
+
+  if (generation)
+    *generation = session_generation_;
+  const SessionKey key = *session_key_;
+
   channel << L"action=session\n";
+  channel << L"session.client_key=" << FormatSessionKey(key) << L"\n";
   channel << L"session.client_app=" << app_name.c_str() << L"\n";
   channel << L"session.client_type=" << (is_ime ? L"ime" : L"tsf") << L"\n";
   channel << L".\n";
   return true;
 }
 
+void ClientImpl::_EndSessionId(UINT id) {
+  if (!id)
+    return;
+  try {
+    PipeMessage req{WEASEL_IPC_END_SESSION, 0, id};
+    channel.Transact(req, kTeardownTransactionTimeoutMs);
+  } catch (...) {
+    // END_SESSION is best-effort at this boundary. The logical key is already
+    // retired locally and process ownership supplies the final cleanup bound.
+  }
+}
+
 LRESULT ClientImpl::_SendMessage(WEASEL_IPC_COMMAND Msg,
                                  DWORD wParam,
-                                 DWORD lParam) {
+                                 DWORD lParam,
+                                 DWORD timeout_ms) {
+  const UINT observed_session = _SessionId();
   try {
     PipeMessage req{Msg, wParam, lParam};
-    return channel.Transact(req);
+    if (!timeout_ms)
+      timeout_ms = TransactionTimeoutForCommand(Msg);
+    return channel.Transact(req, timeout_ms);
   } catch (...) {
-    // The session died with the connection; lazily re-established by the
-    // next StartSession/EnsureServerConnected round.
-    _SetSessionId(0);
+    // Transport failure invalidates only the routing id that was current when
+    // this request began. A concurrent newer START_SESSION must not be erased.
+    _ClearSessionIdIf(observed_session);
     return 0;
   }
 }
@@ -280,6 +431,10 @@ Client::~Client() {
 
 bool Client::Connect() {
   return m_pImpl->Connect();
+}
+
+bool Client::Connect(DWORD timeout_ms) {
+  return m_pImpl->Connect(timeout_ms);
 }
 
 void Client::Disconnect() {
@@ -332,6 +487,10 @@ void Client::FocusOut() {
 
 void Client::StartSession() {
   m_pImpl->StartSession();
+}
+
+void Client::StartSession(DWORD timeout_ms) {
+  m_pImpl->StartSession(timeout_ms);
 }
 
 void Client::EndSession() {

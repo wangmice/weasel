@@ -23,10 +23,13 @@ static std::mutex g_api_mutex;
 static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
 ServerImpl::ServerImpl()
-    : m_pRequestHandler(NULL),
-      m_darkMode(IsUserDarkMode()),
-      channel(std::make_unique<PipeServer>(GetPipeName(), sa.get_attr(),
-                                           GetLegacyPipeName())) {
+    : channel(std::make_unique<PipeServer>(GetPipeName(), sa.get_attr(),
+                                           GetLegacyPipeName())),
+      process_tracker([this](ClientProcessToken token) {
+        _OnClientProcessExit(token);
+      }),
+      m_pRequestHandler(NULL),
+      m_darkMode(IsUserDarkMode()) {
   m_hUser32Module = GetModuleHandle(_T("user32.dll"));
   m_pPhysicalToLogicalPointForPerMonitorDPI =
       reinterpret_cast<PPhysicalToLogicalPointForPerMonitorDPI>(
@@ -42,10 +45,22 @@ void ServerImpl::_Finailize() {
   // Ordered, idempotent teardown: join the pipe threads before the window
   // goes away, so no worker can touch a destroyed handler or UI.
   _StopPipeServer();
+  // No new Resolve() calls are possible after workers drain. Synchronously
+  // drain process-exit callbacks before RequestHandler/UI lifetime can end.
+  process_tracker.Stop();
 
   if (IsWindow()) {
     DestroyWindow();
   }
+}
+
+void ServerImpl::_OnClientProcessExit(ClientProcessToken token) {
+  // ClientProcessTracker releases its metadata lock before invoking us. Enter
+  // the same API serialization boundary as normal pipe dispatch so Rime and
+  // SessionManager state can never be mutated concurrently.
+  std::lock_guard guard(g_api_mutex);
+  if (m_pRequestHandler)
+    session_router.RemoveClient(token);
 }
 
 LRESULT ServerImpl::OnColorChange(UINT uMsg,
@@ -101,6 +116,7 @@ LRESULT ServerImpl::OnEndSystemSession(UINT uMsg,
   if (m_pRequestHandler) {
     std::lock_guard guard(g_api_mutex);
     m_pRequestHandler->Finalize();
+    session_router.SetBackend(nullptr);
     m_pRequestHandler = nullptr;
   }
   return 0;
@@ -208,13 +224,47 @@ int ServerImpl::Run() {
   // auto handler = boost::bind(&ServerImpl::HandlePipeMessage, this);
   // auto listener = boost::bind(&PipeServer::Listen, channel.get(), handler);
   //
-  auto listener = [this](PipeMessage msg, PipeServer::Respond resp) -> void {
+  auto listener = [this](const PipeServer::ConnectionContext& context,
+                         PipeMessage msg,
+                         PipeServer::Respond resp) -> void {
+    // Resolve the peer process generation before taking g_api_mutex. Resolve()
+    // may open a process handle or synchronously drain an old PID generation;
+    // neither operation is allowed inside the global Rime/session lock.
+    std::optional<ClientProcessToken> owner;
+    if (msg.Msg == WEASEL_IPC_START_SESSION && context.client_pid)
+      owner = process_tracker.Resolve(*context.client_pid);
+
     // Defer the response write until the api lock is released: a slow or
     // hung client must not extend the global critical section.
     PipeServer::Msg result = 0;
     {
       std::lock_guard guard(g_api_mutex);
-      HandlePipeMessage(msg, [&result](PipeServer::Msg r) { result = r; });
+      const bool starting = msg.Msg == WEASEL_IPC_START_SESSION;
+      bool dispatch = true;
+      if (starting) {
+        // Close the Resolve -> bind race. If the process exited before this
+        // point its cleanup may already have run; do not create an ownerless
+        // session. If it exits after this check, its callback queues behind
+        // g_api_mutex and removes the session after this request commits.
+        if (owner && !process_tracker.IsAlive(*owner)) {
+          dispatch = false;
+        } else {
+          session_router.SetCurrentOwner(SessionOwner{owner});
+        }
+      }
+
+      if (dispatch) {
+        try {
+          HandlePipeMessage(msg,
+                            [&result](PipeServer::Msg r) { result = r; });
+        } catch (...) {
+          if (starting)
+            session_router.ClearCurrentOwner();
+          throw;
+        }
+      }
+      if (starting)
+        session_router.ClearCurrentOwner();
     }
     resp(result);
   };
@@ -230,6 +280,9 @@ int ServerImpl::Run() {
   // Stop the pipe server before the caller (WeaselServerApp::Run) starts
   // destroying the handler and UI: late requests would touch freed objects.
   _StopPipeServer();
+  // Process-exit waits are another asynchronous source that can touch the
+  // handler. Drain them at the same lifetime boundary before returning.
+  process_tracker.Stop();
   return nRet;
 }
 

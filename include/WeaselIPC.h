@@ -79,7 +79,17 @@ struct RequestHandler {
   virtual void Finalize() {}
   virtual DWORD FindSession(DWORD session_id) { return 0; }
   virtual DWORD AddSession(LPWSTR buffer, EatLine eat = 0) { return 0; }
+  // Re-emit the current response for an already-created logical session. The
+  // IPC server uses this after an idempotent START_SESSION retry; creation and
+  // SessionKey policy remain outside the backend handler.
+  virtual bool RespondSession(DWORD session_id, EatLine eat) { return false; }
   virtual DWORD RemoveSession(DWORD session_id) { return 0; }
+  // Internal lifecycle destruction is distinct from the protocol-level remove
+  // hook because background process cleanup must not disturb another client's
+  // active UI. Backends that do not need this distinction keep legacy behavior.
+  virtual DWORD DestroySession(DWORD session_id) {
+    return RemoveSession(session_id);
+  }
   virtual BOOL ProcessKeyEvent(KeyEvent keyEvent,
                                DWORD session_id,
                                EatLine eat) {
@@ -128,12 +138,16 @@ class Client {
 
   // 连接到服务进程的管道（服务进程由 TSF 注册的 autostart 保证在位）
   bool Connect();
+  // 使用调用方给定的有限预算连接；首键恢复用它共享端到端 deadline
+  bool Connect(DWORD timeout_ms);
   // 断开连接
   void Disconnect();
   // 终止服务
   void ShutdownServer();
   // 發起會話
   void StartSession();
+  // 使用调用方剩余预算建立会话
+  void StartSession(DWORD timeout_ms);
   // 結束會話
   void EndSession();
   // 進入維護模式；仅当服务端已完成状态切换并返回确认时为 true
