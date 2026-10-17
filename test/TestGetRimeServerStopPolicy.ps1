@@ -23,7 +23,7 @@ if ($body -match 'Stop-Process\s+-Name\s+\$processName') {
 if ($body -notmatch '\[System\.Diagnostics\.Stopwatch\]::StartNew\(\)') {
   throw 'KillWeaselServer must enforce one shared elapsed-time budget'
 }
-if ($body -notmatch 'Stop-Process[\s\S]*?-ErrorAction\s+Stop') {
+if ($body -notmatch 'Stop-Process[^\r\n]*-ErrorAction\s+Stop') {
   throw 'KillWeaselServer must preserve Stop-Process failures instead of silently swallowing them'
 }
 if ($body -notmatch '\.WaitForExit\s*\(' -or
@@ -33,7 +33,7 @@ if ($body -notmatch '\.WaitForExit\s*\(' -or
 if ($body -notmatch 'Get-Process\s+(?:-Name\s+)?\$processName[\s\S]*?throw') {
   throw 'KillWeaselServer must reject any WeaselServer instance still present after the bounded stop attempt'
 }
-if ($body -match 'Stop-Process[\s\S]*?-ErrorAction\s+SilentlyContinue') {
+if ($body -match 'Stop-Process[^\r\n]*-ErrorAction\s+SilentlyContinue') {
   throw 'KillWeaselServer must not discard stop failures'
 }
 
