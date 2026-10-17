@@ -317,18 +317,82 @@ if ($null -ne $response.assets -and $response.assets.Count -gt 0) {
         }
       }
       function KillWeaselServer {
+        param([int]$TimeoutMs = 10000)
+
         $processName = "WeaselServer"
-        $process = Get-Process $processName -ErrorAction SilentlyContinue
-        while ($process) {
-          if ($process) {
-            Stop-Process -Name $processName -Force -ErrorAction SilentlyContinue
-          }
-          Start-Sleep -Seconds 0.5
-          $process = Get-Process $processName -ErrorAction SilentlyContinue
-          if (-not $process) {
-            Write-Host "☑  $processName has been killed"
+        $targets = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+        if ($targets.Count -eq 0) {
+          return
+        }
+
+        $targetIds = @($targets | ForEach-Object { $_.Id })
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $failures = @{}
+
+        # Stop only the instances captured above. A server launched after this
+        # snapshot is not chased indefinitely; the final check below aborts the
+        # dependency update instead.
+        foreach ($process in $targets) {
+          try {
+            Stop-Process -InputObject $process -Force -ErrorAction Stop
+          } catch {
+            $failures[$process.Id] = "stop failed: $($_.Exception.Message)"
           }
         }
+
+        foreach ($process in $targets) {
+          try {
+            if ($process.HasExited) {
+              continue
+            }
+          } catch {
+            if (-not $failures.ContainsKey($process.Id)) {
+              $failures[$process.Id] = "exit-state query failed: $($_.Exception.Message)"
+            }
+          }
+
+          $remaining = $TimeoutMs - [int]$timer.ElapsedMilliseconds
+          if ($remaining -le 0) {
+            if (-not $failures.ContainsKey($process.Id)) {
+              $failures[$process.Id] = "shared ${TimeoutMs}ms shutdown deadline expired"
+            }
+            continue
+          }
+
+          try {
+            if (-not $process.WaitForExit($remaining)) {
+              if (-not $failures.ContainsKey($process.Id)) {
+                $failures[$process.Id] = "did not exit before the shared shutdown deadline"
+              }
+            }
+          } catch {
+            $waitMessage = "wait failed: $($_.Exception.Message)"
+            if ($failures.ContainsKey($process.Id)) {
+              $failures[$process.Id] += "; $waitMessage"
+            } else {
+              $failures[$process.Id] = $waitMessage
+            }
+          }
+        }
+
+        # Re-query only once after the bounded wait. Any server still present,
+        # including an instance restarted while this function was waiting,
+        # means replacing rime.dll would be unsafe.
+        $remainingProcesses = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+        if ($remainingProcesses.Count -ne 0) {
+          $details = @($remainingProcesses | ForEach-Object {
+            $kind = if ($targetIds -contains $_.Id) { "target" } else { "new" }
+            $reason = if ($failures.ContainsKey($_.Id)) {
+              "; $($failures[$_.Id])"
+            } else {
+              ""
+            }
+            "PID=$($_.Id), SessionId=$($_.SessionId), $kind$reason"
+          }) -join "; "
+          throw "Failed to stop WeaselServer within ${TimeoutMs}ms: $details"
+        }
+
+        Write-Host "☑  $processName has been stopped"
       }
       if ( $use -eq "dev"){
         if ((Test-Path ".\include") `
