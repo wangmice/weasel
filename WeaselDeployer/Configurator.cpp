@@ -110,15 +110,32 @@ enum class ConfigureResult { Cancelled, Saved, Failed };
 static ConfigureResult configure_switcher(
     RimeLeversApi* api,
     RimeSwitcherSettings* switcher_settings) {
+  AppendDeployerDiagnostic(L"configure_switcher entered");
+  AppendDeployerDiagnosticValue(L"configure_switcher switcher_settings_present",
+                                switcher_settings ? 1 : 0);
   RimeCustomSettings* settings = (RimeCustomSettings*)switcher_settings;
-  if (!api->load_settings(settings)) {
+  AppendDeployerDiagnostic(L"configure_switcher before load_settings");
+  const bool loaded = api->load_settings(settings);
+  AppendDeployerDiagnosticValue(L"configure_switcher after load_settings result",
+                                loaded ? 1 : 0);
+  if (!loaded) {
     LOG(ERROR) << "Failed to load switcher settings.";
     return ConfigureResult::Failed;
   }
+  AppendDeployerDiagnostic(L"configure_switcher before dialog construction");
   SwitcherSettingsDialog dialog(switcher_settings);
-  if (dialog.DoModal() != IDOK)
+  AppendDeployerDiagnostic(L"configure_switcher after dialog construction");
+  AppendDeployerDiagnostic(L"configure_switcher before DoModal");
+  const INT_PTR dialog_result = dialog.DoModal();
+  AppendDeployerDiagnosticValue(L"configure_switcher after DoModal result",
+                                static_cast<int>(dialog_result));
+  if (dialog_result != IDOK)
     return ConfigureResult::Cancelled;
-  if (!api->save_settings(settings)) {
+  AppendDeployerDiagnostic(L"configure_switcher before save_settings");
+  const bool saved = api->save_settings(settings);
+  AppendDeployerDiagnosticValue(L"configure_switcher after save_settings result",
+                                saved ? 1 : 0);
+  if (!saved) {
     LOG(ERROR) << "Failed to save switcher settings.";
     return ConfigureResult::Failed;
   }
@@ -127,15 +144,34 @@ static ConfigureResult configure_switcher(
 
 static ConfigureResult configure_ui(RimeLeversApi* api,
                                     UIStyleSettings* ui_style_settings) {
+  AppendDeployerDiagnostic(L"configure_ui entered");
+  AppendDeployerDiagnosticValue(L"configure_ui ui_style_settings_present",
+                                ui_style_settings ? 1 : 0);
   RimeCustomSettings* settings = ui_style_settings->settings();
-  if (!api->load_settings(settings)) {
+  AppendDeployerDiagnosticValue(L"configure_ui custom_settings_present",
+                                settings ? 1 : 0);
+  AppendDeployerDiagnostic(L"configure_ui before load_settings");
+  const bool loaded = api->load_settings(settings);
+  AppendDeployerDiagnosticValue(L"configure_ui after load_settings result",
+                                loaded ? 1 : 0);
+  if (!loaded) {
     LOG(ERROR) << "Failed to load UI style settings.";
     return ConfigureResult::Failed;
   }
+  AppendDeployerDiagnostic(L"configure_ui before dialog construction");
   UIStyleSettingsDialog dialog(ui_style_settings);
-  if (dialog.DoModal() != IDOK)
+  AppendDeployerDiagnostic(L"configure_ui after dialog construction");
+  AppendDeployerDiagnostic(L"configure_ui before DoModal");
+  const INT_PTR dialog_result = dialog.DoModal();
+  AppendDeployerDiagnosticValue(L"configure_ui after DoModal result",
+                                static_cast<int>(dialog_result));
+  if (dialog_result != IDOK)
     return ConfigureResult::Cancelled;
-  if (!api->save_settings(settings)) {
+  AppendDeployerDiagnostic(L"configure_ui before save_settings");
+  const bool saved = api->save_settings(settings);
+  AppendDeployerDiagnosticValue(L"configure_ui after save_settings result",
+                                saved ? 1 : 0);
+  if (!saved) {
     LOG(ERROR) << "Failed to save UI style settings.";
     return ConfigureResult::Failed;
   }
