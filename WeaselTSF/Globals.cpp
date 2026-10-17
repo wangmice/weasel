@@ -63,8 +63,8 @@ bool QueueDllBackgroundTask(std::function<void()> task) {
 
   DllAddRef();
   if (!TrySubmitThreadpoolCallback(RunDllBackgroundTask, context, nullptr)) {
-    DllRelease();
     delete context;
+    DllRelease();
     FreeLibrary(module);
     return false;
   }
