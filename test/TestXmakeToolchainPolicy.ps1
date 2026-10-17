@@ -62,6 +62,12 @@ if ($ruleIndex -lt 0 -or $onLoadIndex -lt 0 -or $ioRunIndex -lt $onLoadIndex) {
 if ($source -match 'os\.cp\(') {
   throw 'xmake toolchain policy regression: filesystem mutation returned to description loading'
 }
+if ($source -match '\bpcall\s*\(') {
+  throw 'xmake toolchain policy regression: sandbox callbacks must use try instead of unavailable pcall'
+}
+if ($source -match 'path\.filename\([^\x0d\x0a]*:gsub\(') {
+  throw 'xmake toolchain policy regression: gsub replacement count must not become the path separator'
+}
 
 # xbuild must pass the same Visual Studio/toolset policy to every xmake
 # configure. Otherwise xmake defaults to the newest installed VS, which can

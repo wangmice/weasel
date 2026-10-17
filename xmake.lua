@@ -175,10 +175,11 @@ rule("weasel_msvc_atl")
             table.insert(args, version_range)
           end
 
-          local ok, output = pcall(function()
+          -- on_load runs in xmake's sandbox, which exposes try, not pcall.
+          local output = try {function()
             return os.iorunv(vswhere, args)
-          end)
-          if ok and output then
+          end}
+          if output then
             local install_dir = output:trim()
             if install_dir ~= '' then
               local msvc_root = path.join(install_dir, "VC", "Tools", "MSVC")
@@ -190,7 +191,8 @@ rule("weasel_msvc_atl")
                 local candidates = os.dirs(path.join(msvc_root, "*"))
                 table.sort(candidates, function(a, b) return a > b end)
                 for _, candidate in ipairs(candidates) do
-                  local version = path.filename(candidate:gsub("[/\\]+$", ""))
+                  local normalized_candidate = candidate:gsub("[/\\]+$", "")
+                  local version = path.filename(normalized_candidate)
                   if toolset_matches(version, configured_vs_toolset) and
                      os.isdir(path.join(candidate, "atlmfc", "include")) then
                     vc_tools_dir = candidate
