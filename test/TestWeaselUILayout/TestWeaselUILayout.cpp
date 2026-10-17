@@ -6,6 +6,8 @@
 #include "../../WeaselUI/d2d.h"
 #include "../../WeaselUI/StandardLayout.h"
 #include "../../WeaselUI/VerticalLayout.h"
+#include "../../WeaselUI/HorizontalLayout.h"
+#include "../../WeaselUI/VHorizontalLayout.h"
 #include <atomic>
 #include <cstdio>
 #include <type_traits>
@@ -124,6 +126,85 @@ static void test_recreate_with_unchanged_context() {
   panel.DestroyWindow();
 }
 
+struct LayoutPassLimitExceeded {};
+
+template <typename InnerLayout>
+class BoundedLayout : public InnerLayout {
+ public:
+  BoundedLayout(const weasel::UIStyle& style,
+                const weasel::Context& ctx,
+                const weasel::Status& status,
+                weasel::an<weasel::D2D>& d2d,
+                int& passes)
+      : InnerLayout(style, ctx, status, d2d), m_passes(passes) {}
+
+  void DoLayout() override {
+    // Fail a broken search without leaving the test process in its busy loop.
+    if (++m_passes > 128)
+      throw LayoutPassLimitExceeded();
+    InnerLayout::DoLayout();
+  }
+
+ private:
+  int& m_passes;
+};
+
+template <typename InnerLayout>
+static void test_fullscreen_unattainable_size(
+    weasel::UIStyle::LayoutType type,
+    bool oversized_height,
+    bool missing_fonts = false) {
+  weasel::UI ui;
+  auto& style = ui.style();
+  style.font_face = style.label_font_face = style.comment_font_face =
+      L"Segoe UI";
+  style.font_point = style.label_font_point = style.comment_font_point = 12;
+  weasel::WeaselPanel panel(ui);
+  const bool created = panel.Create(nullptr);
+  check(created, "oversized fullscreen test creates graphics resources");
+  if (!created)
+    return;
+
+  style.layout_type = type;
+  if (oversized_height)
+    style.min_height = GetSystemMetrics(SM_CYVIRTUALSCREEN) + 10000;
+  else
+    style.min_width = GetSystemMetrics(SM_CXVIRTUALSCREEN) + 10000;
+  if (missing_fonts)
+    style.font_face = style.label_font_face = style.comment_font_face = L"";
+  panel.m_pD2D->InitFontFormats();
+  weasel::Context ctx;
+  ctx.preedit.str = L"a";
+  ctx.cinfo.candies.emplace_back(L"candidate");
+  ctx.cinfo.labels.emplace_back(L"1");
+  ctx.cinfo.comments.emplace_back();
+  weasel::Status status;
+  status.composing = true;
+  RECT input_pos{0, 0, 1, 1};
+  int passes = 0;
+  auto inner = std::make_unique<BoundedLayout<InnerLayout>>(
+      style, ctx, status, panel.m_pD2D, passes);
+  weasel::FullScreenLayout layout(style, ctx, status, input_pos,
+                                 std::move(inner), panel.m_pD2D);
+  bool completed = false;
+  try {
+    layout.DoLayout();
+    completed = true;
+  } catch (const LayoutPassLimitExceeded&) {
+  }
+  std::printf("Fullscreen type=%d height=%d missing_fonts=%d passes=%d\n",
+              static_cast<int>(type), oversized_height, missing_fonts, passes);
+  check(completed && passes <= 64,
+        "unattainable fullscreen size has a bounded layout search");
+  if (completed && !missing_fonts) {
+    check(panel.m_pD2D->pTextFormat &&
+              panel.m_pD2D->pTextFormat->GetFontSize() <=
+                  panel.m_pD2D->m_dpiScaleFontPoint + 0.001f,
+          "unattainable fullscreen size stops at the minimum font point");
+  }
+  panel.DestroyWindow();
+}
+
 static BOOL CALLBACK collect_work_areas(HMONITOR monitor,
                                         HDC,
                                         LPRECT,
@@ -194,6 +275,20 @@ int main() {
   }
   test_polymorphic_layout_destruction();
   test_recreate_with_unchanged_context();
+  test_fullscreen_unattainable_size<weasel::VerticalLayout>(
+      weasel::UIStyle::LAYOUT_VERTICAL_FULLSCREEN, false);
+  test_fullscreen_unattainable_size<weasel::VerticalLayout>(
+      weasel::UIStyle::LAYOUT_VERTICAL_FULLSCREEN, true);
+  test_fullscreen_unattainable_size<weasel::HorizontalLayout>(
+      weasel::UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN, false);
+  test_fullscreen_unattainable_size<weasel::HorizontalLayout>(
+      weasel::UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN, true);
+  test_fullscreen_unattainable_size<weasel::VHorizontalLayout>(
+      weasel::UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN, false);
+  test_fullscreen_unattainable_size<weasel::VHorizontalLayout>(
+      weasel::UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN, true);
+  test_fullscreen_unattainable_size<weasel::VerticalLayout>(
+      weasel::UIStyle::LAYOUT_VERTICAL_FULLSCREEN, false, true);
   test_fullscreen_tracks_input_rectangle();
   // DeviceResources now keeps only a weak reference to the published
   // generation. Once all panel/D2D owners above have unwound, no shared

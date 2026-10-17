@@ -22,14 +22,23 @@ void weasel::FullScreenLayout::DoLayout() {
 
   int step = 32;
   bool adjusted = false;
-  do {
+  // Fixed margins/minimum sizes can make fitting impossible. Keep the last
+  // completed layout rather than letting font search monopolize the UI thread.
+  constexpr int kMaxLayoutPasses = 64;
+  for (int pass = 0; pass < kMaxLayoutPasses; ++pass) {
     if (adjusted) {
       // Font changed, recalculate cached sizes
       static_cast<StandardLayout*>(m_layout.get())->RecalculateSizes();
     }
     m_layout->DoLayout();
+    // Do not change fonts after the last pass: cached rectangles must still
+    // describe the formats that will be painted.
+    if (pass + 1 == kMaxLayoutPasses)
+      break;
     adjusted = AdjustFontPoint(workArea, step);
-  } while (adjusted);
+    if (!adjusted)
+      break;
+  }
 
   mark_height = m_layout->mark_height;
   mark_width = m_layout->mark_width;
@@ -123,45 +132,35 @@ bool FullScreenLayout::AdjustFontPoint(const CRect& workArea, int& step) {
                                _pD2D->m_dpiScaleFontPoint);
     else
       fontPointComment = 0;
+    const int oldFontPoint = fontPoint;
+    const int oldFontPointLabel = fontPointLabel;
+    const int oldFontPointComment = fontPointComment;
     CSize sz = m_layout->GetContentSize();
     if (sz.cx > ((CRect)workArea).Width() - offsetX * 2 ||
         sz.cy > ((CRect)workArea).Height() - offsetY * 2) {
       if (step > 0) {
         step = -(step >> 1);
       }
-      fontPoint += step;
-      fontPointLabel += step;
-      fontPointComment += step;
-      if (fontPoint < 1)
-        fontPoint = 1;
-      if (fontPointLabel < 1)
-        fontPointLabel = 1;
-      if (fontPointComment < 1)
-        fontPointComment = 1;
-      _pD2D->InitFontFormats(_style.label_font_face, fontPointLabel,
-                             _style.font_face, fontPoint,
-                             _style.comment_font_face, fontPointComment);
-      return true;
     } else if (sz.cx <= (((CRect)workArea).Width() - offsetX * 2) * 31 / 32 &&
                sz.cy <= (((CRect)workArea).Height() - offsetY * 2) * 31 / 32) {
       if (step < 0) {
         step = -step >> 1;
       }
-      fontPoint += step;
-      fontPointLabel += step;
-      fontPointComment += step;
-      if (fontPoint < 1)
-        fontPoint = 1;
-      if (fontPointLabel < 1)
-        fontPointLabel = 1;
-      if (fontPointComment < 1)
-        fontPointComment = 1;
-      _pD2D->InitFontFormats(_style.label_font_face, fontPointLabel,
-                             _style.font_face, fontPoint,
-                             _style.comment_font_face, fontPointComment);
-      return true;
+    } else {
+      return false;
     }
 
-    return false;
+    fontPoint = MAX(1, fontPoint + step);
+    fontPointLabel = MAX(1, fontPointLabel + step);
+    fontPointComment = MAX(1, fontPointComment + step);
+    // At the font floor, fixed layout dimensions cannot be reduced further.
+    // This also stops a search whose step has converged to zero.
+    if (fontPoint == oldFontPoint && fontPointLabel == oldFontPointLabel &&
+        fontPointComment == oldFontPointComment)
+      return false;
+    _pD2D->InitFontFormats(_style.label_font_face, fontPointLabel,
+                           _style.font_face, fontPoint,
+                           _style.comment_font_face, fontPointComment);
+    return true;
   }
 }
