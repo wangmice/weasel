@@ -98,15 +98,15 @@ if ($configurator -match 'Failed to save switcher settings' -or
   throw 'save_settings(false) means unchanged in librime and must not be logged as failure'
 }
 
-if (([regex]::Matches($deployerProject, '<OptimizeReferences>false</OptimizeReferences>')).Count -ne 2) {
-  throw 'Release Win32 and x64 WeaselDeployer links must disable /OPT:REF to preserve ATL selectany dynamic initialization'
+if (([regex]::Matches($deployerProject, '<OptimizeReferences>true</OptimizeReferences>')).Count -ne 2) {
+  throw 'Diagnostic A/B requires /OPT:REF in both Release WeaselDeployer links'
 }
-if ($deployerProject -match '<OptimizeReferences>true</OptimizeReferences>') {
-  throw 'WeaselDeployer must not re-enable /OPT:REF while ATL::_AtlWinModule depends on selectany dynamic initialization'
+if ($deployerProject -match '<OptimizeReferences>false</OptimizeReferences>') {
+  throw 'Diagnostic A/B must not retain /OPT:NOREF'
 }
 
 if (([regex]::Matches($deployerProject, '<LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>')).Count -ne 2) {
-  throw 'Release Win32 and x64 WeaselDeployer links must use full /LTCG because /OPT:NOREF is incompatible with /LTCG:incremental'
+  throw 'Diagnostic A/B must keep full /LTCG while testing /OPT:REF'
 }
 
 Write-Host 'Background lifetime and deployer policy: PASS'
