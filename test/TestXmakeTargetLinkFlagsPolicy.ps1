@@ -5,7 +5,7 @@ $targets = @(
   @{ Path = 'WeaselSetup\xmake.lua'; Kind = 'ld'; Fragment = 'add_ldflags("/DEBUG", "/OPT:REF", "/OPT:ICF", "/LARGEADDRESSAWARE", "/ERRORREPORT:QUEUE", {force = true})' },
   @{ Path = 'WeaselServer\xmake.lua'; Kind = 'ld'; Fragment = 'add_ldflags("/DEBUG", "/OPT:REF", "/OPT:ICF", "/LARGEADDRESSAWARE", "/ERRORREPORT:QUEUE", {force = true})' },
   @{ Path = 'WeaselDeployer\xmake.lua'; Kind = 'ld'; Fragment = 'add_ldflags("/DEBUG", "/OPT:ICF", "/LARGEADDRESSAWARE", "/ERRORREPORT:QUEUE", {force = true})' },
-  @{ Path = 'WeaselTSF\xmake.lua'; Kind = 'sh'; Fragment = 'add_shflags("/DEBUG", "/OPT:REF", "/OPT:ICF", {force = true})' }
+  @{ Path = 'WeaselTSF\xmake.lua'; Kind = 'sh'; Fragment = 'add_shflags("/DEBUG", "/OPT:REF", "/OPT:ICF", "/LTCG", "/INCREMENTAL:NO", {force = true})' }
 )
 
 foreach ($target in $targets) {
@@ -52,6 +52,9 @@ if (-not $rootXmake.Contains('target:add("cxflags", "/GL", {force = true})')) {
 }
 if ($tsfXmake.Contains('/GL-')) {
   throw 'xmake LTCG policy regression: WeaselTSF should be excluded from /GL instead of overriding it with /GL-'
+}
+if (-not $tsfXmake.Contains('add_shflags("/DEBUG", "/OPT:REF", "/OPT:ICF", "/LTCG", "/INCREMENTAL:NO", {force = true})')) {
+  throw 'xmake LTCG policy regression: WeaselTSF shared link must carry explicit /LTCG'
 }
 
 if (-not $rootXmake.Contains('target:add("ldflags", "/SUBSYSTEM:CONSOLE", {force = true})')) {
