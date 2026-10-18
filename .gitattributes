@@ -1,0 +1,64 @@
+# Default text handling
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+
+# C / C++
+*.c    text eol=lf
+*.cc   text eol=lf
+*.cpp  text eol=lf
+*.cxx  text eol=lf
+*.h    text eol=lf
+*.hh   text eol=lf
+*.hpp  text eol=lf
+*.hxx  text eol=lf
+
+# Build / config files
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.json       text eol=lf
+*.xml        text eol=lf
+*.md         text eol=lf
+*.txt        text eol=lf
+*.sh         text eol=lf
+*.lua        text eol=lf
+*.ps1        text eol=lf
+*.psm1       text eol=lf
+
+# Windows command scripts
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+
+# Visual Studio / MSBuild
+*.sln        text eol=crlf
+*.vcxproj    text eol=crlf
+*.filters    text eol=crlf
+*.props      text eol=crlf
+*.targets    text eol=crlf
+
+# NSIS
+*.nsi        text eol=crlf
+*.nsh        text eol=crlf
+
+# Windows resource scripts
+# Keep raw bytes unchanged; these files may be UTF-16LE with BOM.
+# Use a custom diff driver only.
+*.rc         -text diff=utf16
+
+# Definition files
+*.def        text eol=crlf
+
+# Binary resources
+*.ico        binary
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.bmp        binary
+*.dll        binary
+*.exe        binary
+*.lib        binary
+*.pdb        binary
+*.zip        binary
+*.7z         binary
