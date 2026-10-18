@@ -11,7 +11,7 @@ if not defined BOOST_ROOT set "BOOST_ROOT=%RIME_ROOT%\deps\boost_%boost_x_y_z%"
 call :boost_source_complete
 if not errorlevel 1 goto boost_found
 
-for %%I in ("%BOOST_ROOT%\.") do set "src_dir=%%~dpI"
+for %%I in ("%BOOST_ROOT%\..") do set "src_dir=%%~fI"
 if not exist "%src_dir%" mkdir "%src_dir%"
 if errorlevel 1 exit /b 1
 
