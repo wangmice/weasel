@@ -8,13 +8,50 @@ set_runtimes("MT")  -- 设置运行时库为静态链接，避免/MD与/MT冲突
 add_defines("UNICODE", "_UNICODE")
 add_defines("WINDOWS")
 add_defines("MSVC")
-add_cxflags(
-  "/DVERSION_MAJOR=" .. (os.getenv("VERSION_MAJOR") or "0"),
-  "/DVERSION_MINOR=" .. (os.getenv("VERSION_MINOR") or "0"),
-  "/DVERSION_PATCH=" .. (os.getenv("VERSION_PATCH") or "0"),
-  "/DPRODUCT_VERSION=" .. (os.getenv("PRODUCT_VERSION") or "0.0.0.0"),
-  {force = true}
-)
+local function load_weasel_version(readfile)
+  local major = os.getenv("VERSION_MAJOR")
+  local minor = os.getenv("VERSION_MINOR")
+  local patch = os.getenv("VERSION_PATCH")
+
+  if not major or major == "" or not minor or minor == "" or
+     not patch or patch == "" then
+    local version_file = path.join(os.projectdir(), "VERSION")
+    if not os.isfile(version_file) then
+      raise("VERSION file not found: " .. version_file)
+    end
+    local version = readfile(version_file):trim()
+    major, minor, patch = version:match("^(%d+)%.(%d+)%.(%d+)$")
+    if not major then
+      raise("VERSION must contain exactly MAJOR.MINOR.PATCH using decimal digits")
+    end
+  end
+
+  local build = os.getenv("WEASEL_BUILD") or "0"
+  local version = major .. "." .. minor .. "." .. patch
+  local product_version = os.getenv("PRODUCT_VERSION") or (version .. "." .. build)
+  local file_version = os.getenv("FILE_VERSION") or ('"' .. version .. "." .. build .. '"')
+
+  return {
+    major = major,
+    minor = minor,
+    patch = patch,
+    product_version = product_version,
+    file_version = file_version
+  }
+end
+
+rule("weasel_version")
+  on_load(function(target)
+    local version = load_weasel_version(io.readfile)
+    target:add("cxflags",
+      "/DVERSION_MAJOR=" .. version.major,
+      "/DVERSION_MINOR=" .. version.minor,
+      "/DVERSION_PATCH=" .. version.patch,
+      "/DPRODUCT_VERSION=" .. version.product_version,
+      {force = true})
+  end)
+rule_end()
+add_rules("weasel_version")
 
 add_includedirs("$(projectdir)/include")
 -- 设置Boost库的全局路径：优先 BOOST_ROOT 环境变量，其次 scoop 默认安装路径
@@ -127,7 +164,35 @@ local configured_vs_toolset = get_config("vs_toolset")
 
 -- Command execution and filesystem mutation are not allowed in xmake's
 -- description domain. Resolve the concrete VC/ATL installation from on_load,
--- where os.iorunv, os.dirs, io.readfile and raise are valid script APIs.
+-- where os.iorunv, os.dirs, imported module APIs and raise are valid.
+rule("weasel_msvc_arm_linkdirs")
+  on_load(function(target)
+    if target:plat() ~= "windows" or target:arch() ~= "arm" then
+      return
+    end
+
+    -- xbuild enters a fresh vcvarsall x64_arm environment for this target.
+    -- Preserve its target-specific MSVC and Windows SDK library search paths.
+    local lib_env = os.getenv("LIB")
+    if not lib_env or lib_env == "" then
+      raise("ARM32 MSVC LIB environment is empty after vcvarsall x64_arm")
+    end
+
+    local added = 0
+    for dir in lib_env:gmatch("[^;]+") do
+      dir = dir:trim()
+      if dir ~= "" and os.isdir(dir) then
+        target:add("linkdirs", dir)
+        added = added + 1
+      end
+    end
+    if added == 0 then
+      raise("ARM32 MSVC LIB environment contains no usable library directories")
+    end
+  end)
+rule_end()
+add_rules("weasel_msvc_arm_linkdirs")
+
 rule("weasel_msvc_atl")
   on_load(function(target)
     if target:plat() ~= "windows" then
@@ -327,12 +392,13 @@ rule("subwin")
 
 rule("add_rcfiles")
   on_load(function(target)
+    local version = load_weasel_version(io.readfile)
     target:add("files", path.join(target:scriptdir(), "*.rc"),
-      {defines = {"VERSION_MAJOR=" .. (os.getenv("VERSION_MAJOR") or "0"),
-      "VERSION_MINOR=" .. (os.getenv("VERSION_MINOR") or "0"),
-      "VERSION_PATCH=" .. (os.getenv("VERSION_PATCH") or "0"),
-      "FILE_VERSION=" .. (os.getenv("FILE_VERSION") or "\"0.0.0.0\""),
-      "PRODUCT_VERSION=" .. (os.getenv("PRODUCT_VERSION") or "\"0.0.0.0\"")
+      {defines = {"VERSION_MAJOR=" .. version.major,
+      "VERSION_MINOR=" .. version.minor,
+      "VERSION_PATCH=" .. version.patch,
+      "FILE_VERSION=" .. version.file_version,
+      "PRODUCT_VERSION=" .. version.product_version
     }})
   end)
 rule("use_weaselconstants")
@@ -349,12 +415,13 @@ rule("use_weaselconstants")
       return false
     end
     if check_include_weasel_constants_in_dir(target:scriptdir()) then
+      local version = load_weasel_version(io.readfile)
       target:add("rcflags", {
-        "/dVERSION_MAJOR=" .. (os.getenv("VERSION_MAJOR") or "0"),
-        "/dVERSION_MINOR=" .. (os.getenv("VERSION_MINOR") or "0"),
-        "/dVERSION_PATCH=" .. (os.getenv("VERSION_PATCH") or "0"),
-        "/dFILE_VERSION=" .. (os.getenv("FILE_VERSION") or "\"0.0.0.0\""),
-        "/dPRODUCT_VERSION=" .. (os.getenv("PRODUCT_VERSION") or "\"0.0.0.0\"")
+        "/dVERSION_MAJOR=" .. version.major,
+        "/dVERSION_MINOR=" .. version.minor,
+        "/dVERSION_PATCH=" .. version.patch,
+        "/dFILE_VERSION=" .. version.file_version,
+        "/dPRODUCT_VERSION=" .. version.product_version
       })
     end
   end)

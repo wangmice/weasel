@@ -5,14 +5,12 @@ if not exist env.bat copy env.bat.template env.bat
 if exist env.bat call env.bat
 set PRODUCT_VERSION=
 if not defined WEASEL_ROOT set WEASEL_ROOT=%CD%
-if not defined VERSION_MAJOR set VERSION_MAJOR=0
-if not defined VERSION_MINOR set VERSION_MINOR=17
-if not defined VERSION_PATCH set VERSION_PATCH=4
+call "%~dp0update\load-version.bat"
+if errorlevel 1 exit /b 1
 if not defined XMAKE_VS set XMAKE_VS=2022
 if not defined XMAKE_VS_TOOLSET set XMAKE_VS_TOOLSET=14.3
 set "xmake_msvc_options=--vs=%XMAKE_VS% --vs_toolset=%XMAKE_VS_TOOLSET%"
 
-if not defined WEASEL_VERSION set WEASEL_VERSION=%VERSION_MAJOR%.%VERSION_MINOR%.%VERSION_PATCH%
 if not defined WEASEL_BUILD set WEASEL_BUILD=0
 
 rem use numeric build version for release build
@@ -230,7 +228,21 @@ rem so environment-only CC/CXX/LD/SH/AR overrides are insufficient here.
   set "xmake_arch=%~1"
   set "vcvars_arch=%~2"
   set "expected_target=%~3"
-  call "%XMAKE_VCVARSALL%" %vcvars_arch%
+
+  rem The workflow enters this script from an x64 Developer Command Prompt.
+  rem vcvarsall appends INCLUDE/LIB/LIBPATH, so clear the inherited target
+  rem environment before selecting the next architecture. Otherwise ARM builds
+  rem retain x64 import-library paths and may mix SDK versions.
+  set "VSINSTALLDIR="
+  set "INCLUDE="
+  set "LIB="
+  set "LIBPATH="
+
+  if defined SDKVER (
+    call "%XMAKE_VCVARSALL%" %vcvars_arch% %SDKVER%
+  ) else (
+    call "%XMAKE_VCVARSALL%" %vcvars_arch%
+  )
   if errorlevel 1 exit /b 1
 
   set "selected_cl="
@@ -253,6 +265,7 @@ rem so environment-only CC/CXX/LD/SH/AR overrides are insufficient here.
     exit /b 1
   )
   echo xmake %xmake_arch% linker: !selected_link!
+  if /i "%xmake_arch%"=="arm" echo xmake arm LIB: !LIB!
 
   xmake f -c -a %xmake_arch% -m %build_config% %xmake_msvc_options% %build_sdk_option% "--cc=!selected_cl!" "--cxx=!selected_cl!" "--ld=!selected_link!" "--sh=!selected_link!" "--ar=!selected_link!"
   if errorlevel 1 exit /b 1
@@ -260,8 +273,18 @@ rem so environment-only CC/CXX/LD/SH/AR overrides are insufficient here.
     xmake clean
     if errorlevel 1 exit /b 1
   )
+  set "expected_artifact=%WEASEL_ROOT%\build\windows\!xmake_arch!\%build_config%\WeaselTSF\weasel.dll"
+  if /i "!xmake_arch!"=="x64" set "expected_artifact=%WEASEL_ROOT%\build\windows\x64\%build_config%\WeaselTSF\weaselx64.dll"
+  if /i "!xmake_arch!"=="arm" set "expected_artifact=%WEASEL_ROOT%\build\windows\arm\%build_config%\WeaselTSF\weaselARM.dll"
+  if /i "!xmake_arch!"=="arm64" set "expected_artifact=%WEASEL_ROOT%\build\windows\arm64\%build_config%\WeaselTSF\weaselARM64.dll"
+  if exist "!expected_artifact!" del /q "!expected_artifact!"
+
   xmake
   if errorlevel 1 exit /b 1
+  if not exist "!expected_artifact!" (
+    echo Error: xmake %xmake_arch% did not produce "!expected_artifact!".
+    exit /b 1
+  )
   endlocal
   exit /b 0
 
