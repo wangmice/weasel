@@ -776,10 +776,11 @@ LRESULT CSystemTray::OnTrayNotification(WPARAM wParam, LPARAM lParam) {
 
   HWND hTargetWnd = GetTargetWnd();
   if (!hTargetWnd)
-    return 0L;
+    return 0;
 
-  // Clicking with right button brings up a context menu
-#if defined(_WIN32_WCE)  //&& _WIN32_WCE < 211
+// Clicking with right button brings up a context menu
+//&& _WIN32_WCE < 211
+#if defined(_WIN32_WCE)
   BOOL bAltPressed =
       ((GetKeyState(VK_MENU) & (1 << (sizeof(SHORT) * 8 - 1))) != 0);
   if (LOWORD(lParam) == WM_LBUTTONUP && bAltPressed)

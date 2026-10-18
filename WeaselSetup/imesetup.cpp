@@ -670,10 +670,8 @@ int register_text_service(const std::wstring& tsf_path,
   if (!register_ime) {
     params = L" /u " + params;  // unregister
   }
-  // if (silent)  // always silent
-  {
-    params = L" /s " + params;
-  }
+
+  params = L" /s " + params;
 
   // 失败则 regsvr32 拿不到 profile，中止注册；按本函数惯例报告并返回
   // 错误码，不抛异常（调用链无人捕获，抛出即 std::terminate）

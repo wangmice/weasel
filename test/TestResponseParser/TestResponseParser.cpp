@@ -187,10 +187,14 @@ void test_7() {
 // MAX_CANDIDATES_COUNT）视为损坏数据，整体丢弃
 void test_8() {
   const WCHAR* responses[] = {
-      L"action=ctx\nctx.cand=garbage header\n",                // 非归档数据
-      L"action=ctx\nctx.cand=22 serialization::archive\n",     // 截断归档
-      L"action=ctx\nctx.cand=99 serialization::archive 15\n",  // 版本不匹配
-      L"action=style\nstyle=not an archive\n",                 // Styler 同路径
+      // 非归档数据
+      L"action=ctx\nctx.cand=garbage header\n",
+      // 截断归档
+      L"action=ctx\nctx.cand=22 serialization::archive\n",
+      // 版本不匹配
+      L"action=ctx\nctx.cand=99 serialization::archive 15\n",
+      // Styler 同路径
+      L"action=style\nstyle=not an archive\n",
   };
   for (auto* resp : responses) {
     std::vector<WCHAR> buf(resp, resp + wcslen(resp) + 1);

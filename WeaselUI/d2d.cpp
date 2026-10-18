@@ -67,11 +67,11 @@ HRESULT DeviceResources::CreateGenerationLocked(
   if (FAILED(hr))
     return hr;
 
-  // WeaselUI is linked into the TSF DLL and therefore executes inside arbitrary
-  // host processes. Never opt those hosts into the Direct2D debug layer by
-  // default: validation failures may call DebugBreak and terminate the host
-  // when no debugger is attached. Developers can opt in explicitly for a
-  // debugger session.
+// WeaselUI is linked into the TSF DLL and therefore executes inside arbitrary
+// host processes. Never opt those hosts into the Direct2D debug layer by
+// default: validation failures may call DebugBreak and terminate the host
+// when no debugger is attached. Developers can opt in explicitly for a
+// debugger session.
 #if defined(WEASEL_ENABLE_D2D_DEBUG_LAYER)
   constexpr bool kEnableD2DDebugLayer = true;
 #else
