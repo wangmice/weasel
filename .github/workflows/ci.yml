@@ -3,7 +3,8 @@ name: CI
 on:
   push:
     branches:
-      - '*'
+      - master
+      - 'release/**'
     tags:
       - '[0-9]+.*'
   pull_request:
@@ -14,7 +15,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout last commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install clang-format 19.1.5
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -27,19 +28,86 @@ jobs:
         shell: bash
         run: ./clang-format.sh -i
 
-  build:
+  policy:
     needs: lint
+    runs-on: windows-2022
+    steps:
+      - name: Checkout last commit
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Configure policy environment
+        shell: pwsh
+        run: |
+          Copy-Item .\env.vs2022.bat .\env.bat -Force
+
+      - name: Run static regression policies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          .\test\check-tsf-host-safety.ps1
+          .\test\TestBuildEnvPolicy.ps1
+          .\test\TestReleaseMetadataPolicy.ps1
+          .\test\TestXmakeToolchainPolicy.ps1
+          .\test\TestXmakeTargetLinkFlagsPolicy.ps1
+          .\test\TestRuntimeHardeningPolicy.ps1
+          .\test\TestBackgroundAndDeployerPolicy.ps1
+          .\test\TestRestartRollbackRegressionPolicy.ps1
+          .\test\TestRemainingRuntimePolicy.ps1
+          .\test\TestFirstKeyWakeupPolicy.ps1
+          .\test\TestPipeDeadlinePolicy.ps1
+          .\test\TestSessionLifecycleBuildPolicy.ps1
+          .\test\TestSetupTransactionPolicy.ps1
+          .\test\TestFinalTransactionPolicy.ps1
+          .\test\TestResourcePolicy.ps1
+          python .\test\TestInstaller\test_install_result.py
+          if ($LASTEXITCODE -ne 0) { throw 'installer rollback tests failed' }
+
+  xmake-preflight:
+    needs: policy
+    runs-on: windows-2022
+    env:
+      SDKVER: 10.0.19041.0
+    steps:
+      - name: Checkout last commit
+        uses: actions/checkout@v7
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          sdk: ${{ env.SDKVER }}
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Validate xmake configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:BOOST_ROOT = Join-Path $env:RUNNER_TEMP 'weasel-preflight-boost'
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:BOOST_ROOT 'boost') | Out-Null
+          Set-Content -LiteralPath (Join-Path $env:BOOST_ROOT 'boost\version.hpp') -Value '#pragma once'
+          xmake f -c -a x64 -m debug --vs=2022 --vs_toolset=14.3 -y
+          if ($LASTEXITCODE -ne 0) { throw 'xmake preflight configuration failed' }
+
+  build:
+    needs: xmake-preflight
+    permissions:
+      contents: write
     runs-on: windows-2022
     env:
       boost_version: 1.92.0
       BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_92_0
       SDKVER: 10.0.19041.0
     strategy:
+      fail-fast: false
       matrix:
         variant: [msbuild, xmake]
     steps:
       - name: Checkout last commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: true
           fetch-depth: 0
@@ -53,9 +121,29 @@ jobs:
           cp env.vs2022.bat env.bat
           echo git_ref_name="$(git describe --always)" >> $GITHUB_ENV
 
+      - name: Validate release version
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content .\VERSION -Raw).Trim()
+          if ($version -ne '${{ github.ref_name }}') {
+            throw "release tag ${{ github.ref_name }} does not match VERSION $version"
+          }
+          foreach ($appcast in @('.\update\appcast.xml', '.\update\testing-appcast.xml')) {
+            $content = Get-Content $appcast -Raw
+            $expectedUrl = "https://github.com/${{ github.repository }}/releases/download/$version/weasel-$version.0-installer.exe"
+            if ($content -notmatch [regex]::Escape("sparkle:version=`"$version`"")) {
+              throw "$appcast does not advertise version $version"
+            }
+            if ($content -notmatch [regex]::Escape($expectedUrl)) {
+              throw "$appcast does not point at $expectedUrl"
+            }
+          }
+
       - name: Cache Boost
         id: cache-boost
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.BOOST_ROOT }}
@@ -80,7 +168,7 @@ jobs:
       # bundled winsparkle v0.9.2 to disable auto open ReleaseNoteUrl in default browser
       - name: cache bundled winsparkle
         id: cache-winsparkle
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ github.workspace }}\winsparkle\x64\Release\WinSparkle.dll
@@ -117,6 +205,8 @@ jobs:
 
       - name: Get Rime files
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
@@ -135,82 +225,13 @@ jobs:
         shell: pwsh
         id: build_weasel
         env:
-          RELEASE_BUILD: ${{ (github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/')) && '1' || '' }}
+          RELEASE_BUILD: ${{ startsWith(github.ref, 'refs/tags/') && '1' || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ('${{ matrix.variant }}' -eq 'msbuild') {
             .\build.bat arm64 installer
           } else {
             .\xbuild.bat arm64 installer
-          }
-
-      - name: Run regression tests
-        if: matrix.variant == 'xmake'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          .\test\check-tsf-host-safety.ps1
-          .\test\TestBuildEnvPolicy.ps1
-          .\test\TestXmakeToolchainPolicy.ps1
-          .\test\TestXmakeTargetLinkFlagsPolicy.ps1
-          .\test\TestRuntimeHardeningPolicy.ps1
-          .\test\TestBackgroundAndDeployerPolicy.ps1
-          .\test\TestRestartRollbackRegressionPolicy.ps1
-          .\test\TestRemainingRuntimePolicy.ps1
-          .\test\TestFirstKeyWakeupPolicy.ps1
-          .\test\TestPipeDeadlinePolicy.ps1
-          .\test\TestSessionLifecycleBuildPolicy.ps1
-          .\test\TestSetupTransactionPolicy.ps1
-          .\test\TestFinalTransactionPolicy.ps1
-          .\test\TestResourcePolicy.ps1
-          python .\test\TestInstaller\test_install_result.py
-          if ($LASTEXITCODE -ne 0) { throw 'installer rollback tests failed' }
-
-          $savedBoost = $env:BOOST_ROOT
-          try {
-            $env:BOOST_ROOT = Join-Path $env:RUNNER_TEMP 'weasel-missing-boost'
-            $missingOutput = @(& xmake f -c -a x64 -m debug --vs=2022 --vs_toolset=14.3 -y 2>&1)
-            $missingExit = $LASTEXITCODE
-            if ($missingExit -eq 0) {
-              $missingOutput += @(& xmake -y 2>&1)
-              $missingExit = $LASTEXITCODE
-            }
-          } finally {
-            $env:BOOST_ROOT = $savedBoost
-          }
-          $missingText = $missingOutput -join "`n"
-          if ($missingExit -eq 0 -or $missingText -notmatch 'Boost not found!') {
-            throw "missing-Boost guard did not fail with the intended diagnostic:`n$missingText"
-          }
-
-          xmake f -c -a x64 -m debug --vs=2022 --vs_toolset=14.3 -y
-          if ($LASTEXITCODE -ne 0) { throw 'xmake debug configuration failed' }
-          xmake -y
-          if ($LASTEXITCODE -ne 0) { throw 'xmake debug build failed' }
-
-          foreach ($target in @(
-            'TestWeaselIPC',
-            'TestInteractionPolicy',
-            'TestPipeSecurityPolicy',
-            'TestResponseParser',
-            'TestPipeChannel',
-            'TestPipeConnectFailure',
-            'TestKeyEvent',
-            'TestRegisterTipKeys',
-            'TestDeviceResources',
-            'TestWeaselUI',
-            'TestWeaselUILayout',
-            'TestFindIME',
-            'TestCompartmentUtil',
-            'TestPerUserReg',
-            'TestBstrUtil',
-            'TestWeaselSetup',
-            'TestServerCommands',
-            'TestTrayRecovery')) {
-            Write-Host "=== running $target ==="
-            xmake run $target
-            if ($LASTEXITCODE -ne 0) { throw "$target failed" }
           }
 
       - name: Compress Debug Symbols
@@ -222,7 +243,7 @@ jobs:
 
       - name: Upload artifacts
         if: matrix.variant == 'msbuild'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: weasel-artifact-${{ env.git_ref_name }}
           if-no-files-found: error
@@ -231,12 +252,12 @@ jobs:
             .\output\archives\debug_symbols.7z
 
       - name: Extract changelog
-        if: ${{ github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
         shell: pwsh
         run: .\extract_changelog.ps1
 
       - name: Create Nightly release
-        if: ${{ github.repository == 'rime/weasel' && github.ref == 'refs/heads/master' && matrix.variant == 'msbuild' }}
+        if: ${{ github.ref == 'refs/heads/master' && matrix.variant == 'msbuild' }}
         uses: 'marvinpinto/action-automatic-releases@latest'
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -248,7 +269,7 @@ jobs:
             ./output/archives/debug_symbols.7z
 
       - name: Release (stable)
-        if: ${{ github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
         uses: softprops/action-gh-release@v2
         with:
           draft: true

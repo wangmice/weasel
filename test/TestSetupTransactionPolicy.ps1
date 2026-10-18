@@ -90,13 +90,18 @@ if ($setup -notmatch 'WaitNamedPipeW') {
 if ($setup -notmatch 'GetExitCodeProcess') {
   throw 'modify install must inspect helper/deployer exit codes'
 }
-$restartCall = $modify.IndexOf('RestartServerAndDeploy(dir)')
+$restartCall = $modify.IndexOf('if (!RestartServer(dir))')
+$deployCall = $modify.IndexOf('if (!RunDeployer(dir))')
 $successMessage = $modify.IndexOf('IDS_STR_MODIFY_SUCCESS_INFO')
-if ($restartCall -lt 0 -or $successMessage -lt 0 -or $restartCall -ge $successMessage) {
+if ($restartCall -lt 0 -or $deployCall -lt 0 -or $successMessage -lt 0 -or
+    -not ($restartCall -lt $deployCall -and $deployCall -lt $successMessage)) {
   throw 'modify install must finish restart/deploy successfully before showing the success message'
 }
-if ($modify -notmatch 'if\s*\(!RestartServerAndDeploy\(dir\)\)\s*return\s+1;') {
-  throw 'modify install must propagate restart/deploy failure to its exit code'
+if ($modify -notmatch 'if\s*\(!RestartServer\(dir\)\)\s*\{[\s\S]*?rollback_modify_state\(\)[\s\S]*?return\s+1;') {
+  throw 'modify install must rollback and fail when server restart fails'
+}
+if ($modify -notmatch 'if\s*\(!RunDeployer\(dir\)\)\s*\{[\s\S]*?rollback_modify_state\(\)[\s\S]*?RestartServer\(dir\)[\s\S]*?return\s+1;') {
+  throw 'modify install must rollback, restore the server, and fail when deploy fails'
 }
 
 $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
