@@ -527,8 +527,7 @@ HRESULT WeaselTSF::_InsertTextLocked(TfEditCookie ec,
     return E_FAIL;
   com_ptr<ITfRange> pRange;
   return pInsertAtSelection->InsertTextAtSelection(
-      ec, TF_IAS_NO_DEFAULT_COMPOSITION, text.c_str(),
-      static_cast<LONG>(text.length()), &pRange);
+      ec, 0, text.c_str(), static_cast<LONG>(text.length()), &pRange);
 }
 
 class CInsertTextEditSession : public CEditSession {
