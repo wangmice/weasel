@@ -21,7 +21,7 @@ int WeaselServerApp::Run() {
   }
   LOG(INFO) << "IPC server window started";
 
-  // win_sparkle_set_appcast_url("http://localhost:8000/weasel/update/appcast.xml");
+  win_sparkle_set_appcast_url(kStableUpdateFeedUrl);
   win_sparkle_set_registry_path("Software\\Rime\\Weasel\\Updates");
   if (GetThreadUILanguage() ==
       MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL))
