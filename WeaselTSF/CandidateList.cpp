@@ -227,8 +227,8 @@ void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
         pContext == _pContextDocument;
   }
 
-  Show(weasel::tsf::ShouldShowCandidateUI(
-      status.composing, _pbShow != FALSE, targetFocused));
+  Show(weasel::tsf::ShouldShowCandidateUI(status.composing, _pbShow != FALSE,
+                                          targetFocused));
 }
 
 void CCandidateList::UpdateInputPosition(RECT const& rc) {

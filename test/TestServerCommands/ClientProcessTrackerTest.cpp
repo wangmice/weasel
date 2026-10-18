@@ -96,9 +96,7 @@ class FakeProcessBackend : public weasel::ClientProcessTracker::Backend {
       callback();
   }
 
-  void ReusePid(std::uint32_t pid) {
-    states[pid] = std::make_shared<State>();
-  }
+  void ReusePid(std::uint32_t pid) { states[pid] = std::make_shared<State>(); }
 
   bool WaitForRetirement(int process_count, int watch_count) const {
     for (int i = 0; i < 500; ++i) {
@@ -131,13 +129,15 @@ struct ClientProcessTrackerSelfTest {
             "same live process resolves to one stable generation token");
 
     backend->Exit(100);
-    require(exited.size() == 1 && exited.front() == *first &&
-                !tracker.IsAlive(*first),
-            "process exit reports exactly one dead token and IsAlive closes race");
+    require(
+        exited.size() == 1 && exited.front() == *first &&
+            !tracker.IsAlive(*first),
+        "process exit reports exactly one dead token and IsAlive closes race");
     backend->Exit(100);
     require(exited.size() == 1, "duplicate exit notification is suppressed");
     require(backend->WaitForRetirement(1, 1),
-            "exited process/watch resources retire without waiting for PID reuse or Stop");
+            "exited process/watch resources retire without waiting for PID "
+            "reuse or Stop");
 
     backend->ReusePid(100);
     const auto reused = tracker.Resolve(100);
@@ -145,7 +145,8 @@ struct ClientProcessTrackerSelfTest {
             "PID reuse receives a new process-generation token");
 
     backend->fail_open = true;
-    require(!tracker.Resolve(200), "OpenProcess failure is non-fatal and unowned");
+    require(!tracker.Resolve(200),
+            "OpenProcess failure is non-fatal and unowned");
     backend->fail_open = false;
     require(tracker.Resolve(200).has_value(),
             "failed resolution does not poison a later successful attempt");

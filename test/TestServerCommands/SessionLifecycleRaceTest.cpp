@@ -32,8 +32,8 @@ class LifecycleChannelAccess : public weasel::PipeChannelBase {
  public:
   static void SetName(weasel::PipeChannelBase& channel,
                       const std::wstring& name) {
-    channel.*&LifecycleChannelAccess::pname = name;
-    channel.*&LifecycleChannelAccess::fallback_pname = std::wstring();
+    channel.*& LifecycleChannelAccess::pname = name;
+    channel.*& LifecycleChannelAccess::fallback_pname = std::wstring();
   }
 };
 
@@ -135,7 +135,8 @@ class LifecycleHarness {
   }
 
  private:
-  void Handle(weasel::PipeMessage message, weasel::PipeServer::Respond respond) {
+  void Handle(weasel::PipeMessage message,
+              weasel::PipeServer::Respond respond) {
     DWORD result = 0;
     if (message.Msg == WEASEL_IPC_START_SESSION) {
       {

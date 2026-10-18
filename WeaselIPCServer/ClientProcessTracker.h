@@ -202,7 +202,8 @@ class ClientProcessTracker {
     std::unique_ptr<Process> process;
     std::unique_ptr<ExitWatch> watch;
     bool exit_notified = false;
-    // Intrusive retirement list avoids allocating from a noexcept wait callback.
+    // Intrusive retirement list avoids allocating from a noexcept wait
+    // callback.
     std::unique_ptr<Entry> retired_next;
   };
 
@@ -254,8 +255,8 @@ class ClientProcessTracker {
       std::unique_ptr<Entry> retired;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        retire_cv_.wait(lock,
-                        [this] { return retire_stop_ || retired_head_ != nullptr; });
+        retire_cv_.wait(
+            lock, [this] { return retire_stop_ || retired_head_ != nullptr; });
         if (!retired_head_ && retire_stop_)
           return;
 

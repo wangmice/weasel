@@ -45,9 +45,9 @@ struct ThreadSafeStaticInitSelfTest {
     for (auto& thread : threads)
       thread.join();
 
-    require_thread_safe_static(
-        failures.load(std::memory_order_relaxed) == 0,
-        "concurrent first ResponseParser construction initializes factories safely");
+    require_thread_safe_static(failures.load(std::memory_order_relaxed) == 0,
+                               "concurrent first ResponseParser construction "
+                               "initializes factories safely");
   }
 };
 

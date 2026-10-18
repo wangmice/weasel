@@ -235,9 +235,9 @@ inline std::wstring AbbreviateText(const std::wstring& str, size_t max_length) {
   if (cut > 0 && IsUtf16HighSurrogate(str[cut - 1]) &&
       IsUtf16LowSurrogate(str[cut]))
     --cut;
-  const std::wstring tail =
-      IsUtf16LowSurrogate(str.back()) ? str.substr(str.length() - 2)
-                                      : str.substr(str.length() - 1);
+  const std::wstring tail = IsUtf16LowSurrogate(str.back())
+                                ? str.substr(str.length() - 2)
+                                : str.substr(str.length() - 1);
   return str.substr(0, cut) + L"..." + tail;
 }
 

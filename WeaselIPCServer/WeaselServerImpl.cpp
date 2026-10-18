@@ -23,11 +23,11 @@ static std::mutex g_api_mutex;
 static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
 ServerImpl::ServerImpl()
-    : channel(std::make_unique<PipeServer>(GetPipeName(), sa.get_attr(),
+    : channel(std::make_unique<PipeServer>(GetPipeName(),
+                                           sa.get_attr(),
                                            GetLegacyPipeName())),
-      process_tracker([this](ClientProcessToken token) {
-        _OnClientProcessExit(token);
-      }),
+      process_tracker(
+          [this](ClientProcessToken token) { _OnClientProcessExit(token); }),
       m_pRequestHandler(NULL),
       m_darkMode(IsUserDarkMode()) {
   m_hUser32Module = GetModuleHandle(_T("user32.dll"));
@@ -130,17 +130,14 @@ LRESULT ServerImpl::OnCommand(UINT uMsg,
   // Window commands do not run under Run()'s pipe dispatch lock. Only
   // option changes touch RequestHandler; keep shell/menu callbacks outside
   // the lock, as before.
-  if (uID == ID_WEASELTRAY_ENABLE_ASCII ||
-      uID == ID_WEASELTRAY_DISABLE_ASCII) {
+  if (uID == ID_WEASELTRAY_ENABLE_ASCII || uID == ID_WEASELTRAY_DISABLE_ASCII) {
     std::lock_guard guard(g_api_mutex);
     return _HandleCommand(uID, lParam, bHandled);
   }
   return _HandleCommand(uID, lParam, bHandled);
 }
 
-LRESULT ServerImpl::_HandleCommand(UINT uID,
-                                   LPARAM lParam,
-                                   BOOL& bHandled) {
+LRESULT ServerImpl::_HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled) {
   switch (uID) {
     case ID_WEASELTRAY_ENABLE_ASCII:
       if (m_pRequestHandler) {
@@ -225,8 +222,7 @@ int ServerImpl::Run() {
   // auto listener = boost::bind(&PipeServer::Listen, channel.get(), handler);
   //
   auto listener = [this](const PipeServer::ConnectionContext& context,
-                         PipeMessage msg,
-                         PipeServer::Respond resp) -> void {
+                         PipeMessage msg, PipeServer::Respond resp) -> void {
     // Resolve the peer process generation before taking g_api_mutex. Resolve()
     // may open a process handle or synchronously drain an old PID generation;
     // neither operation is allowed inside the global Rime/session lock.
@@ -255,8 +251,7 @@ int ServerImpl::Run() {
 
       if (dispatch) {
         try {
-          HandlePipeMessage(msg,
-                            [&result](PipeServer::Msg r) { result = r; });
+          HandlePipeMessage(msg, [&result](PipeServer::Msg r) { result = r; });
         } catch (...) {
           if (starting)
             session_router.ClearCurrentOwner();
@@ -526,10 +521,12 @@ void ServerImpl::HandlePipeMessage(PipeMessage pipe_msg, _Resp resp) {
 PipeServer::PipeServer(std::wstring&& pn_cmd,
                        SECURITY_ATTRIBUTES* s,
                        std::wstring compatibility_alias)
-    : PipeChannel(std::move(pn_cmd), s, 64 * 1024,
+    : PipeChannel(std::move(pn_cmd),
+                  s,
+                  64 * 1024,
                   std::move(compatibility_alias)) {
-  m_reaper_thread = std::make_shared<boost::thread>(
-      [this] { _WorkerReaperLoop(); });
+  m_reaper_thread =
+      std::make_shared<boost::thread>([this] { _WorkerReaperLoop(); });
 }
 
 PipeServer::~PipeServer() {
@@ -555,9 +552,8 @@ void PipeServer::Listen(ServerHandler const& handler) {
   // session's logon SID and CreateNamedPipe will be denied; the alias listener
   // exits while the session-scoped primary listener remains healthy.
   if (!fallback_pname.empty() && fallback_pname != pname) {
-    m_alias_listener = std::make_shared<boost::thread>([this, handler] {
-      _ListenOn(fallback_pname, handler, true);
-    });
+    m_alias_listener = std::make_shared<boost::thread>(
+        [this, handler] { _ListenOn(fallback_pname, handler, true); });
   }
   _ListenOn(pname, handler, false);
 }
@@ -679,8 +675,8 @@ void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
   try {
     // Copy the handler into the worker: it must not reference anything
     // on this thread's stack.
-    auto worker = std::make_shared<boost::thread>(
-        [this, worker_id, pipe, handler] {
+    auto worker =
+        std::make_shared<boost::thread>([this, worker_id, pipe, handler] {
           _ProcessPipeThread(worker_id, pipe, handler);
         });
     it->second.thread = std::move(worker);

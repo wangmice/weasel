@@ -1,5 +1,6 @@
 // UI window lifecycle and layout regression tests. Graphics objects are
-// created and released on this COM-initialized thread, including shared devices.
+// created and released on this COM-initialized thread, including shared
+// devices.
 #include <windows.h>
 #include <WeaselUI.h>
 #include "../../WeaselUI/Layout.h"
@@ -62,8 +63,8 @@ static void test_polymorphic_layout_destruction() {
 
   destroyed = false;
   RECT input_pos{0, 0, 1, 1};
-  auto inner = std::make_unique<TrackedLayout>(
-      ui.style(), ctx, status, panel.m_pD2D, destroyed);
+  auto inner = std::make_unique<TrackedLayout>(ui.style(), ctx, status,
+                                               panel.m_pD2D, destroyed);
   layout = std::make_unique<weasel::FullScreenLayout>(
       ui.style(), ctx, status, input_pos, std::move(inner), panel.m_pD2D);
   layout.reset();
@@ -150,10 +151,9 @@ class BoundedLayout : public InnerLayout {
 };
 
 template <typename InnerLayout>
-static void test_fullscreen_unattainable_size(
-    weasel::UIStyle::LayoutType type,
-    bool oversized_height,
-    bool missing_fonts = false) {
+static void test_fullscreen_unattainable_size(weasel::UIStyle::LayoutType type,
+                                              bool oversized_height,
+                                              bool missing_fonts = false) {
   weasel::UI ui;
   auto& style = ui.style();
   style.font_face = style.label_font_face = style.comment_font_face =
@@ -185,7 +185,7 @@ static void test_fullscreen_unattainable_size(
   auto inner = std::make_unique<BoundedLayout<InnerLayout>>(
       style, ctx, status, panel.m_pD2D, passes);
   weasel::FullScreenLayout layout(style, ctx, status, input_pos,
-                                 std::move(inner), panel.m_pD2D);
+                                  std::move(inner), panel.m_pD2D);
   bool completed = false;
   try {
     layout.DoLayout();
@@ -235,14 +235,14 @@ static void test_fullscreen_tracks_input_rectangle() {
   weasel::UIStyle style = ui.style();
   style.layout_type = weasel::UIStyle::LAYOUT_VERTICAL_FULLSCREEN;
   RECT input_pos{0, 0, 1, 1};
-  auto inner = std::make_unique<weasel::VerticalLayout>(
-      style, ctx, status, panel.m_pD2D);
+  auto inner = std::make_unique<weasel::VerticalLayout>(style, ctx, status,
+                                                        panel.m_pD2D);
   weasel::FullScreenLayout layout(style, ctx, status, input_pos,
-                                 std::move(inner), panel.m_pD2D);
+                                  std::move(inner), panel.m_pD2D);
   // Compare addresses before reading the stored reference: the old CRect
   // conversion creates a dead temporary, which must not be dereferenced.
-  bool aliases_input = static_cast<const RECT*>(&layout.mr_inputPos) ==
-                       &input_pos;
+  bool aliases_input =
+      static_cast<const RECT*>(&layout.mr_inputPos) == &input_pos;
   check(aliases_input, "fullscreen retains the caller's RECT, not a temporary");
   if (aliases_input) {
     std::vector<RECT> work_areas;
@@ -250,8 +250,7 @@ static void test_fullscreen_tracks_input_rectangle() {
                         reinterpret_cast<LPARAM>(&work_areas));
     check(!work_areas.empty(), "fullscreen test finds a monitor work area");
     for (const RECT& area : work_areas) {
-      input_pos = {(area.left + area.right) / 2,
-                   (area.top + area.bottom) / 2,
+      input_pos = {(area.left + area.right) / 2, (area.top + area.bottom) / 2,
                    (area.left + area.right) / 2 + 1,
                    (area.top + area.bottom) / 2 + 1};
       check(EqualRect(&layout.mr_inputPos, &input_pos),

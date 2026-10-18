@@ -56,8 +56,8 @@ bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
   channel.HandleResponseData([&](LPWSTR buffer, DWORD length) {
     if (!buffer || length < kPrefixLength)
       return false;
-    found = std::char_traits<wchar_t>::compare(
-                buffer, kInvalidSessionPrefix, kPrefixLength) == 0;
+    found = std::char_traits<wchar_t>::compare(buffer, kInvalidSessionPrefix,
+                                               kPrefixLength) == 0;
     return true;
   });
   return found;
@@ -347,8 +347,7 @@ bool ClientImpl::Echo() {
   if (!_Connected() || expected_session == 0)
     return false;
 
-  const UINT server_echo =
-      _SendMessage(WEASEL_IPC_ECHO, 0, expected_session);
+  const UINT server_echo = _SendMessage(WEASEL_IPC_ECHO, 0, expected_session);
   return weasel::interaction_policy::EchoConfirmsSession(
       expected_session, _SessionId(), server_echo);
 }

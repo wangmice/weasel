@@ -39,8 +39,7 @@ struct SessionBackendSelfTest {
     SessionBackendHandler handler;
     wchar_t body[] = L"action=session\n.\n";
     std::wstring response;
-    weasel::RequestHandler::EatLine eat =
-        [&](std::wstring& line) -> bool {
+    weasel::RequestHandler::EatLine eat = [&](std::wstring& line) -> bool {
       response += line;
       return true;
     };

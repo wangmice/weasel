@@ -27,9 +27,7 @@ class Backend : public weasel::RequestHandler {
     return id;
   }
 
-  DWORD FindSession(DWORD id) override {
-    return sessions.count(id) ? id : 0;
-  }
+  DWORD FindSession(DWORD id) override { return sessions.count(id) ? id : 0; }
 
   bool RespondSession(DWORD id, EatLine eat) override {
     if (!sessions.count(id))

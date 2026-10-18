@@ -61,11 +61,12 @@ void LoadIconIfNeed(wstring& loaded_path,
     return;
   wstring path(icon_path);
   const int size = GetSystemMetrics(SM_CXICON);
-  HICON loaded = icon_path.empty()
-      ? (HICON)LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(id),
-                        IMAGE_ICON, size, size, LR_SHARED)
-      : (HICON)LoadImage(nullptr, icon_path.c_str(), IMAGE_ICON, size, size,
-                        LR_LOADFROMFILE);
+  HICON loaded =
+      icon_path.empty()
+          ? (HICON)LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(id),
+                             IMAGE_ICON, size, size, LR_SHARED)
+          : (HICON)LoadImage(nullptr, icon_path.c_str(), IMAGE_ICON, size, size,
+                             LR_LOADFROMFILE);
   if (!loaded)
     return;
   if (!loaded_path.empty() && icon)
@@ -157,7 +158,8 @@ void WeaselPanel::_ApplyUpdate(const Context& ctx, const Status& status) {
   m_status = status;
   if (m_style.candidate_abbreviate_length > 0) {
     for (auto& c : m_ctx.cinfo.candies)
-      c.str = AbbreviateText(c.str, (size_t)m_style.candidate_abbreviate_length);
+      c.str =
+          AbbreviateText(c.str, (size_t)m_style.candidate_abbreviate_length);
   }
   Refresh();
 }
@@ -184,7 +186,7 @@ bool WeaselPanel::IsCountingDown() const {
 
 void WeaselPanel::ShowWindow(int nCmdShow) {
   _SetVisibility(nCmdShow == SW_HIDE ? PanelVisibility::Hide
-                                   : PanelVisibility::Show);
+                                     : PanelVisibility::Show);
 }
 
 void WeaselPanel::_SetVisibility(PanelVisibility cmd, size_t millisec) {
@@ -355,7 +357,7 @@ void WeaselPanel::_ScopeFullscreenFont(bool fullscreen) {
     return;
   if (fullscreen) {
     m_fullscreen_font_snapshot = {m_pD2D->pTextFormat, m_pD2D->pPreeditFormat,
-                                 m_pD2D->pLabelFormat, m_pD2D->pCommentFormat};
+                                  m_pD2D->pLabelFormat, m_pD2D->pCommentFormat};
   } else {
     m_pD2D->pTextFormat = m_fullscreen_font_snapshot.text;
     m_pD2D->pPreeditFormat = m_fullscreen_font_snapshot.preedit;
@@ -371,7 +373,8 @@ void WeaselPanel::_UpdateHideCandidates() {
       (m_status.ascii_mode || !m_status.composing || !m_ctx.aux.empty());
   m_candidateCount = static_cast<int>((std::min)(
       m_ctx.cinfo.candies.size(), static_cast<size_t>(MAX_CANDIDATES_COUNT)));
-  if (m_ctx.cinfo.highlighted < 0 || m_ctx.cinfo.highlighted >= m_candidateCount)
+  if (m_ctx.cinfo.highlighted < 0 ||
+      m_ctx.cinfo.highlighted >= m_candidateCount)
     m_ctx.cinfo.highlighted = 0;
   // When candidate list vanishes, release sticky top/bottom placement state.
   if (m_lastCandidateCount > 0 && m_candidateCount == 0) {
@@ -595,8 +598,8 @@ void WeaselPanel::DoPaint() {
 void WeaselPanel::_DoPaint() {
   if (!m_layout_ready || !m_pD2D || !m_layout)
     return;
-  if (!m_pD2D->dc || !m_pD2D->swapChain || !m_pD2D->bitmap ||
-      !m_pD2D->visual || !m_pD2D->target || !m_pD2D->m_pBrush) {
+  if (!m_pD2D->dc || !m_pD2D->swapChain || !m_pD2D->bitmap || !m_pD2D->visual ||
+      !m_pD2D->target || !m_pD2D->m_pBrush) {
     _RequestPaintRecovery();
     return;
   }
@@ -656,8 +659,8 @@ void WeaselPanel::_DoPaint() {
       if (SUCCEEDED(hrIcon) && pBitmap) {
         auto iconRect = m_layout->GetStatusIconRect();
         if (m_istorepos)
-          iconRect.OffsetRect(0, !m_ctx.aux.empty() ? m_offsety_aux
-                                                     : m_offsety_preedit);
+          iconRect.OffsetRect(
+              0, !m_ctx.aux.empty() ? m_offsety_aux : m_offsety_preedit);
         D2D1_RECT_F iconRectf = D2D1::RectF(iconRect.left, iconRect.top,
                                             iconRect.right, iconRect.bottom);
         m_pD2D->dc->DrawBitmap(pBitmap.Get(), iconRectf);
@@ -939,8 +942,10 @@ void WeaselPanel::_TextOut(CRect& rc,
 
   ComPtr<IDWriteTextLayout> pTextLayout;
   HRESULT hr = m_pD2D->m_pWriteFactory->CreateTextLayout(
-      text.c_str(), static_cast<UINT32>((std::min)({cch, text.size(),
-        static_cast<size_t>((std::numeric_limits<UINT32>::max)())})),
+      text.c_str(),
+      static_cast<UINT32>((std::min)(
+          {cch, text.size(),
+           static_cast<size_t>((std::numeric_limits<UINT32>::max)())})),
       pTextFormat.Get(), rc.Width(), rc.Height(),
       reinterpret_cast<IDWriteTextLayout**>(pTextLayout.GetAddressOf()));
   HR(hr);
@@ -1115,10 +1120,11 @@ void WeaselPanel::_CaptureRect(CRect& rect) {
 }
 
 void WeaselPanel::OnDestroy() {
-  // Posted pointer payloads otherwise disappear with the HWND without destructors.
+  // Posted pointer payloads otherwise disappear with the HWND without
+  // destructors.
   MSG pending{};
-  while (::PeekMessage(&pending, m_hWnd, WM_WEASEL_MOVETO,
-                       WM_WEASEL_SETSTYLE, PM_REMOVE)) {
+  while (::PeekMessage(&pending, m_hWnd, WM_WEASEL_MOVETO, WM_WEASEL_SETSTYLE,
+                       PM_REMOVE)) {
     switch (pending.message) {
       case WM_WEASEL_MOVETO:
         delete reinterpret_cast<RECT*>(pending.lParam);
@@ -1394,7 +1400,7 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
                                 LPARAM lParam) {
   switch (uMsg) {
     case WM_WEASEL_REFRESH:
-      if (wParam) // Internal recovery must not cancel the auto-hide timer.
+      if (wParam)  // Internal recovery must not cancel the auto-hide timer.
         _Refresh();
       else
         Refresh();

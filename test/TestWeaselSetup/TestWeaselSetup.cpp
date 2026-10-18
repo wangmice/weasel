@@ -46,8 +46,7 @@ static void test_unquote_argument() {
         "unquote keeps inner quotes when ends are unquoted");
   check(unquote_argument(L"\"dir\"\"") == L"dir\"",
         "unquote strips only the outermost pair");
-  check(unquote_argument(L"") == L"",
-        "unquote of an empty argument is empty");
+  check(unquote_argument(L"") == L"", "unquote of an empty argument is empty");
 }
 
 // 私有测试根键（结束即删，不触碰真实配置）
@@ -55,13 +54,16 @@ static const wchar_t* kTestKey = L"Software\\Rime\\WeaselSetupTest";
 
 static HKEY open_test_key() {
   HKEY hKey = NULL;
-  RegCreateKeyExW(HKEY_CURRENT_USER, kTestKey, 0, NULL, 0, KEY_SET_VALUE |
-                    KEY_QUERY_VALUE, NULL, &hKey, NULL);
+  RegCreateKeyExW(HKEY_CURRENT_USER, kTestKey, 0, NULL, 0,
+                  KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, &hKey, NULL);
   return hKey;
 }
 
-static void set_test_value(HKEY hKey, const wchar_t* name, const void* data,
-                           DWORD bytes, DWORD type) {
+static void set_test_value(HKEY hKey,
+                           const wchar_t* name,
+                           const void* data,
+                           DWORD bytes,
+                           DWORD type) {
   RegSetValueExW(hKey, name, 0, type, (const BYTE*)data, bytes);
 }
 
@@ -82,8 +84,7 @@ static void test_read_reg_sz() {
   WCHAR full[MAX_PATH];
   wmemset(full, L'A', _countof(full));
   set_test_value(hKey, L"NoNul", full, sizeof(full), REG_SZ);
-  check(read_reg_sz(hKey, L"NoNul", out) &&
-            out.size() == _countof(full) &&
+  check(read_reg_sz(hKey, L"NoNul", out) && out.size() == _countof(full) &&
             out.find_first_not_of(L'A') == std::wstring::npos,
         "non-NUL-terminated full-buffer REG_SZ is truncated in bounds");
 
@@ -94,8 +95,7 @@ static void test_read_reg_sz() {
   std::vector<WCHAR> longBuf(kLong, L'B');
   set_test_value(hKey, L"TooLong", longBuf.data(),
                  (DWORD)(kLong * sizeof(WCHAR)), REG_SZ);
-  check(read_reg_sz(hKey, L"TooLong", out) &&
-            out.size() == kLong &&
+  check(read_reg_sz(hKey, L"TooLong", out) && out.size() == kLong &&
             out.find_first_not_of(L'B') == std::wstring::npos,
         "over-long non-NUL REG_SZ is read via a grown buffer");
 
@@ -114,12 +114,10 @@ static void test_read_reg_sz() {
   // 类型不匹配
   DWORD dword = 1;
   set_test_value(hKey, L"NotSz", &dword, sizeof(dword), REG_DWORD);
-  check(!read_reg_sz(hKey, L"NotSz", out),
-        "non-REG_SZ value is rejected");
+  check(!read_reg_sz(hKey, L"NotSz", out), "non-REG_SZ value is rejected");
 
   // 不存在的值
-  check(!read_reg_sz(hKey, L"Missing", out),
-        "missing value is rejected");
+  check(!read_reg_sz(hKey, L"Missing", out), "missing value is rejected");
 
   RegCloseKey(hKey);
   RegDeleteTreeW(HKEY_CURRENT_USER, kTestKey);
@@ -139,15 +137,13 @@ static void test_delete_reg_tree() {
   const std::wstring channel = updates + L"\\Channel";
   HKEY hSub = NULL;
   check(RegCreateKeyExW(HKEY_CURRENT_USER, updates.c_str(), 0, NULL, 0,
-                        KEY_SET_VALUE, NULL, &hSub,
-                        NULL) == ERROR_SUCCESS,
+                        KEY_SET_VALUE, NULL, &hSub, NULL) == ERROR_SUCCESS,
         "nested subkey created");
   set_test_value(hSub, L"CheckForUpdates", &dword, sizeof(dword), REG_DWORD);
   RegCloseKey(hSub);
   HKEY hLeaf = NULL;
   check(RegCreateKeyExW(HKEY_CURRENT_USER, channel.c_str(), 0, NULL, 0,
-                        KEY_SET_VALUE, NULL, &hLeaf,
-                        NULL) == ERROR_SUCCESS,
+                        KEY_SET_VALUE, NULL, &hLeaf, NULL) == ERROR_SUCCESS,
         "second-level subkey created");
   set_test_value(hLeaf, L"Name", L"testing", sizeof(L"testing"), REG_SZ);
   RegCloseKey(hLeaf);
@@ -155,9 +151,9 @@ static void test_delete_reg_tree() {
   check(delete_reg_tree(HKEY_CURRENT_USER, kTestKey) == ERROR_SUCCESS,
         "key tree with nested subkeys is deleted recursively");
   HKEY hCheck = NULL;
-  check(RegOpenKeyW(HKEY_CURRENT_USER, kTestKey, &hCheck) ==
-            ERROR_FILE_NOT_FOUND,
-        "no trace of the tree is left behind");
+  check(
+      RegOpenKeyW(HKEY_CURRENT_USER, kTestKey, &hCheck) == ERROR_FILE_NOT_FOUND,
+      "no trace of the tree is left behind");
 
   // 键不存在：报告 ERROR_FILE_NOT_FOUND 而非误报成功
   check(delete_reg_tree(HKEY_CURRENT_USER, kTestKey) == ERROR_FILE_NOT_FOUND,
@@ -169,16 +165,15 @@ static void test_reg_get_string_value() {
                            std::to_wstring(GetCurrentProcessId());
   HKEY hKey = NULL;
   check(RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, NULL,
-                       REG_OPTION_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE,
-                       NULL, &hKey, NULL) == ERROR_SUCCESS,
+                        REG_OPTION_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE,
+                        NULL, &hKey, NULL) == ERROR_SUCCESS,
         "private utility test key created");
   if (!hKey)
     return;
 
-  for (const std::wstring& path : {std::wstring(L"C:\\Rime"),
-                                  std::wstring(200, L'路'),
-                                  std::wstring(MAX_PATH - 1, L'界'),
-                                  std::wstring()}) {
+  for (const std::wstring& path :
+       {std::wstring(L"C:\\Rime"), std::wstring(200, L'路'),
+        std::wstring(MAX_PATH - 1, L'界'), std::wstring()}) {
     check(RegSetValueExW(hKey, L"Path", 0, REG_SZ,
                          reinterpret_cast<const BYTE*>(path.c_str()),
                          DWORD((path.size() + 1) * sizeof(WCHAR))) ==
@@ -186,7 +181,8 @@ static void test_reg_get_string_value() {
           "private utility path value written");
     std::wstring out = L"unchanged";
     check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"Path", out) ==
-                  ERROR_SUCCESS && out == path,
+                  ERROR_SUCCESS &&
+              out == path,
           "Unicode REG_SZ uses the full MAX_PATH character capacity");
   }
 
@@ -198,12 +194,14 @@ static void test_reg_get_string_value() {
         "private non-terminated value written");
   std::wstring out;
   check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"NoNul", out) ==
-                ERROR_SUCCESS && out == unterminated,
+                ERROR_SUCCESS &&
+            out == unterminated,
         "RegGetValue supplies the missing REG_SZ terminator in bounds");
 
   out = L"unchanged";
   check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"Missing", out) ==
-                ERROR_FILE_NOT_FOUND && out == L"unchanged",
+                ERROR_FILE_NOT_FOUND &&
+            out == L"unchanged",
         "missing utility value preserves the output and error code");
   DWORD number = 1;
   check(RegSetValueExW(hKey, L"Number", 0, REG_DWORD,
@@ -211,7 +209,8 @@ static void test_reg_get_string_value() {
                        sizeof(number)) == ERROR_SUCCESS,
         "private non-string value written");
   check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"Number", out) ==
-                ERROR_UNSUPPORTED_TYPE && out == L"unchanged",
+                ERROR_UNSUPPORTED_TYPE &&
+            out == L"unchanged",
         "utility rejects non-REG_SZ without changing the output");
 
   const std::wstring too_long(MAX_PATH + 40, L'路');
@@ -221,7 +220,8 @@ static void test_reg_get_string_value() {
             ERROR_SUCCESS,
         "private over-capacity value written");
   check(RegGetStringValue(HKEY_CURRENT_USER, key.c_str(), L"TooLong", out) ==
-                ERROR_MORE_DATA && out == L"unchanged",
+                ERROR_MORE_DATA &&
+            out == L"unchanged",
         "over-capacity utility value fails without returning truncated data");
   RegCloseKey(hKey);
   check(RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str()) == ERROR_SUCCESS,
@@ -326,23 +326,22 @@ static void test_profile_switch_transaction() {
             FAILED(weasel::setup::ResultFromBool(FALSE != FALSE, S_OK, E_FAIL)),
         "BOOL API result maps FALSE to failed HRESULT and TRUE to S_OK");
 
-  check(
-      weasel::setup::GetLayoutRestoreAction({false, false}) ==
-              weasel::setup::LayoutRestoreAction::Uninstall &&
-          weasel::setup::GetLayoutRestoreAction({true, false}) ==
-              weasel::setup::LayoutRestoreAction::Install &&
-          weasel::setup::GetLayoutRestoreAction({true, true}) ==
-              weasel::setup::LayoutRestoreAction::InstallDefault,
-      "layout rollback preserves disabled, enabled, and default state");
+  check(weasel::setup::GetLayoutRestoreAction({false, false}) ==
+                weasel::setup::LayoutRestoreAction::Uninstall &&
+            weasel::setup::GetLayoutRestoreAction({true, false}) ==
+                weasel::setup::LayoutRestoreAction::Install &&
+            weasel::setup::GetLayoutRestoreAction({true, true}) ==
+                weasel::setup::LayoutRestoreAction::InstallDefault,
+        "layout rollback preserves disabled, enabled, and default state");
 
   {
     ProfileSwitchProbe ops;
     check(SUCCEEDED(weasel::setup::RunProfileSwitchTransaction(ops)) &&
               !ops.old_profile && ops.new_profile && !ops.old_layout &&
               ops.new_layout &&
-              ops.calls == std::vector<std::string>({
-                               "enable_new", "disable_old",
-                               "remove_old_layout", "install_new_layout"}),
+              ops.calls == std::vector<std::string>(
+                               {"enable_new", "disable_old",
+                                "remove_old_layout", "install_new_layout"}),
           "profile switch success reaches the requested final state");
   }
 
@@ -351,11 +350,11 @@ static void test_profile_switch_transaction() {
       {"enable_new", "restore_new_profile"},
       {"enable_new", "disable_old", "restore_old_profile",
        "restore_new_profile"},
-      {"enable_new", "disable_old", "remove_old_layout",
-       "restore_old_layout", "restore_old_profile", "restore_new_profile"},
-      {"enable_new", "disable_old", "remove_old_layout",
-       "install_new_layout", "restore_new_layout", "restore_old_layout",
+      {"enable_new", "disable_old", "remove_old_layout", "restore_old_layout",
        "restore_old_profile", "restore_new_profile"},
+      {"enable_new", "disable_old", "remove_old_layout", "install_new_layout",
+       "restore_new_layout", "restore_old_layout", "restore_old_profile",
+       "restore_new_profile"},
   };
   for (int step = 1; step <= 4; ++step) {
     ProfileSwitchProbe ops;

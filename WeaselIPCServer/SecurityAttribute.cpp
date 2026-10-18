@@ -53,10 +53,10 @@ void SecurityAttribute::_Init() {
     throw std::runtime_error("failed to resolve the current logon SID");
 
   const std::wstring sddl = pipe_security::BuildPipeSecuritySddl(logon_sid);
-  if (sddl.empty() ||
-      !::ConvertStringSecurityDescriptorToSecurityDescriptorW(
-          sddl.c_str(), SDDL_REVISION_1, &pd, nullptr)) {
-    throw std::runtime_error("failed to create the Weasel pipe security descriptor");
+  if (sddl.empty() || !::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                          sddl.c_str(), SDDL_REVISION_1, &pd, nullptr)) {
+    throw std::runtime_error(
+        "failed to create the Weasel pipe security descriptor");
   }
 
   sa.nLength = sizeof(SECURITY_ATTRIBUTES);

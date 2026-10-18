@@ -14,9 +14,7 @@ class ClientTestAccess {
     return client.m_pImpl->channel;
   }
 
-  static UINT SessionId(Client& client) {
-    return client.m_pImpl->_SessionId();
-  }
+  static UINT SessionId(Client& client) { return client.m_pImpl->_SessionId(); }
 
   static bool EnsureSessionKey(Client& client) {
     return client.m_pImpl->_EnsureSessionKey();

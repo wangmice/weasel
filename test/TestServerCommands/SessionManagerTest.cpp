@@ -33,7 +33,9 @@ struct SessionManagerSelfTest {
       ++creates;
       return static_cast<SessionManager::SessionId>(100 + creates);
     };
-    auto destroy = [&](SessionManager::SessionId id) { destroyed.push_back(id); };
+    auto destroy = [&](SessionManager::SessionId id) {
+      destroyed.push_back(id);
+    };
     auto valid = [](SessionManager::SessionId) { return true; };
 
     const SessionOwner owner_a{ClientProcessToken{1}};
@@ -73,7 +75,8 @@ struct SessionManagerSelfTest {
       ++unowned_creates;
       return 201;
     };
-    auto unowned_first = unowned.Ensure(Key(2), {}, valid, unowned_create, destroy);
+    auto unowned_first =
+        unowned.Ensure(Key(2), {}, valid, unowned_create, destroy);
     auto unowned_bound =
         unowned.Ensure(Key(2), owner_a, valid, unowned_create, destroy);
     require(unowned_first.ipc_id == 201 && unowned_bound.ipc_id == 201 &&
@@ -86,29 +89,32 @@ struct SessionManagerSelfTest {
 
     SessionManager owned;
     require(owned.BindLegacy(301, owner_a), "legacy session binds to owner A");
-    require(owned.BindLegacy(302, owner_a), "second legacy session binds to owner A");
+    require(owned.BindLegacy(302, owner_a),
+            "second legacy session binds to owner A");
     require(owned.BindLegacy(401, owner_b), "legacy session binds to owner B");
-    require(!owned.Find(Key(9)).has_value(), "legacy sessions have no key lookup");
+    require(!owned.Find(Key(9)).has_value(),
+            "legacy sessions have no key lookup");
 
     std::vector<SessionManager::SessionId> owner_destroyed;
-    owned.RemoveClient(owner_a.process.value(),
-                       [&](SessionManager::SessionId id) {
-                         owner_destroyed.push_back(id);
-                       });
+    owned.RemoveClient(
+        owner_a.process.value(),
+        [&](SessionManager::SessionId id) { owner_destroyed.push_back(id); });
     require(owner_destroyed.size() == 2,
             "RemoveClient removes every session owned by one process");
     require(owned.Remove(401, destroy),
             "RemoveClient preserves sessions owned by another process");
 
     SessionManager cleared;
-    require(cleared.Ensure(Key(3), owner_a, valid,
-                           []() -> std::optional<SessionManager::SessionId> {
-                             return 501;
-                           },
-                           destroy)
-                .ipc_id == 501,
+    require(cleared.Ensure(
+                       Key(3), owner_a, valid,
+                       []() -> std::optional<SessionManager::SessionId> {
+                         return 501;
+                       },
+                       destroy)
+                    .ipc_id == 501,
             "Clear setup keyed session created");
-    require(cleared.BindLegacy(502, owner_b), "Clear setup legacy session bound");
+    require(cleared.BindLegacy(502, owner_b),
+            "Clear setup legacy session bound");
     int clear_destroyed = 0;
     cleared.Clear([&](SessionManager::SessionId) { ++clear_destroyed; });
     require(clear_destroyed == 2 && !cleared.Find(Key(3)).has_value(),

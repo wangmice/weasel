@@ -159,10 +159,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _UpdateComposition(com_ptr<ITfContext> pContext);
   bool _ConsumeResponse(LPWSTR buffer, DWORD length);
   void _ConsumeResponseIfFresh();
-  HRESULT _ApplyResponseSnapshot(
-      TfEditCookie ec,
-      com_ptr<ITfContext> pContext,
-      weasel::tsf::ResponseApplySnapshot snapshot);
+  HRESULT _ApplyResponseSnapshot(TfEditCookie ec,
+                                 com_ptr<ITfContext> pContext,
+                                 weasel::tsf::ResponseApplySnapshot snapshot);
   void _EnqueueResponseApply(com_ptr<ITfContext> pContext,
                              weasel::tsf::ResponseApplySnapshot snapshot,
                              UINT64 responseSerial);
@@ -204,9 +203,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   com_ptr<ITfContext> _GetUIContextDocument();
 
   /* Display Attribute */
-  void _ClearCompositionDisplayAttributes(TfEditCookie ec,
-                                          _In_ ITfContext* pContext,
-                                          _In_opt_ ITfComposition* pComposition);
+  void _ClearCompositionDisplayAttributes(
+      TfEditCookie ec,
+      _In_ ITfContext* pContext,
+      _In_opt_ ITfComposition* pComposition);
   BOOL _SetCompositionDisplayAttributes(TfEditCookie ec,
                                         _In_ ITfContext* pContext,
                                         ITfRange* pRangeComposition);
@@ -349,8 +349,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
       _responseApplyQueue;
   // 复用的响应解析器：deserializer 注册表只建一次（Require 幂等），
   // 每次解析前重指目标；目标指针仅在 _ConsumeResponse 执行期间有效
-  weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr,
-                                 nullptr};
+  weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr, nullptr};
 
   // guidatom for the display attibute. 0 = RegisterGUID failed or not yet
   // run; guards the SetValue in _SetCompositionDisplayAttributes.

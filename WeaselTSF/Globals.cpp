@@ -62,8 +62,8 @@ bool QueueDllBackgroundTask(std::function<void()> task) {
     return false;
   }
 
-  auto* context = new (std::nothrow)
-      DllBackgroundTaskContext{std::move(task), module};
+  auto* context =
+      new (std::nothrow) DllBackgroundTaskContext{std::move(task), module};
   if (!context) {
     FreeLibrary(module);
     return false;
@@ -88,11 +88,10 @@ const CLSID c_clsidTextService = {
     {0x9c, 0xa6, 0x7b, 0x4d, 0xd, 0xe6, 0xcb, 0xa}};
 
 // {3D02CAB6-2B8E-4781-BA20-1C9267529467}
-const GUID c_guidProfile = {
-    0x3d02cab6,
-    0x2b8e,
-    0x4781,
-    {0xba, 0x20, 0x1c, 0x92, 0x67, 0x52, 0x94, 0x67}};
+const GUID c_guidProfile = {0x3d02cab6,
+                            0x2b8e,
+                            0x4781,
+                            {0xba, 0x20, 0x1c, 0x92, 0x67, 0x52, 0x94, 0x67}};
 
 // {341F9E3A-B8AD-499D-936C-48701E329FB2}
 const GUID c_guidLangBarItemButton = {

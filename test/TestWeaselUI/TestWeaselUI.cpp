@@ -103,8 +103,7 @@ class UiThread {
       if (WaitForSingleObject(m_pause, 0) == WAIT_OBJECT_0) {
         SetEvent(m_paused);
         HANDLE waits[] = {m_stop, m_resume};
-        const DWORD wait =
-            WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        const DWORD wait = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
         ResetEvent(m_pause);
         ResetEvent(m_paused);
         if (wait == WAIT_OBJECT_0)
@@ -159,9 +158,9 @@ static void test_pending_timeout_visible_before_ui_apply(UiThread& t) {
         "B1: queued ShowWithTimeout is visible before UI apply");
   t.ResumePumping();
 
-  check(wait_until([&] { return t.ui.IsShown() && t.ui.IsCountingDown(); },
-                   3000),
-        "B1: queued timeout becomes an active timer");
+  check(
+      wait_until([&] { return t.ui.IsShown() && t.ui.IsCountingDown(); }, 3000),
+      "B1: queued timeout becomes an active timer");
   t.ui.Hide();
   check(wait_until([&] { return !t.ui.IsShown() && !t.ui.IsCountingDown(); },
                    3000),
@@ -184,9 +183,9 @@ static void test_cross_thread_show_hide(UiThread& t) {
  * auto-hide when the timer fires (WM_TIMER path on the UI thread) */
 static void test_show_with_timeout(UiThread& t) {
   t.ui.ShowWithTimeout(200);
-  check(wait_until([&] { return t.ui.IsShown() && t.ui.IsCountingDown(); },
-                   3000),
-        "B1: cross-thread ShowWithTimeout shows and counts down");
+  check(
+      wait_until([&] { return t.ui.IsShown() && t.ui.IsCountingDown(); }, 3000),
+      "B1: cross-thread ShowWithTimeout shows and counts down");
   check(wait_until([&] { return !t.ui.IsShown() && !t.ui.IsCountingDown(); },
                    3000),
         "B1: auto-hide timer fires on UI thread");
@@ -263,8 +262,7 @@ static void test_mismatched_candidate_vectors(UiThread& t) {
         "B37: mismatched context lands");
   // 布局 + 绘制全链路成功时 m_octx 才会与 m_ctx 一致并保持；仍抛异常则
   // _RequestPaintRecovery 会不断清空 m_octx（旧值 3 来自前一个用例）
-  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 5; },
-                   3000),
+  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 5; }, 3000),
         "B37: layout+paint completes with short labels/comments");
   Sleep(500);  // 让恢复重投（若有）跑完后再确认不回退
   check(t.ui.octx().cinfo.candies.size() == 5,
@@ -372,9 +370,9 @@ static void test_max_candidates_round_info(UiThread& t) {
   horizontal.max_width = 120;
   t.ui.SetStyle(horizontal);
   t.ui.Update(make_candidate_ctx(100, 0), status);
-  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 100; },
-                   3000),
-        "B35-1: 100 candidates settle under horizontal multi-row layout");
+  check(
+      wait_until([&] { return t.ui.octx().cinfo.candies.size() == 100; }, 3000),
+      "B35-1: 100 candidates settle under horizontal multi-row layout");
 
   // 竖排文本 + 自动换列，两个方向各走一遍 DoLayoutWithWrap 的列圆角循环
   weasel::UIStyle vtext_wrap;
@@ -442,8 +440,7 @@ static void test_missing_status_icon_files(UiThread& t) {
   status.composing = true;
   status.ascii_mode = true;  // 显示状态图标，DoPaint 走图标加载分支
   t.ui.Update(make_candidate_ctx(3, 0), status);
-  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 3; },
-                   3000),
+  check(wait_until([&] { return t.ui.octx().cinfo.candies.size() == 3; }, 3000),
         "B35-6: paint settles with missing custom icon files");
 
   // 再来一帧（高亮变化触发重绘，验证失败路径可重复执行）
@@ -486,8 +483,7 @@ static void test_label_text_format_bounded() {
 static void test_d2d_debug_layer_policy() {
   check(weasel::SelectD2DDebugLevel(false) == D2D1_DEBUG_LEVEL_NONE,
         "P1: default/release policy disables the D2D debug layer");
-  check(weasel::SelectD2DDebugLevel(true) ==
-            D2D1_DEBUG_LEVEL_INFORMATION,
+  check(weasel::SelectD2DDebugLevel(true) == D2D1_DEBUG_LEVEL_INFORMATION,
         "P1: explicit opt-in enables D2D debug diagnostics");
 }
 

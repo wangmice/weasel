@@ -33,8 +33,7 @@ constexpr bool CanRetryApplyFailure(ApplyProgress progress,
                                     ApplyFailureClass failure,
                                     unsigned retries) {
   return progress == ApplyProgress::BeforeCommit &&
-         failure == ApplyFailureClass::Retryable &&
-         retries < kMaxApplyRetries;
+         failure == ApplyFailureClass::Retryable && retries < kMaxApplyRetries;
 }
 
 enum class ScheduleFailureAction : std::uint8_t {
@@ -43,8 +42,8 @@ enum class ScheduleFailureAction : std::uint8_t {
 };
 
 constexpr ScheduleFailureAction ClassifyScheduleFailure(bool disconnected,
-                                                         bool readOnly,
-                                                         bool locked) {
+                                                        bool readOnly,
+                                                        bool locked) {
   if (disconnected || readOnly)
     return ScheduleFailureAction::Drop;
   if (locked)

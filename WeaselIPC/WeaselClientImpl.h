@@ -55,9 +55,7 @@ class ClientImpl {
                        DWORD timeout_ms = 0);
 
   bool _Connected() const { return channel.Connected(); }
-  bool _Active() const {
-    return channel.Connected() && _SessionId() != 0;
-  }
+  bool _Active() const { return channel.Connected() && _SessionId() != 0; }
 
  private:
   friend class ClientTestAccess;

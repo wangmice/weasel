@@ -172,9 +172,7 @@ class SessionRoutingHandler : public RequestHandler {
       backend_->EndMaintenance();
   }
 
-  void SetOption(DWORD session_id,
-                 const std::string& opt,
-                 bool val) override {
+  void SetOption(DWORD session_id, const std::string& opt, bool val) override {
     if (backend_)
       backend_->SetOption(session_id, opt, val);
   }

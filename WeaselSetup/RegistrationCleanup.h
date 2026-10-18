@@ -49,8 +49,7 @@ inline bool DeleteTextServiceRegistrationInView(
     const std::wstring& user_classes_root,
     REGSAM view) noexcept {
   const std::wstring machine_com = L"Software\\Classes\\CLSID\\" + clsid;
-  const std::wstring machine_tip =
-      L"Software\\Microsoft\\CTF\\TIP\\" + clsid;
+  const std::wstring machine_tip = L"Software\\Microsoft\\CTF\\TIP\\" + clsid;
   const std::wstring machine_legacy_tip =
       L"Software\\Classes\\Software\\Microsft\\CTF\\TIP\\" + clsid;
   const std::wstring user_com = user_classes_root + L"\\CLSID\\" + clsid;
@@ -86,12 +85,11 @@ inline bool CleanupTextServiceRegistrationAfterUninstall() noexcept {
   // PerUserReg keeps this pointed at the invoking user's hive even when UAC
   // elevation used credentials from a different administrator account.
   HKEY user_root = per_user_root();
-  const std::wstring user_classes_root =
-      per_user_subkey(L"Software\\Classes");
+  const std::wstring user_classes_root = per_user_subkey(L"Software\\Classes");
 
   if (!detail::Is64BitWindowsForRegistrationCleanup()) {
-    return detail::DeleteTextServiceRegistrationInView(
-        clsid, user_root, user_classes_root, 0);
+    return detail::DeleteTextServiceRegistrationInView(clsid, user_root,
+                                                       user_classes_root, 0);
   }
 
   bool ok = detail::DeleteTextServiceRegistrationInView(

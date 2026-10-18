@@ -45,8 +45,8 @@ class TestChannelAccess : public weasel::PipeChannelBase {
  public:
   static void SetName(weasel::PipeChannelBase& channel,
                       const std::wstring& name) {
-    channel.*&TestChannelAccess::pname = name;
-    channel.*&TestChannelAccess::fallback_pname = std::wstring();
+    channel.*& TestChannelAccess::pname = name;
+    channel.*& TestChannelAccess::fallback_pname = std::wstring();
   }
 };
 
@@ -75,9 +75,9 @@ static void test_session_id_allocator_survives_maintenance_clear() {
   active.clear();
   const DWORD replacement = allocate();
 
-  check(client_a == 0x1000 && client_b == 0x1001 &&
-            replacement == 0x1002,
-        "session ids remain monotonic after maintenance clears active sessions");
+  check(
+      client_a == 0x1000 && client_b == 0x1001 && replacement == 0x1002,
+      "session ids remain monotonic after maintenance clears active sessions");
   check(replacement != client_a && replacement != client_b,
         "new sessions cannot alias stale client ids after maintenance");
 }
@@ -113,8 +113,7 @@ static void test_pending_ui_generation_rejects_stale_extent() {
             !WeaselTSFTestAccess::HasPendingUI(tsf),
         "current extent consumes exactly its own UI snapshot");
 
-  const UINT64 canceled_generation =
-      tsf._QueuePendingUI(second, second_status);
+  const UINT64 canceled_generation = tsf._QueuePendingUI(second, second_status);
   tsf._InvalidatePendingUI();
   check(!tsf._IsPendingUIGenerationCurrent(canceled_generation) &&
             !WeaselTSFTestAccess::HasPendingUI(tsf),
@@ -143,16 +142,16 @@ static void test_panel_recreate_reapplies_window_size() {
 
   const bool first_created = ui.Create(nullptr);
   RECT first{};
-  const bool first_rect = first_created && ui.hwnd() &&
-                          GetWindowRect(ui.hwnd(), &first);
+  const bool first_rect =
+      first_created && ui.hwnd() && GetWindowRect(ui.hwnd(), &first);
   const int first_width = first.right - first.left;
   const int first_height = first.bottom - first.top;
 
   ui.Destroy(false);
   const bool second_created = ui.Create(nullptr);
   RECT second{};
-  const bool second_rect = second_created && ui.hwnd() &&
-                           GetWindowRect(ui.hwnd(), &second);
+  const bool second_rect =
+      second_created && ui.hwnd() && GetWindowRect(ui.hwnd(), &second);
   const int second_width = second.right - second.left;
   const int second_height = second.bottom - second.top;
 
@@ -236,8 +235,8 @@ static void test_pipe_ascii_commands() {
   SessionHandler handler;
   weasel::ServerImpl server;
   server.SetRequestHandler(&handler);
-  for (UINT command : {ID_WEASELTRAY_ENABLE_ASCII,
-                       ID_WEASELTRAY_DISABLE_ASCII}) {
+  for (UINT command :
+       {ID_WEASELTRAY_ENABLE_ASCII, ID_WEASELTRAY_DISABLE_ASCII}) {
     bool replied = false;
     DWORD result = 0;
     int before = handler.option_calls;
@@ -245,15 +244,15 @@ static void test_pipe_ascii_commands() {
       // This is the same lock boundary as ServerImpl::Run's pipe listener.
       std::lock_guard guard(g_api_mutex);
       weasel::ServerImplTestAccess::HandlePipeMessage(
-          server, {WEASEL_IPC_TRAY_COMMAND, command, 42},
-          [&](DWORD response) {
+          server, {WEASEL_IPC_TRAY_COMMAND, command, 42}, [&](DWORD response) {
             replied = true;
             result = response;
           });
     } catch (const std::system_error& error) {
       std::printf("  dispatch threw: %s\n", error.what());
     }
-    check(replied && result == TRUE, "pipe command completes under the API lock");
+    check(replied && result == TRUE,
+          "pipe command completes under the API lock");
     check(handler.option_calls == before + 1 && handler.last_session == 42 &&
               handler.last_option == "ascii_mode" &&
               handler.last_value == (command == ID_WEASELTRAY_ENABLE_ASCII),
@@ -265,8 +264,8 @@ static void test_window_ascii_commands() {
   SessionHandler handler;
   weasel::ServerImpl server;
   server.SetRequestHandler(&handler);
-  for (UINT command : {ID_WEASELTRAY_ENABLE_ASCII,
-                       ID_WEASELTRAY_DISABLE_ASCII}) {
+  for (UINT command :
+       {ID_WEASELTRAY_ENABLE_ASCII, ID_WEASELTRAY_DISABLE_ASCII}) {
     std::promise<void> started;
     auto ready = started.get_future();
     std::promise<void> completed;
@@ -287,7 +286,8 @@ static void test_window_ascii_commands() {
     lock.unlock();
     window_thread.join();
     check(handled && handler.option_calls == before + 1 &&
-              handler.last_session == 43 && handler.last_option == "ascii_mode" &&
+              handler.last_session == 43 &&
+              handler.last_option == "ascii_mode" &&
               handler.last_value == (command == ID_WEASELTRAY_ENABLE_ASCII),
           "window command sets the requested option exactly once");
   }
@@ -305,11 +305,13 @@ static bool connect_with_retry(weasel::Client& client) {
 static void test_unavailable_private_server_stays_isolated() {
   WeaselTSF tsf;
   auto& client = WeaselTSFTestAccess::Client(tsf);
-  const std::wstring name = weasel::GetPipeName() + L"_UnavailablePrivateTest_" +
+  const std::wstring name = weasel::GetPipeName() +
+                            L"_UnavailablePrivateTest_" +
                             std::to_wstring(GetCurrentProcessId());
   TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(client), name);
   check(!tsf._EnsureServerConnected(),
-        "missing private server fails recovery without launching the real service");
+        "missing private server fails recovery without launching the real "
+        "service");
   check(!client.IsSessionActive(),
         "missing private server leaves the test client inactive");
 }
@@ -319,7 +321,7 @@ static void test_client_lifecycle_timeout_budgets() {
                             std::to_wstring(GetCurrentProcessId());
   weasel::PipeServer server{std::wstring(name)};
   auto handler = [](weasel::PipeMessage message,
-                     weasel::PipeServer::Respond respond) {
+                    weasel::PipeServer::Respond respond) {
     if (message.Msg == WEASEL_IPC_START_MAINTENANCE ||
         message.Msg == WEASEL_IPC_END_MAINTENANCE)
       Sleep(1250);
@@ -339,7 +341,8 @@ static void test_client_lifecycle_timeout_budgets() {
             weasel::ClientTestAccess::Channel(client).Connected(),
         "lifecycle: resume also uses the longer maintenance budget");
   client.StartSession();
-  check(client.IsSessionActive(), "lifecycle: establish a session before teardown");
+  check(client.IsSessionActive(),
+        "lifecycle: establish a session before teardown");
   started = GetTickCount64();
   client.Disconnect();
   check(GetTickCount64() - started < 500 && !client.IsSessionActive(),
@@ -361,22 +364,22 @@ static void test_maintenance_session_recovery() {
   std::atomic<int> start_session_messages{0};
   weasel::ServerImplTestAccess::PipeThread(server) =
       std::make_unique<boost::thread>([&] {
-        server_channel.Listen([&](weasel::PipeMessage msg,
-                                  weasel::PipeServer::Respond respond) {
-          if (msg.Msg == WEASEL_IPC_ECHO)
-            ++echo_messages;
-          else if (msg.Msg == WEASEL_IPC_PROCESS_KEY_EVENT)
-            ++key_messages;
-          else if (msg.Msg == WEASEL_IPC_START_SESSION)
-            ++start_session_messages;
-          DWORD result = 0;
-          {
-            std::lock_guard guard(g_api_mutex);
-            weasel::ServerImplTestAccess::HandlePipeMessage(
-                server, msg, [&](DWORD reply) { result = reply; });
-          }
-          respond(result);
-        });
+        server_channel.Listen(
+            [&](weasel::PipeMessage msg, weasel::PipeServer::Respond respond) {
+              if (msg.Msg == WEASEL_IPC_ECHO)
+                ++echo_messages;
+              else if (msg.Msg == WEASEL_IPC_PROCESS_KEY_EVENT)
+                ++key_messages;
+              else if (msg.Msg == WEASEL_IPC_START_SESSION)
+                ++start_session_messages;
+              DWORD result = 0;
+              {
+                std::lock_guard guard(g_api_mutex);
+                weasel::ServerImplTestAccess::HandlePipeMessage(
+                    server, msg, [&](DWORD reply) { result = reply; });
+              }
+              respond(result);
+            });
       });
 
   WeaselTSF tsf;
@@ -386,8 +389,8 @@ static void test_maintenance_session_recovery() {
   weasel::Client deployer;
   TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(deployer),
                              pipe_name);
-  bool connected = connect_with_retry(tsf_client) &&
-                   connect_with_retry(deployer);
+  bool connected =
+      connect_with_retry(tsf_client) && connect_with_retry(deployer);
   check(connected, "TSF and deployer connect to the isolated server");
   if (!connected)
     return;
@@ -408,8 +411,8 @@ static void test_maintenance_session_recovery() {
   int accepted_before = handler.accepted_keys;
   int invalid_before = handler.invalid_keys;
   int start_before = start_session_messages;
-  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
-            tsf, weasel::KeyEvent('a')),
+  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(tsf,
+                                                         weasel::KeyEvent('a')),
         "healthy key is accepted");
   check(key_messages == key_before + 1 &&
             handler.accepted_keys == accepted_before + 1 &&
@@ -434,8 +437,8 @@ static void test_maintenance_session_recovery() {
   accepted_before = handler.accepted_keys;
   invalid_before = handler.invalid_keys;
   start_before = start_session_messages;
-  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
-            tsf, weasel::KeyEvent('b')),
+  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(tsf,
+                                                         weasel::KeyEvent('b')),
         "first post-maintenance key recovers the stale session");
   check(weasel::ClientTestAccess::SessionId(tsf_client) != original_session &&
             handler.sessions_created == 2,

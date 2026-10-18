@@ -181,8 +181,7 @@ bool RestartServer(const std::wstring& dir) {
 bool RunDeployer(const std::wstring& dir) {
   const std::wstring deployer = dir + L"\\WeaselDeployer.exe";
   DWORD deploy_exit_code = 0;
-  return RunProcessAndWait(deployer, L"/deploy", INFINITE,
-                           deploy_exit_code) &&
+  return RunProcessAndWait(deployer, L"/deploy", INFINITE, deploy_exit_code) &&
          deploy_exit_code == 0;
 }
 }  // namespace
@@ -266,7 +265,8 @@ static int CustomInstall(bool installing) {
       // switch_registered_profile is itself transactional. A failed reverse
       // switch leaves the new profile state in place; keep the matching new
       // registry values rather than creating a registry/TSF split-brain state.
-      LOG(ERROR) << "failed to restore the previous TSF profile after modify-install failure";
+      LOG(ERROR) << "failed to restore the previous TSF profile after "
+                    "modify-install failure";
       return false;
     }
     restore_registry();

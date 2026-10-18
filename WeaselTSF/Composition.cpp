@@ -9,8 +9,8 @@
 namespace {
 
 weasel::tsf::ApplyFailureClass ClassifyApplyFailure(HRESULT hr) {
-  if (hr == TF_E_DISCONNECTED || hr == TS_E_READONLY ||
-      hr == E_INVALIDARG || hr == E_OUTOFMEMORY) {
+  if (hr == TF_E_DISCONNECTED || hr == TS_E_READONLY || hr == E_INVALIDARG ||
+      hr == E_OUTOFMEMORY) {
     return weasel::tsf::ApplyFailureClass::Terminal;
   }
   return weasel::tsf::ApplyFailureClass::Retryable;
@@ -44,8 +44,8 @@ HRESULT WeaselTSF::_StartCompositionLocked(TfEditCookie ec,
   if (FAILED(pContext->QueryInterface(IID_ITfContextComposition,
                                       (LPVOID*)&pContextComposition)))
     return E_FAIL;
-  HRESULT hr = pContextComposition->StartComposition(
-      ec, pRangeComposition, this, &pComposition);
+  HRESULT hr = pContextComposition->StartComposition(ec, pRangeComposition,
+                                                     this, &pComposition);
   if (FAILED(hr) || pComposition == nullptr)
     return FAILED(hr) ? hr : E_FAIL;
 
@@ -89,8 +89,7 @@ class CStartCompositionEditSession : public CEditSession {
     const HRESULT hr = _pTextService->_StartCompositionLocked(
         ec, _pContext, _fCUASWorkaroundEnabled, _pendingUIGeneration);
     if (SUCCEEDED(hr) && _pTextService->_IsComposingInContext(_pContext))
-      _pTextService->_UpdateCompositionWindow(_pContext,
-                                              _pendingUIGeneration);
+      _pTextService->_UpdateCompositionWindow(_pContext, _pendingUIGeneration);
     return hr;
   }
 
@@ -142,9 +141,8 @@ HRESULT WeaselTSF::_EndCompositionLocked(TfEditCookie ec,
   return hr;
 }
 
-using ResponseApplyQueue =
-    weasel::tsf::SerialApplyQueue<
-        std::shared_ptr<WeaselTSF::ResponseApplyRequest>>;
+using ResponseApplyQueue = weasel::tsf::SerialApplyQueue<
+    std::shared_ptr<WeaselTSF::ResponseApplyRequest>>;
 
 class CEndCompositionEditSession : public CEditSession {
  public:
@@ -430,8 +428,8 @@ HRESULT WeaselTSF::_ShowInlinePreeditLocked(
     return E_FAIL;
 
   const std::wstring& preedit = context->preedit.str;
-  if (FAILED(pRangeComposition->SetText(
-          ec, 0, preedit.c_str(), static_cast<LONG>(preedit.length()))))
+  if (FAILED(pRangeComposition->SetText(ec, 0, preedit.c_str(),
+                                        static_cast<LONG>(preedit.length()))))
     return E_FAIL;
 
   int selCursor = -1;
@@ -545,7 +543,7 @@ class CInsertTextEditSession : public CEditSession {
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
     return _pTextService->_InsertTextLocked(ec, _pContext, _pComposition,
-                                           _text);
+                                            _text);
   }
 
  private:
@@ -623,15 +621,14 @@ class CApplyResponseEditSession : public CEditSession {
   }
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
-    if (!_queue || !_queue->InFlight() ||
-        _queue->FlightToken() != _flightToken)
+    if (!_queue || !_queue->InFlight() || _queue->FlightToken() != _flightToken)
       return S_OK;
 
     _executed = true;
     HRESULT hr = E_FAIL;
     if (_request && _request->context) {
-      hr = _pTextService->_ApplyResponseSnapshot(
-          ec, _request->context, _request->snapshot);
+      hr = _pTextService->_ApplyResponseSnapshot(ec, _request->context,
+                                                 _request->snapshot);
     }
 
     if (FAILED(hr) && _request) {
@@ -694,8 +691,7 @@ class CContextHandoffEditSession : public CEditSession {
   ~CContextHandoffEditSession() override { _CompleteFlight(); }
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
-    if (!_queue || !_queue->InFlight() ||
-        _queue->FlightToken() != _flightToken)
+    if (!_queue || !_queue->InFlight() || _queue->FlightToken() != _flightToken)
       return S_OK;
     const HRESULT hr = _pTextService->_EndCompositionLocked(
         ec, _pContext, _pComposition, TRUE, TRUE);
@@ -748,11 +744,10 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
     auto candidate = _responseApplyQueue.PeekFront();
     if (!candidate || !candidate->context)
       return;
-    const bool stale =
-        candidate->snapshot.identity.serial !=
-            weasel::tsf::kInvalidResponseSerial &&
-        candidate->snapshot.identity.engine_epoch !=
-            _responseApplyQueue.CurrentEpoch();
+    const bool stale = candidate->snapshot.identity.serial !=
+                           weasel::tsf::kInvalidResponseSerial &&
+                       candidate->snapshot.identity.engine_epoch !=
+                           _responseApplyQueue.CurrentEpoch();
     if (!stale || !candidate->snapshot.commit.empty())
       break;
     auto discarded = _responseApplyQueue.TakeNext();
@@ -855,8 +850,8 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
   };
 
   com_ptr<CApplyResponseEditSession> session;
-  session.Attach(new CApplyResponseEditSession(
-      this, request, flightToken, &_responseApplyQueue));
+  session.Attach(new CApplyResponseEditSession(this, request, flightToken,
+                                               &_responseApplyQueue));
   if (!session) {
     _responseApplyQueue.RestoreFront(std::move(request), flightToken);
     return;

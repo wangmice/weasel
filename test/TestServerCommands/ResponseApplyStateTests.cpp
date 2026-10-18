@@ -10,20 +10,23 @@ using weasel::tsf::ApplyFailureClass;
 using weasel::tsf::ApplyProgress;
 using weasel::tsf::CanRetryApplyFailure;
 using weasel::tsf::ClassifyScheduleFailure;
+using weasel::tsf::kMaxApplyRetries;
 using weasel::tsf::RetryBudget;
 using weasel::tsf::ScheduleFailureAction;
 using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
-using weasel::tsf::kMaxApplyRetries;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
-                                   ApplyFailureClass::Retryable, 0),
+                                   ApplyFailureClass::Retryable,
+                                   0),
               "a transient pre-commit failure may retry safely");
 static_assert(!CanRetryApplyFailure(ApplyProgress::CommitApplied,
-                                    ApplyFailureClass::Retryable, 0),
+                                    ApplyFailureClass::Retryable,
+                                    0),
               "a committed response must never replay its commit text");
 static_assert(!CanRetryApplyFailure(ApplyProgress::BeforeCommit,
-                                    ApplyFailureClass::Terminal, 0),
+                                    ApplyFailureClass::Terminal,
+                                    0),
               "terminal document failures must not pin the FIFO");
 static_assert(!CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                     ApplyFailureClass::Retryable,
@@ -36,18 +39,19 @@ static_assert(!kIndependentBudgets.CanRetryHandoff(),
 static_assert(kIndependentBudgets.CanRetryApply(),
               "handoff failures must not consume document-apply retries");
 
-static_assert(ClassifyScheduleFailure(false, false, true) ==
-                  ScheduleFailureAction::RetryLater,
-              "TF_E_LOCKED must preserve the request for a later edit-end retry");
+static_assert(
+    ClassifyScheduleFailure(false, false, true) ==
+        ScheduleFailureAction::RetryLater,
+    "TF_E_LOCKED must preserve the request for a later edit-end retry");
 static_assert(ClassifyScheduleFailure(true, false, false) ==
                   ScheduleFailureAction::Drop,
               "a disconnected context cannot ever consume its queued response");
 static_assert(ClassifyScheduleFailure(false, true, false) ==
                   ScheduleFailureAction::Drop,
               "a read-only context must not be restored forever at FIFO head");
-static_assert(ClassifyScheduleFailure(false, false, false) ==
-                  ScheduleFailureAction::Drop,
-              "non-lock scheduling failures must not create an unbounded retry");
+static_assert(
+    ClassifyScheduleFailure(false, false, false) == ScheduleFailureAction::Drop,
+    "non-lock scheduling failures must not create an unbounded retry");
 
 static_assert(ShouldClearCompositionRange(true, true),
               "the current composition may be cleared during an abort");
@@ -56,8 +60,9 @@ static_assert(!ShouldClearCompositionRange(true, false),
 static_assert(!ShouldClearCompositionRange(false, true),
               "normal commit teardown must preserve its composition text");
 
-static_assert(ShouldPublishCandidateImmediately(true),
-              "UI-less hosts need candidate data before caret extent completes");
+static_assert(
+    ShouldPublishCandidateImmediately(true),
+    "UI-less hosts need candidate data before caret extent completes");
 static_assert(!ShouldPublishCandidateImmediately(false),
               "owned candidate windows may still position before first show");
 

@@ -13,8 +13,7 @@ namespace weasel::tsf {
 // identity without relying on lParam equality (which CUAS/IMM bridges do not
 // guarantee between Test and Key callbacks).
 struct PendingTestKeyState {
-  bool IsDuplicateTest(std::uint32_t key,
-                       std::uint32_t message_time) const {
+  bool IsDuplicateTest(std::uint32_t key, std::uint32_t message_time) const {
     return pending && vkey == key && test_message_time == message_time;
   }
 

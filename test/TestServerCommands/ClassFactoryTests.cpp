@@ -29,8 +29,7 @@ struct ClassFactoryRegressionGuard {
         DllGetClassObject(foreign_clsid, IID_IClassFactory, &object);
     Require(foreign_hr == CLASS_E_CLASSNOTAVAILABLE,
             "foreign CLSID must be rejected");
-    Require(object == nullptr,
-            "foreign CLSID must clear the output pointer");
+    Require(object == nullptr, "foreign CLSID must clear the output pointer");
 
     const HRESULT null_output_hr =
         DllGetClassObject(c_clsidTextService, IID_IClassFactory, nullptr);

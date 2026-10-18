@@ -193,10 +193,9 @@ HICON CLangBarItemButton::_LoadCachedFileIcon(const std::wstring& path,
       cachedIcon = NULL;
       cachedPath.clear();
     }
-    cachedIcon = (HICON)LoadImageW(NULL, path.c_str(), IMAGE_ICON,
-                                   GetSystemMetrics(SM_CXSMICON),
-                                   GetSystemMetrics(SM_CYSMICON),
-                                   LR_LOADFROMFILE);
+    cachedIcon = (HICON)LoadImageW(
+        NULL, path.c_str(), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON), LR_LOADFROMFILE);
     if (cachedIcon == NULL)
       return NULL;
     cachedPath = path;
@@ -224,16 +223,16 @@ STDMETHODIMP CLangBarItemButton::GetIcon(HICON* phIcon) {
                                   GetSystemMetrics(SM_CXSMICON),
                                   GetSystemMetrics(SM_CYSMICON), LR_SHARED);
     else
-      *phIcon = _LoadCachedFileIcon(_style.current_ascii_icon,
-                                    _ascii_icon_path, _ascii_icon);
+      *phIcon = _LoadCachedFileIcon(_style.current_ascii_icon, _ascii_icon_path,
+                                    _ascii_icon);
   } else {
     if (_style.current_zhung_icon.empty())
       *phIcon = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(IDI_ZH), IMAGE_ICON,
                                   GetSystemMetrics(SM_CXSMICON),
                                   GetSystemMetrics(SM_CYSMICON), LR_SHARED);
     else
-      *phIcon = _LoadCachedFileIcon(_style.current_zhung_icon,
-                                    _zhung_icon_path, _zhung_icon);
+      *phIcon = _LoadCachedFileIcon(_style.current_zhung_icon, _zhung_icon_path,
+                                    _zhung_icon);
   }
   return (*phIcon == NULL) ? E_FAIL : S_OK;
 }
@@ -432,7 +431,8 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   if (!_pLangBarButton)
     return;
   DWORD flags = 0;
-  HRESULT hr = _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
+  HRESULT hr = _GetCompartmentDWORD(
+      flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   if (FAILED(hr)) {
     // 读取失败：compartment 当前值未知，不回写。原实现按 flags=0 重建回写，
     // 会清掉宿主设置的 TF_CONVERSIONMODE_ROMAN/KATAKANA 等无关转换位

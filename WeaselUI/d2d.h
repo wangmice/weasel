@@ -222,8 +222,8 @@ inline HRESULT D2D::RecoverAfterDeviceLoss() {
   const uint64_t failed_generation =
       m_sharedResources ? m_sharedResources->generation : 0;
   std::shared_ptr<const DeviceResourcesSnapshot> replacement;
-  HRESULT hr = DeviceResources::Get().RecreateAfterDeviceLoss(
-      failed_generation, replacement);
+  HRESULT hr = DeviceResources::Get().RecreateAfterDeviceLoss(failed_generation,
+                                                              replacement);
 
   const HWND hwnd = m_hWnd;
   ReleaseWindowResources();
@@ -250,8 +250,7 @@ inline HRESULT D2D::RecoverAfterDeviceLoss() {
 }
 
 inline HRESULT D2D::RecoverPaintResources() {
-  if (direct3dDevice &&
-      FAILED(direct3dDevice->GetDeviceRemovedReason())) {
+  if (direct3dDevice && FAILED(direct3dDevice->GetDeviceRemovedReason())) {
     return RecoverAfterDeviceLoss();
   }
 

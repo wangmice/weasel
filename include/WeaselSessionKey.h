@@ -12,10 +12,12 @@ namespace weasel {
 struct SessionKey {
   std::array<std::uint8_t, 16> bytes{};
 
-  friend bool operator==(const SessionKey& lhs, const SessionKey& rhs) noexcept {
+  friend bool operator==(const SessionKey& lhs,
+                         const SessionKey& rhs) noexcept {
     return lhs.bytes == rhs.bytes;
   }
-  friend bool operator!=(const SessionKey& lhs, const SessionKey& rhs) noexcept {
+  friend bool operator!=(const SessionKey& lhs,
+                         const SessionKey& rhs) noexcept {
     return !(lhs == rhs);
   }
   friend bool operator<(const SessionKey& lhs, const SessionKey& rhs) noexcept {

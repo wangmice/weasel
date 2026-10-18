@@ -29,9 +29,7 @@ constexpr bool ShouldFinalizeEndSession(bool session_ending) noexcept {
 
 class PendingAutoHideState {
  public:
-  void OnPost() noexcept {
-    pending_.fetch_add(1, std::memory_order_relaxed);
-  }
+  void OnPost() noexcept { pending_.fetch_add(1, std::memory_order_relaxed); }
 
   void OnPostFailed() noexcept { ConsumeOne(); }
   void OnApplied() noexcept { ConsumeOne(); }
@@ -45,10 +43,9 @@ class PendingAutoHideState {
  private:
   void ConsumeOne() noexcept {
     auto current = pending_.load(std::memory_order_relaxed);
-    while (current != 0 &&
-           !pending_.compare_exchange_weak(current, current - 1,
-                                           std::memory_order_relaxed,
-                                           std::memory_order_relaxed)) {
+    while (current != 0 && !pending_.compare_exchange_weak(
+                               current, current - 1, std::memory_order_relaxed,
+                               std::memory_order_relaxed)) {
     }
   }
 

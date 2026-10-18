@@ -32,14 +32,16 @@ struct SessionLifecycleSelfTest {
 
     const auto malformed = weasel::ParseSessionKeyMetadata(
         L"action=session\nsession.client_key=bad\n.\n");
-    require(malformed.state == SessionKeyMetadataState::Invalid && !malformed.key,
-            "present malformed key fails closed");
+    require(
+        malformed.state == SessionKeyMetadataState::Invalid && !malformed.key,
+        "present malformed key fails closed");
 
     const auto duplicate = weasel::ParseSessionKeyMetadata(
         L"session.client_key=000102030405060708090a0b0c0d0e0f\n"
         L"session.client_key=000102030405060708090a0b0c0d0e0f\n.\n");
-    require(duplicate.state == SessionKeyMetadataState::Invalid && !duplicate.key,
-            "duplicate key fields fail closed");
+    require(
+        duplicate.state == SessionKeyMetadataState::Invalid && !duplicate.key,
+        "duplicate key fields fail closed");
   }
 };
 

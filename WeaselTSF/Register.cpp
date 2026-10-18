@@ -19,12 +19,11 @@ static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
 
 std::wstring ReadTextServiceProfileEnvironment() {
-  DWORD required =
-      GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", nullptr, 0);
+  DWORD required = GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", nullptr, 0);
   while (required != 0) {
     std::vector<wchar_t> buffer(required);
-    const DWORD copied = GetEnvironmentVariableW(
-        L"TEXTSERVICE_PROFILE", buffer.data(), required);
+    const DWORD copied = GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE",
+                                                 buffer.data(), required);
     if (copied == 0)
       return {};
     if (copied < required)

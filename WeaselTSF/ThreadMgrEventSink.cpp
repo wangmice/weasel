@@ -14,9 +14,8 @@ STDMETHODIMP WeaselTSF::OnSetFocus(ITfDocumentMgr* pDocMgrFocus,
   // Keep the sink on the old composition context until its handoff barrier has
   // actually ended. A TF_E_LOCKED handoff must receive that old context's
   // OnEndEdit notification after the competing write lock is released.
-  const bool keepCompositionSink =
-      _pTextEditSinkContext != nullptr &&
-      _IsComposingInContext(_pTextEditSinkContext);
+  const bool keepCompositionSink = _pTextEditSinkContext != nullptr &&
+                                   _IsComposingInContext(_pTextEditSinkContext);
   if (!keepCompositionSink)
     _InitTextEditSink(pDocMgrFocus);
 

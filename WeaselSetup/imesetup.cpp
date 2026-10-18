@@ -297,10 +297,9 @@ int install_ime_file(std::wstring& srcPath,
 
 static HRESULT unregister_text_service_without_dll() {
   ITfInputProcessorProfiles* pProfiles = NULL;
-  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                                CLSCTX_INPROC_SERVER,
-                                IID_ITfInputProcessorProfiles,
-                                (LPVOID*)&pProfiles);
+  HRESULT hr = CoCreateInstance(
+      CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER,
+      IID_ITfInputProcessorProfiles, (LPVOID*)&pProfiles);
   if (FAILED(hr))
     return hr;
 
@@ -402,16 +401,14 @@ int uninstall_ime_file(const std::wstring& ext,
 static HRESULT set_profile_enabled_for_user(const std::wstring& profile,
                                             BOOL fEnable) {
   ITfInputProcessorProfiles* pProfiles = NULL;
-  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                                CLSCTX_INPROC_SERVER,
-                                IID_ITfInputProcessorProfiles,
-                                (LPVOID*)&pProfiles);
+  HRESULT hr = CoCreateInstance(
+      CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER,
+      IID_ITfInputProcessorProfiles, (LPVOID*)&pProfiles);
   if (FAILED(hr))
     return hr;
 
-  hr = pProfiles->EnableLanguageProfile(c_clsidTextService,
-                                        profile_to_lang_id(profile),
-                                        c_guidProfile, fEnable);
+  hr = pProfiles->EnableLanguageProfile(
+      c_clsidTextService, profile_to_lang_id(profile), c_guidProfile, fEnable);
   pProfiles->Release();
   return hr;
 }
@@ -422,10 +419,9 @@ static HRESULT is_profile_enabled_for_user(const std::wstring& profile,
     return E_POINTER;
 
   ITfInputProcessorProfiles* pProfiles = NULL;
-  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                                CLSCTX_INPROC_SERVER,
-                                IID_ITfInputProcessorProfiles,
-                                (LPVOID*)&pProfiles);
+  HRESULT hr = CoCreateInstance(
+      CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER,
+      IID_ITfInputProcessorProfiles, (LPVOID*)&pProfiles);
   if (FAILED(hr))
     return hr;
 
@@ -439,10 +435,9 @@ static HRESULT is_profile_enabled_for_user(const std::wstring& profile,
 // profile 设为默认；卸载时彻底移除注册条目。
 HRESULT enable_profile(BOOL fEnable, const std::wstring& profile) {
   ITfInputProcessorProfiles* pProfiles = NULL;
-  HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                                CLSCTX_INPROC_SERVER,
-                                IID_ITfInputProcessorProfiles,
-                                (LPVOID*)&pProfiles);
+  HRESULT hr = CoCreateInstance(
+      CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER,
+      IID_ITfInputProcessorProfiles, (LPVOID*)&pProfiles);
   if (FAILED(hr))
     return hr;
 
@@ -503,9 +498,8 @@ static HRESULT install_layout_or_tip(const std::wstring& profile,
   return weasel::setup::ResultFromBool(ok != FALSE, S_OK, E_FAIL);
 }
 
-static HRESULT get_layout_or_tip_state(
-    const std::wstring& profile,
-    weasel::setup::LayoutState* state) {
+static HRESULT get_layout_or_tip_state(const std::wstring& profile,
+                                       weasel::setup::LayoutState* state) {
   if (!state)
     return E_POINTER;
   *state = {};
@@ -518,23 +512,22 @@ static HRESULT get_layout_or_tip_state(
 
   PTF_ENUMENABLEDLAYOUTORTIP pfnEnumEnabledLayoutOrTip =
       (PTF_ENUMENABLEDLAYOUTORTIP)GetProcAddress(hInputDLL,
-                                                "EnumEnabledLayoutOrTip");
+                                                 "EnumEnabledLayoutOrTip");
   if (!pfnEnumEnabledLayoutOrTip) {
     const DWORD error = GetLastError();
     FreeLibrary(hInputDLL);
     return HRESULT_FROM_WIN32(error ? error : ERROR_PROC_NOT_FOUND);
   }
 
-  const UINT count =
-      (*pfnEnumEnabledLayoutOrTip)(NULL, NULL, NULL, NULL, 0);
+  const UINT count = (*pfnEnumEnabledLayoutOrTip)(NULL, NULL, NULL, NULL, 0);
   if (count == 0) {
     FreeLibrary(hInputDLL);
     return S_OK;
   }
 
   std::vector<WeaselLayoutOrTipProfile> profiles(count);
-  const UINT copied = (*pfnEnumEnabledLayoutOrTip)(
-      NULL, NULL, NULL, profiles.data(), count);
+  const UINT copied =
+      (*pfnEnumEnabledLayoutOrTip)(NULL, NULL, NULL, profiles.data(), count);
   FreeLibrary(hInputDLL);
   if (copied == 0)
     return E_FAIL;
@@ -545,8 +538,7 @@ static HRESULT get_layout_or_tip_state(
     const auto& item = profiles[i];
     if ((item.dwProfileType & kLayoutOrTipInputProcessor) ==
             kLayoutOrTipInputProcessor &&
-        item.langid == lang_id &&
-        IsEqualGUID(item.clsid, c_clsidTextService) &&
+        item.langid == lang_id && IsEqualGUID(item.clsid, c_clsidTextService) &&
         IsEqualGUID(item.guidProfile, c_guidProfile)) {
       state->enabled = (item.dwFlags & kLayoutOrTipDisabled) == 0;
       state->is_default = (item.dwFlags & kLayoutOrTipDefault) != 0;
@@ -556,9 +548,8 @@ static HRESULT get_layout_or_tip_state(
   return S_OK;
 }
 
-static HRESULT restore_layout_or_tip(
-    const std::wstring& profile,
-    const weasel::setup::LayoutState& state) {
+static HRESULT restore_layout_or_tip(const std::wstring& profile,
+                                     const weasel::setup::LayoutState& state) {
   switch (weasel::setup::GetLayoutRestoreAction(state)) {
     case weasel::setup::LayoutRestoreAction::Uninstall:
       return install_layout_or_tip(profile, LayoutOrTipAction::Uninstall);
@@ -638,8 +629,8 @@ int switch_registered_profile(const std::wstring& old_profile,
     }
     bool failed(HRESULT value) const { return FAILED(value); }
     HRESULT success() const { return S_OK; }
-  } ops{old_profile, new_profile, old_profile_enabled, new_profile_enabled,
-        old_layout_state, new_layout_state};
+  } ops{old_profile,         new_profile,      old_profile_enabled,
+        new_profile_enabled, old_layout_state, new_layout_state};
 
   hr = weasel::setup::RunProfileSwitchTransaction(ops);
   if (FAILED(hr)) {
@@ -680,7 +671,9 @@ int register_text_service(const std::wstring& tsf_path,
     params = L" /u " + params;  // unregister
   }
   // if (silent)  // always silent
-  { params = L" /s " + params; }
+  {
+    params = L" /s " + params;
+  }
 
   // 失败则 regsvr32 拿不到 profile，中止注册；按本函数惯例报告并返回
   // 错误码，不抛异常（调用链无人捕获，抛出即 std::terminate）
@@ -723,10 +716,10 @@ int register_text_service(const std::wstring& tsf_path,
   if (register_ime && manage_profile)
     profile_result = enable_profile(TRUE, profile);
   if (FAILED(profile_result)) {
-    MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
-                          register_ime ? IDS_STR_INSTALL_FAILED
-                                       : IDS_STR_UNINSTALL_FAILED,
-                          MB_ICONERROR | MB_OK);
+    MSG_NOT_SILENT_BY_IDS(
+        silent, IDS_STR_ERR_SWITCH_PROFILE,
+        register_ime ? IDS_STR_INSTALL_FAILED : IDS_STR_UNINSTALL_FAILED,
+        MB_ICONERROR | MB_OK);
     return 1;
   }
 
@@ -812,7 +805,8 @@ int uninstall(bool silent) {
   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
   HKEY hKey;
   std::wstring profile = L"hans";
-  LSTATUS ret = RegOpenKeyW(per_user_root(), per_user_subkey(KEY).c_str(), &hKey);
+  LSTATUS ret =
+      RegOpenKeyW(per_user_root(), per_user_subkey(KEY).c_str(), &hKey);
   if (ret == ERROR_SUCCESS) {
     DWORD type = 0;
     DWORD data = 0;

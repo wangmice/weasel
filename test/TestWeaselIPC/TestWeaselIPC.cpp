@@ -55,9 +55,8 @@ int _tmain(int argc, _TCHAR* argv[]) {
 }
 
 bool launch_server() {
-  const INT_PTR ret = reinterpret_cast<INT_PTR>(
-      ShellExecuteW(nullptr, L"open", L"TestWeaselIPC.exe", L"/start", nullptr,
-                    SW_NORMAL));
+  const INT_PTR ret = reinterpret_cast<INT_PTR>(ShellExecuteW(
+      nullptr, L"open", L"TestWeaselIPC.exe", L"/start", nullptr, SW_NORMAL));
   if (ret <= 32) {
     std::cerr << "failed to launch server." << std::endl;
     return false;
@@ -207,8 +206,7 @@ int selftest_main() {
   check(handler->FindSession(1) == 1, "K20: FindSession(1)");
   check(handler->FindSession(3) == 0, "K20: FindSession(unknown) is 0");
 
-  BOOL handled =
-      handler->ProcessKeyEvent(weasel::KeyEvent(L'a', 0), 1, eat);
+  BOOL handled = handler->ProcessKeyEvent(weasel::KeyEvent(L'a', 0), 1, eat);
   check(handled == TRUE, "K20: ProcessKeyEvent handled");
   check(eaten.find(L"Greeting=Hello") != std::wstring::npos,
         "K20: ProcessKeyEvent drives the eat callback");

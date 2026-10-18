@@ -52,8 +52,8 @@ static bool key_exists(const wchar_t* path) {
 
 static void plant(const wchar_t* path) {
   HKEY hKey;
-  if (RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_ALL_ACCESS,
-                      NULL, &hKey, NULL) != ERROR_SUCCESS)
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_ALL_ACCESS, NULL,
+                      &hKey, NULL) != ERROR_SUCCESS)
     return;
   RegSetValueExW(hKey, L"probe", 0, REG_SZ, (const BYTE*)L"x",
                  2 * sizeof(WCHAR));
@@ -74,8 +74,8 @@ class ScopedProfileEnvironment {
     while (required != 0) {
       std::vector<wchar_t> buffer(required);
       SetLastError(ERROR_SUCCESS);
-      const DWORD copied = GetEnvironmentVariableW(
-          L"TEXTSERVICE_PROFILE", buffer.data(), required);
+      const DWORD copied = GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE",
+                                                   buffer.data(), required);
       if (copied == 0) {
         existed_ = GetLastError() != ERROR_ENVVAR_NOT_FOUND;
         value_.clear();
@@ -111,8 +111,9 @@ static void test_profile_registration_boundaries() {
   check(SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", long_profile.c_str()) !=
             FALSE,
         "install long TEXTSERVICE_PROFILE test value");
-  check(ReadTextServiceProfileEnvironment() == long_profile,
-        "TEXTSERVICE_PROFILE longer than 100 WCHARs is read without truncation");
+  check(
+      ReadTextServiceProfileEnvironment() == long_profile,
+      "TEXTSERVICE_PROFILE longer than 100 WCHARs is read without truncation");
 
   check(SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", L"hant") != FALSE,
         "install supported profile test value");

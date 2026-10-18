@@ -10,7 +10,8 @@
 namespace weasel {
 
 // Never synchronously send UI work from an IPC worker: the UI thread may be
-// waiting for the worker's API mutex. Heap snapshots transfer on successful post.
+// waiting for the worker's API mutex. Heap snapshots transfer on successful
+// post.
 constexpr UINT WM_WEASEL_REFRESH = WM_APP + 0x1000;
 constexpr UINT WM_WEASEL_REDRAW = WM_APP + 0x1001;
 constexpr UINT WM_WEASEL_MOVETO = WM_APP + 0x1002;
@@ -127,7 +128,7 @@ class WeaselPanel {
   bool hide_candidates;
 
   int m_offsetys[MAX_CANDIDATES_COUNT] = {};  // offset y for candidates when
-                                         // vertical layout over bottom
+                                              // vertical layout over bottom
   int m_offsety_preedit = 0;
   int m_offsety_aux = 0;
   bool m_istorepos = false;

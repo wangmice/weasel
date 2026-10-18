@@ -86,18 +86,17 @@ void test_generation_rollover_preserves_old_snapshot() {
   const uint64_t failed_generation = first ? first->generation : 0;
 
   check(SUCCEEDED(resources.RecreateAfterDeviceLoss(failed_generation,
-                                                     replacement)) &&
+                                                    replacement)) &&
             valid_snapshot(replacement),
         "device loss publishes a fresh complete generation");
-  check(first && replacement &&
-            replacement->generation != first->generation &&
+  check(first && replacement && replacement->generation != first->generation &&
             replacement.get() != first.get(),
         "replacement generation differs from failed generation");
   check(valid_snapshot(first),
         "old snapshot stays alive until its owner releases it");
 
   check(SUCCEEDED(resources.RecreateAfterDeviceLoss(failed_generation,
-                                                     stale_retry)) &&
+                                                    stale_retry)) &&
             stale_retry.get() == replacement.get(),
         "stale device-loss retry adopts the already-published generation");
 

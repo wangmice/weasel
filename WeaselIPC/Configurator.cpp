@@ -17,7 +17,7 @@ void Configurator::Store(Deserializer::KeyType const& key,
   // Store 只写入 p_config，守卫必须与之一致：
   // 有 context 无 config 的调用方（config 键出现在响应中）会空指针崩溃
   if (!m_pTarget->p_config || key.size() < 2)
-      return;
+    return;
   bool bool_value = (!value.empty() && value != L"0");
   if (key[1] == L"inline_preedit") {
     m_pTarget->p_config->inline_preedit = bool_value;

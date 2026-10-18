@@ -58,41 +58,45 @@ static void testKeyInfoPacking() {
 static void testTranslateKeycode() {
   weasel::KeyEvent ev;
 
-  check(ConvertKeyEvent(VK_RETURN, mkLparam(0x1C, false, false), nullState,
-                        ev) &&
-            ev.keycode == ibus::Return && ev.mask == ibus::NULL_MASK,
-        "translate: Enter -> Return, no mask");
+  check(
+      ConvertKeyEvent(VK_RETURN, mkLparam(0x1C, false, false), nullState, ev) &&
+          ev.keycode == ibus::Return && ev.mask == ibus::NULL_MASK,
+      "translate: Enter -> Return, no mask");
 
-  check(ConvertKeyEvent(VK_RETURN, mkLparam(0x1C, true, false), nullState, ev) &&
-            ev.keycode == ibus::KP_Enter,
-        "translate: extended Enter -> KP_Enter");
+  check(
+      ConvertKeyEvent(VK_RETURN, mkLparam(0x1C, true, false), nullState, ev) &&
+          ev.keycode == ibus::KP_Enter,
+      "translate: extended Enter -> KP_Enter");
 
-  check(ConvertKeyEvent(VK_SHIFT, mkLparam(0x2A, false, false), nullState, ev) &&
-            ev.keycode == ibus::Shift_L,
-        "translate: left shift scan 0x2A -> Shift_L");
+  check(
+      ConvertKeyEvent(VK_SHIFT, mkLparam(0x2A, false, false), nullState, ev) &&
+          ev.keycode == ibus::Shift_L,
+      "translate: left shift scan 0x2A -> Shift_L");
 
-  check(ConvertKeyEvent(VK_SHIFT, mkLparam(0x36, false, false), nullState, ev) &&
-            ev.keycode == ibus::Shift_R,
-        "translate: right shift scan 0x36 -> Shift_R");
+  check(
+      ConvertKeyEvent(VK_SHIFT, mkLparam(0x36, false, false), nullState, ev) &&
+          ev.keycode == ibus::Shift_R,
+      "translate: right shift scan 0x36 -> Shift_R");
 
   check(ConvertKeyEvent(VK_CONTROL, mkLparam(0x1D, false, false), nullState,
                         ev) &&
             ev.keycode == ibus::Control_L,
         "translate: Control -> Control_L");
 
-  check(ConvertKeyEvent(VK_CONTROL, mkLparam(0x1D, true, false), nullState,
-                        ev) &&
-            ev.keycode == ibus::Control_R,
-        "translate: extended Control -> Control_R");
+  check(
+      ConvertKeyEvent(VK_CONTROL, mkLparam(0x1D, true, false), nullState, ev) &&
+          ev.keycode == ibus::Control_R,
+      "translate: extended Control -> Control_R");
 
-  check(ConvertKeyEvent(VK_SPACE, mkLparam(0x39, false, false), nullState, ev) &&
-            ev.keycode == ibus::space,
-        "translate: Space -> space");
+  check(
+      ConvertKeyEvent(VK_SPACE, mkLparam(0x39, false, false), nullState, ev) &&
+          ev.keycode == ibus::space,
+      "translate: Space -> space");
 
-  check(ConvertKeyEvent(VK_ESCAPE, mkLparam(0x01, false, true), nullState, ev) &&
-            ev.keycode == ibus::Escape &&
-            (ev.mask & ibus::RELEASE_MASK),
-        "translate: Esc up -> Escape + RELEASE_MASK");
+  check(
+      ConvertKeyEvent(VK_ESCAPE, mkLparam(0x01, false, true), nullState, ev) &&
+          ev.keycode == ibus::Escape && (ev.mask & ibus::RELEASE_MASK),
+      "translate: Esc up -> Escape + RELEASE_MASK");
 }
 
 static void testMasks() {
@@ -129,8 +133,7 @@ static void testMasks() {
         "mask: caps down while unlocked -> LOCK_MASK set");
 
   check(ConvertKeyEvent(VK_CAPITAL, mkLparam(0x3A, false, true), st, ev) &&
-            (ev.mask & ibus::LOCK_MASK) &&
-            (ev.mask & ibus::RELEASE_MASK),
+            (ev.mask & ibus::LOCK_MASK) && (ev.mask & ibus::RELEASE_MASK),
         "mask: caps up keeps LOCK_MASK (no revert on release)");
 }
 
@@ -165,8 +168,7 @@ static void testPendingTestKeyPairing() {
   pending.Arm('A', 200);
   check(!pending.ConsumePairedKey('B'),
         "pairing: different vkey is not treated as the old pair");
-  check(!pending.pending,
-        "pairing: different key ends the stale Test cycle");
+  check(!pending.pending, "pairing: different key ends the stale Test cycle");
 
   pending.Arm(VK_BACK, 300);
   check(!pending.IsDuplicateTest(VK_BACK, 301),

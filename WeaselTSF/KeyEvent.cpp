@@ -64,8 +64,8 @@ bool ConvertKeyEvent(UINT vkey,
   }
   if (ret == 2 && IS_HIGH_SURROGATE(buf[0]) && IS_LOW_SURROGATE(buf[1])) {
     // 代理对合成完整码位，与单字符路径同为“码位即 keycode”语义
-    result.keycode = 0x10000u + ((UINT(buf[0]) - 0xD800u) << 10) +
-                     (UINT(buf[1]) - 0xDC00u);
+    result.keycode =
+        0x10000u + ((UINT(buf[0]) - 0xD800u) << 10) + (UINT(buf[1]) - 0xDC00u);
     return true;
   }
 

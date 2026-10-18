@@ -67,7 +67,8 @@ DictManagementDialog::DictManagementDialog() {
   RimeModule* levers = rime_get_api()->find_module("levers");
   api_ = levers ? (RimeLeversApi*)levers->get_api() : nullptr;
   if (!api_) {
-    LOG(ERROR) << "Rime levers module not found; dict management is unavailable.";
+    LOG(ERROR)
+        << "Rime levers module not found; dict management is unavailable.";
   }
 }
 

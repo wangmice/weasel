@@ -34,17 +34,19 @@ struct ClientSessionKeySelfTest {
     const auto first = weasel::ClientTestAccess::SessionKeyValue(client);
     require(first.has_value() && generated == 1,
             "first logical session owns exactly one generated key");
-    require(weasel::ClientTestAccess::EnsureSessionKey(client) && generated == 1,
-            "repeated ensure preserves the key across retries");
+    require(
+        weasel::ClientTestAccess::EnsureSessionKey(client) && generated == 1,
+        "repeated ensure preserves the key across retries");
 
     require(weasel::ClientTestAccess::WriteClientInfo(client),
             "START_SESSION metadata stages with a valid key");
     const auto* body = reinterpret_cast<const wchar_t*>(
         weasel::ClientTestAccess::Channel(client).SendBuffer());
     const std::wstring staged = body ? std::wstring(body) : std::wstring();
-    require(staged.find(L"session.client_key=00000000000000000000000000000001\n") !=
-                std::wstring::npos,
-            "staged metadata carries the canonical SessionKey");
+    require(
+        staged.find(L"session.client_key=00000000000000000000000000000001\n") !=
+            std::wstring::npos,
+        "staged metadata carries the canonical SessionKey");
 
     weasel::ClientTestAccess::Channel(client).ClearBufferStream();
     require(weasel::ClientTestAccess::WriteClientInfo(client),
@@ -53,10 +55,11 @@ struct ClientSessionKeySelfTest {
         weasel::ClientTestAccess::Channel(client).SendBuffer());
     const std::wstring retry =
         retry_body ? std::wstring(retry_body) : std::wstring();
-    require(retry.find(L"session.client_key=00000000000000000000000000000001\n") !=
+    require(
+        retry.find(L"session.client_key=00000000000000000000000000000001\n") !=
                 std::wstring::npos &&
-                generated == 1,
-            "retry sends the exact same SessionKey");
+            generated == 1,
+        "retry sends the exact same SessionKey");
 
     // Recovery calls Disconnect only after IsSessionActive() is false. That is
     // a transport reset, not a logical-session boundary: the key must survive

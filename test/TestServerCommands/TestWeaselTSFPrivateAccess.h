@@ -8,9 +8,8 @@ class WeaselTSFTestAccess {
 
   static bool HasPendingUI(const WeaselTSF& tsf) { return tsf._hasPendingUI; }
 
-  static bool ProcessKeyEventWithRecovery(
-      WeaselTSF& tsf,
-      const weasel::KeyEvent& key_event) {
+  static bool ProcessKeyEventWithRecovery(WeaselTSF& tsf,
+                                          const weasel::KeyEvent& key_event) {
     return tsf._ProcessKeyEventWithRecovery(key_event);
   }
 };

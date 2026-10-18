@@ -84,7 +84,9 @@ class PipeChannelBase {
   /* Try to connect for one time */
   HANDLE _TryConnect(const wchar_t* name);
   size_t _WritePipe(HANDLE p, size_t s, char* b, ULONGLONG deadline = 0);
-  void _Receive(HANDLE pipe, LPVOID msg, size_t rec_len,
+  void _Receive(HANDLE pipe,
+                LPVOID msg,
+                size_t rec_len,
                 ULONGLONG deadline = 0);
   /* Try to get a connection from client */
   HANDLE _ConnectServerPipe(std::wstring& pn);
@@ -154,9 +156,7 @@ class PipeChannel : public PipeChannelBase {
   bool Connect(DWORD timeout_ms) {
     return _Ensure(GetTickCount64() + timeout_ms);
   }
-  bool Connected() const {
-    return !_Invalid(_GetPipeHandle()->handle);
-  }
+  bool Connected() const { return !_Invalid(_GetPipeHandle()->handle); }
   // serial of the latest response body received on this thread; changes
   // iff the buffer now holds an unread response
   UINT64 ResponseSerial() { return _GetContext()->resp_serial; }
@@ -177,8 +177,7 @@ class PipeChannel : public PipeChannelBase {
     return *this;
   }
 
-  _TyRes Transact(Msg& msg,
-                  DWORD timeout_ms = kDefaultTransactionTimeoutMs) {
+  _TyRes Transact(Msg& msg, DWORD timeout_ms = kDefaultTransactionTimeoutMs) {
     const ULONGLONG deadline = GetTickCount64() + timeout_ms;
     PipeHandleOwner* phandle = _GetPipeHandle();
     if (!_Ensure(deadline)) {

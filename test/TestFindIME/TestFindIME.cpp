@@ -80,10 +80,12 @@ int main() {
   set_layout(L"E0210804", L"Weasel.IME");
   set_layout(L"E0220804", L"other.ime");
   root = open_test_root(false);
-  check(FindIMEUnderKey(root, kLang, L"weasel.ime") == (HKL)(DWORD_PTR)0xE0210804,
-        "case-insensitive first hit, other.ime skipped");
-  check(FindIMEUnderKey(root, kLang, L"other.ime") == (HKL)(DWORD_PTR)0xE0220804,
-        "different ime file matches its own layout");
+  check(
+      FindIMEUnderKey(root, kLang, L"weasel.ime") == (HKL)(DWORD_PTR)0xE0210804,
+      "case-insensitive first hit, other.ime skipped");
+  check(
+      FindIMEUnderKey(root, kLang, L"other.ime") == (HKL)(DWORD_PTR)0xE0220804,
+      "different ime file matches its own layout");
   RegCloseKey(root);
 
   // 4) a different LANGID scans its own suffix range
@@ -95,7 +97,8 @@ int main() {
   // 5) highest slot boundary is included in the scan
   set_layout(L"E0FF0804", L"boundary.ime");
   root = open_test_root(false);
-  check(FindIMEUnderKey(root, kLang, L"boundary.ime") == (HKL)(DWORD_PTR)0xE0FF0804,
+  check(FindIMEUnderKey(root, kLang, L"boundary.ime") ==
+            (HKL)(DWORD_PTR)0xE0FF0804,
         "E0FF0804 (last slot) is scanned");
   RegCloseKey(root);
 

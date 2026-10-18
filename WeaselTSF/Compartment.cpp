@@ -101,8 +101,7 @@ BOOL WeaselTSF::_IsKeyboardDisabled() {
   com_ptr<ITfContext> pContext;
 
   // 与原实现一致：无焦点文档/无 top context 视为禁用（不缓存：瞬态）
-  if ((_pThreadMgr->GetFocus(&pDocMgrFocus) != S_OK) ||
-      (pDocMgrFocus == NULL))
+  if ((_pThreadMgr->GetFocus(&pDocMgrFocus) != S_OK) || (pDocMgrFocus == NULL))
     return TRUE;
   if ((pDocMgrFocus->GetTop(&pContext) != S_OK) || (pContext == NULL))
     return TRUE;
@@ -154,8 +153,7 @@ BOOL WeaselTSF::_IsKeyboardDisabled() {
   return fDisabled;
 }
 
-void WeaselTSF::_RetargetKeyboardDisabledSinks(
-    com_ptr<ITfContext> pContext) {
+void WeaselTSF::_RetargetKeyboardDisabledSinks(com_ptr<ITfContext> pContext) {
   using namespace std::placeholders;
 
   if (_pKeyboardDisabledSink)
@@ -168,8 +166,8 @@ void WeaselTSF::_RetargetKeyboardDisabledSinks(
   if (pContext == nullptr)
     return;
 
-  auto callback = std::bind(&WeaselTSF::_OnKeyboardDisabledCompartmentChange,
-                            this, _1);
+  auto callback =
+      std::bind(&WeaselTSF::_OnKeyboardDisabledCompartmentChange, this, _1);
   if (!_pKeyboardDisabledSink)
     _pKeyboardDisabledSink.Attach(new CCompartmentEventSink(callback));
   if (!_pEmptyContextSink)

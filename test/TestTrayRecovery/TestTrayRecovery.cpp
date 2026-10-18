@@ -80,8 +80,9 @@ void test_taskbar_recreation_readds_visible_icon() {
 
   tray.OnTaskbarCreated(0, 0);
 
-  check(tray.AddCalls() == 1,
-        "TaskbarCreated re-adds an icon that was visible before Explorer reset");
+  check(
+      tray.AddCalls() == 1,
+      "TaskbarCreated re-adds an icon that was visible before Explorer reset");
   check(!tray.Pending(), "successful taskbar recovery clears pending state");
   check(!tray.Hidden() && !tray.Removed(),
         "successful taskbar recovery keeps visible shell state");
@@ -107,8 +108,9 @@ void test_pending_hidden_failed_add_is_retried() {
 
   tray.OnTaskbarCreated(0, 0);
 
-  check(tray.AddCalls() == 1,
-        "pending icon is retried even when a prior failed add marked it hidden");
+  check(
+      tray.AddCalls() == 1,
+      "pending icon is retried even when a prior failed add marked it hidden");
   check(!tray.Pending(), "successful pending retry clears pending state");
   check(!tray.Hidden() && !tray.Removed(),
         "successful pending retry restores installed shell state");
@@ -123,11 +125,13 @@ void test_failed_recovery_stays_pending_and_retries() {
   tray.OnTaskbarCreated(0, 0);
   check(tray.AddCalls() == 1, "first taskbar recovery attempt reaches NIM_ADD");
   check(tray.Pending(), "failed taskbar recovery remains pending");
-  check(!tray.Hidden() && !tray.Removed(),
-        "failed recovery does not turn a desired-visible icon into hidden state");
+  check(
+      !tray.Hidden() && !tray.Removed(),
+      "failed recovery does not turn a desired-visible icon into hidden state");
 
   tray.OnTaskbarCreated(0, 0);
-  check(tray.AddCalls() == 2, "later taskbar recreation retries pending recovery");
+  check(tray.AddCalls() == 2,
+        "later taskbar recreation retries pending recovery");
   check(!tray.Pending(), "successful retry clears pending recovery state");
 }
 

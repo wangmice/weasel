@@ -20,7 +20,9 @@ static void check(bool ok, const char* what) {
   }
 }
 
-static bool read_reg_sz(HKEY root, const wchar_t* sub, const wchar_t* value,
+static bool read_reg_sz(HKEY root,
+                        const wchar_t* sub,
+                        const wchar_t* value,
                         std::wstring& out) {
   HKEY hKey;
   if (RegOpenKeyW(root, sub, &hKey) != ERROR_SUCCESS)
@@ -50,9 +52,8 @@ int main() {
 
   // 2) HKEY_USERS\<sid> shows the same weasel config as HKCU (read-only)
   std::wstring via_hkcu, via_hku;
-  bool has_hkcu =
-      read_reg_sz(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
-                  L"RimeUserDir", via_hkcu);
+  bool has_hkcu = read_reg_sz(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
+                              L"RimeUserDir", via_hkcu);
   bool has_hku = read_reg_sz(per_user_root(),
                              per_user_subkey(L"Software\\Rime\\Weasel").c_str(),
                              L"RimeUserDir", via_hku);
@@ -61,26 +62,26 @@ int main() {
 
   // 3) a write through the redirected path lands in the real user hive
   HKEY hKey;
-  RegCreateKeyW(per_user_root(), per_user_subkey(L"Software\\Rime\\WeaselTest").c_str(), &hKey);
+  RegCreateKeyW(per_user_root(),
+                per_user_subkey(L"Software\\Rime\\WeaselTest").c_str(), &hKey);
   RegSetValueExW(hKey, L"Probe", 0, REG_SZ, (const BYTE*)L"ok",
                  3 * sizeof(WCHAR));
   RegCloseKey(hKey);
   std::wstring probe;
-  check(read_reg_sz(HKEY_CURRENT_USER, L"Software\\Rime\\WeaselTest",
-                    L"Probe", probe) &&
+  check(read_reg_sz(HKEY_CURRENT_USER, L"Software\\Rime\\WeaselTest", L"Probe",
+                    probe) &&
             probe == L"ok",
         "redirected write is visible through HKCU");
   RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Rime\\WeaselTest");
 
   // 4) redirected default dir resolves the invoking user's %APPDATA%
   std::wstring appdata_hku;
-  bool got_env = read_reg_sz(
-      HKEY_USERS, per_user_subkey(L"Volatile Environment").c_str(),
-      L"APPDATA", appdata_hku);
+  bool got_env =
+      read_reg_sz(HKEY_USERS, per_user_subkey(L"Volatile Environment").c_str(),
+                  L"APPDATA", appdata_hku);
   WCHAR expand[MAX_PATH] = {0};
   ExpandEnvironmentStringsW(L"%APPDATA%", expand, MAX_PATH);
-  check(got_env && per_user_default_dir() ==
-                       std::wstring(expand) + L"\\Rime",
+  check(got_env && per_user_default_dir() == std::wstring(expand) + L"\\Rime",
         "redirected default dir is the invoking user's %APPDATA%\\Rime");
 
   // 5) without redirection everything addresses HKCU directly
@@ -104,8 +105,7 @@ int main() {
   wchar_t bad[64];
   swprintf_s(bad, L"/i /origsid:..\\Software");
   apply_orig_sid_param(bad);
-  check(!per_user_redirected(),
-        "malformed sid (path injection) rejected");
+  check(!per_user_redirected(), "malformed sid (path injection) rejected");
 
   // 8) relaunch helper appends the parameter
   std::wstring params = with_orig_sid_param(L"/i");

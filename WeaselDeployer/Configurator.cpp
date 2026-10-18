@@ -285,7 +285,8 @@ int Configurator::SyncUserData() {
   int retval = 0;
   {
     // 失败或异常退出本作用域时同样恢复服务端；
-    // EndMaintenance 由析构执行，保持在 CloseHandle 之后（先释放部署互斥再唤醒服务）
+    // EndMaintenance 由析构执行，保持在 CloseHandle
+    // 之后（先释放部署互斥再唤醒服务）
     MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     if (!rime->sync_user_data()) {

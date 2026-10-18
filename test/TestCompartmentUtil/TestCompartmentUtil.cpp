@@ -119,7 +119,9 @@ class StubThreadMgr : public ITfThreadMgr {
   }
   STDMETHODIMP GetFocus(ITfDocumentMgr**) override { return E_NOTIMPL; }
   STDMETHODIMP SetFocus(ITfDocumentMgr*) override { return E_NOTIMPL; }
-  STDMETHODIMP AssociateFocus(HWND, ITfDocumentMgr*, ITfDocumentMgr**) override {
+  STDMETHODIMP AssociateFocus(HWND,
+                              ITfDocumentMgr*,
+                              ITfDocumentMgr**) override {
     return E_NOTIMPL;
   }
   STDMETHODIMP IsThreadFocus(BOOL*) override { return E_NOTIMPL; }
@@ -135,7 +137,9 @@ class StubThreadMgr : public ITfThreadMgr {
 };
 
 static const GUID kGuid = {
-    0x1cbd126d, 0x3f0e, 0x43af,
+    0x1cbd126d,
+    0x3f0e,
+    0x43af,
     {0xa1, 0x1b, 0x76, 0xf6, 0xb5, 0x5a, 0x11, 0x4d}};  // scratch GUID
 
 int main() {
@@ -184,14 +188,14 @@ int main() {
     if (SUCCEEDED(hr)) {
       TfClientId cid = 0;
       ptm->Activate(&cid);
-      check(SetCompartmentDWORD(ptm, cid, 0x42,
-                                GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION) ==
-                S_OK,
+      check(SetCompartmentDWORD(
+                ptm, cid, 0x42,
+                GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION) == S_OK,
             "real msctf: set -> S_OK");
       DWORD got = 0;
-      check(GetCompartmentDWORD(ptm, cid, got,
-                                GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION) ==
-                S_OK &&
+      check(GetCompartmentDWORD(
+                ptm, cid, got,
+                GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION) == S_OK &&
                 got == 0x42,
             "real msctf: round-trip S_OK / 0x42");
       ptm->Deactivate();

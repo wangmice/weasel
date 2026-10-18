@@ -21,9 +21,7 @@ class OwnedBackend : public weasel::RequestHandler {
     sessions.insert(id);
     return id;
   }
-  DWORD FindSession(DWORD id) override {
-    return sessions.count(id) ? id : 0;
-  }
+  DWORD FindSession(DWORD id) override { return sessions.count(id) ? id : 0; }
   bool RespondSession(DWORD id, EatLine) override {
     return sessions.count(id) != 0;
   }
@@ -84,8 +82,9 @@ struct ProcessOwnedSessionSelfTest {
             "a live key cannot be adopted by a different process generation");
 
     router.StartMaintenance();
-    require(backend.sessions.empty(),
-            "maintenance clears backend sessions and lifecycle indexes together");
+    require(
+        backend.sessions.empty(),
+        "maintenance clears backend sessions and lifecycle indexes together");
     router.EndMaintenance();
     router.SetCurrentOwner({q});
     const DWORD after_maintenance = router.AddSession(shared_key.data());

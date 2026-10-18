@@ -56,9 +56,9 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
 
   // Resolve immutable transport metadata for the worker currently executing
   // this handler. The first request discovers it from the worker registry and
-  // the kernel pipe handle; every later request on that worker uses thread-local
-  // immutable state, keeping the healthy key path free of the worker mutex and
-  // worker-map scans.
+  // the kernel pipe handle; every later request on that worker uses
+  // thread-local immutable state, keeping the healthy key path free of the
+  // worker mutex and worker-map scans.
   std::optional<ConnectionContext> CurrentConnectionContext() {
     if (auto* cached = current_connection_context_.get())
       return *cached;

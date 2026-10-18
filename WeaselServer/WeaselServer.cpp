@@ -148,9 +148,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     LOG(ERROR) << "failed to retain the running WeaselServer process";
     return 1;
   }
-  HWND running_window = running_server
-                            ? FindWindowW(nullptr, WEASEL_IPC_WINDOW)
-                            : nullptr;
+  HWND running_window =
+      running_server ? FindWindowW(nullptr, WEASEL_IPC_WINDOW) : nullptr;
 
   // Restart if already running. If the old window already exists while the
   // pipe listener is still starting, request shutdown through that exact
@@ -165,7 +164,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
       // barrier rather than reverting to the old pipe-only race.
       if (!running_server) {
         if (!OpenRunningServerProcess(running_server) || !running_server) {
-          LOG(ERROR) << "connected to WeaselServer but could not retain its process";
+          LOG(ERROR)
+              << "connected to WeaselServer but could not retain its process";
           client.Disconnect();
           return 1;
         }
@@ -203,7 +203,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
             if (quit)
               return 0;
           } else {
-            LOG(ERROR) << "WeaselServer pipe is not ready and window shutdown failed, error: "
+            LOG(ERROR) << "WeaselServer pipe is not ready and window shutdown "
+                          "failed, error: "
                        << GetLastError();
             CloseHandle(running_server);
             return 1;

@@ -17,12 +17,9 @@ const std::map<std::wstring, Deserializer::Factory>& GetFactories() {
   static const std::map<std::wstring, Deserializer::Factory> factories = {
       // TODO: extend the parser's functionality in the future by defining
       // more actions here
-      {L"action", ActionLoader::Create},
-      {L"commit", Committer::Create},
-      {L"ctx", ContextUpdater::Create},
-      {L"status", StatusUpdater::Create},
-      {L"config", Configurator::Create},
-      {L"style", Styler::Create}};
+      {L"action", ActionLoader::Create}, {L"commit", Committer::Create},
+      {L"ctx", ContextUpdater::Create},  {L"status", StatusUpdater::Create},
+      {L"config", Configurator::Create}, {L"style", Styler::Create}};
   return factories;
 }
 }  // namespace

@@ -10,25 +10,33 @@ namespace {
 using weasel::tsf::BuildResponseApplyPlan;
 using weasel::tsf::MakeResponseApplySnapshot;
 
-static_assert([] {
-  const auto plan = BuildResponseApplyPlan(false, true, false);
-  return !plan.end_existing_composition && !plan.start_composition;
-}(), "commit-only response must not create a transient composition");
+static_assert(
+    [] {
+      const auto plan = BuildResponseApplyPlan(false, true, false);
+      return !plan.end_existing_composition && !plan.start_composition;
+    }(),
+    "commit-only response must not create a transient composition");
 
-static_assert([] {
-  const auto plan = BuildResponseApplyPlan(false, true, true);
-  return !plan.end_existing_composition && plan.start_composition;
-}(), "commit plus new preedit starts exactly the replacement composition");
+static_assert(
+    [] {
+      const auto plan = BuildResponseApplyPlan(false, true, true);
+      return !plan.end_existing_composition && plan.start_composition;
+    }(),
+    "commit plus new preedit starts exactly the replacement composition");
 
-static_assert([] {
-  const auto plan = BuildResponseApplyPlan(true, true, true);
-  return plan.end_existing_composition && plan.start_composition;
-}(), "commit replaces an existing composition when Rime keeps composing");
+static_assert(
+    [] {
+      const auto plan = BuildResponseApplyPlan(true, true, true);
+      return plan.end_existing_composition && plan.start_composition;
+    }(),
+    "commit replaces an existing composition when Rime keeps composing");
 
-static_assert([] {
-  const auto plan = BuildResponseApplyPlan(true, true, false);
-  return plan.end_existing_composition && !plan.start_composition;
-}(), "commit ends an existing composition without starting a replacement");
+static_assert(
+    [] {
+      const auto plan = BuildResponseApplyPlan(true, true, false);
+      return plan.end_existing_composition && !plan.start_composition;
+    }(),
+    "commit ends an existing composition without starting a replacement");
 
 bool ResponseSnapshotsAreIsolated() {
   auto first = std::make_shared<weasel::Context>();
@@ -37,8 +45,8 @@ bool ResponseSnapshotsAreIsolated() {
   first_status.composing = true;
   weasel::Config first_config;
 
-  auto first_snapshot = MakeResponseApplySnapshot(
-      L"commit-a", first, first_status, first_config);
+  auto first_snapshot =
+      MakeResponseApplySnapshot(L"commit-a", first, first_status, first_config);
 
   auto second = std::make_shared<weasel::Context>();
   second->preedit.str = L"second";

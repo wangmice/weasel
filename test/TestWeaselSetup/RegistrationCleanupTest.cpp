@@ -42,8 +42,8 @@ struct RegistrationCleanupTestRunner {
     }
     RegCloseKey(key);
 
-    if (!weasel::setup::detail::DeleteRegistryTreeInView(
-            HKEY_CURRENT_USER, target, 0)) {
+    if (!weasel::setup::detail::DeleteRegistryTreeInView(HKEY_CURRENT_USER,
+                                                         target, 0)) {
       RegDeleteTreeW(HKEY_CURRENT_USER, base.c_str());
       registration_cleanup_test_fail("helper reported deletion failure");
     }
@@ -58,21 +58,22 @@ struct RegistrationCleanupTestRunner {
       RegDeleteTreeW(HKEY_CURRENT_USER, base.c_str());
       registration_cleanup_test_fail("target tree survived recursive deletion");
     }
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, sibling.c_str(), 0, KEY_READ, &check) !=
-        ERROR_SUCCESS) {
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, sibling.c_str(), 0, KEY_READ,
+                      &check) != ERROR_SUCCESS) {
       RegDeleteTreeW(HKEY_CURRENT_USER, base.c_str());
       registration_cleanup_test_fail("sibling key was removed accidentally");
     }
     RegCloseKey(check);
 
-    if (!weasel::setup::detail::DeleteRegistryTreeInView(
-            HKEY_CURRENT_USER, target, 0)) {
+    if (!weasel::setup::detail::DeleteRegistryTreeInView(HKEY_CURRENT_USER,
+                                                         target, 0)) {
       RegDeleteTreeW(HKEY_CURRENT_USER, base.c_str());
       registration_cleanup_test_fail("missing target was not idempotent");
     }
 
     RegDeleteTreeW(HKEY_CURRENT_USER, base.c_str());
-    printf("[ok] registration cleanup removes only the requested nested tree\n");
+    printf(
+        "[ok] registration cleanup removes only the requested nested tree\n");
   }
 };
 

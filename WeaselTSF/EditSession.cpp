@@ -28,12 +28,11 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
 
   const bool trackedResponse =
       snapshot.identity.serial != weasel::tsf::kInvalidResponseSerial;
-  const auto epochDisposition = trackedResponse
-                                    ? weasel::tsf::ClassifyEpochDisposition(
-                                          snapshot.identity.engine_epoch,
-                                          _responseApplyQueue.CurrentEpoch(),
-                                          !commit.empty())
-                                    : weasel::tsf::EpochDisposition::ApplyState;
+  const auto epochDisposition =
+      trackedResponse ? weasel::tsf::ClassifyEpochDisposition(
+                            snapshot.identity.engine_epoch,
+                            _responseApplyQueue.CurrentEpoch(), !commit.empty())
+                      : weasel::tsf::EpochDisposition::ApplyState;
   if (epochDisposition == weasel::tsf::EpochDisposition::Drop)
     return S_OK;
 
@@ -161,8 +160,8 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
   if (status.composing && _IsComposingInContext(pContext)) {
     composition = _pComposition;
     if (config.inline_preedit) {
-      const HRESULT hr = _ShowInlinePreeditLocked(
-          ec, pContext, composition, context, pendingUIGeneration);
+      const HRESULT hr = _ShowInlinePreeditLocked(ec, pContext, composition,
+                                                  context, pendingUIGeneration);
       if (FAILED(hr)) {
         if (commitApplied)
           return recoverAfterCommit(hr);
@@ -189,6 +188,5 @@ STDMETHODIMP WeaselTSF::DoEditSession(TfEditCookie ec) {
   auto snapshot = weasel::tsf::MakeResponseApplySnapshot(
       std::move(_pendingCommit), _context, _status, _config);
   _pendingCommit.clear();
-  return _ApplyResponseSnapshot(ec, _pEditSessionContext,
-                                std::move(snapshot));
+  return _ApplyResponseSnapshot(ec, _pEditSessionContext, std::move(snapshot));
 }

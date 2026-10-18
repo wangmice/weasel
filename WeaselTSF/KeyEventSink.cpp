@@ -8,8 +8,7 @@ namespace {
 constexpr DWORD kInvalidSessionRecoveryTimeoutMs = 1000;
 }  // namespace
 
-bool WeaselTSF::_ProcessKeyEventWithRecovery(
-    const weasel::KeyEvent& keyEvent) {
+bool WeaselTSF::_ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent) {
   auto result = m_client.ProcessKeyEventEx(keyEvent);
 
   if (result == weasel::KeyEventResult::TransportNotDelivered) {
@@ -194,8 +193,7 @@ STDMETHODIMP WeaselTSF::OnKeyUp(ITfContext* pContext,
                                 LPARAM lParam,
                                 BOOL* pfEaten) {
   _testKeyDownPending.Clear();
-  if (_testKeyUpPending.ConsumePairedKey(
-          static_cast<std::uint32_t>(wParam))) {
+  if (_testKeyUpPending.ConsumePairedKey(static_cast<std::uint32_t>(wParam))) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);

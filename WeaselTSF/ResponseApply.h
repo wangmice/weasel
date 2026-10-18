@@ -37,8 +37,13 @@ inline ResponseApplySnapshot MakeResponseApplySnapshot(
     Status status,
     Config config,
     ResponseIdentity identity = {}) {
-  return {std::move(commit), std::move(context), std::move(status),
-          std::move(config), identity, ApplyProgress::BeforeCommit, {}};
+  return {std::move(commit),
+          std::move(context),
+          std::move(status),
+          std::move(config),
+          identity,
+          ApplyProgress::BeforeCommit,
+          {}};
 }
 
 }  // namespace weasel::tsf

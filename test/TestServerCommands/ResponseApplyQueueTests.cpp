@@ -102,9 +102,8 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
 static_assert(
     weasel::tsf::ShouldEndCandidateUIForContextHandoff(true, false),
     "cross-context composition handoff must end the old candidate UI");
-static_assert(
-    !weasel::tsf::ShouldEndCandidateUIForContextHandoff(true, true),
-    "same-context replacement may retain the candidate UI lifetime");
+static_assert(!weasel::tsf::ShouldEndCandidateUIForContextHandoff(true, true),
+              "same-context replacement may retain the candidate UI lifetime");
 static_assert(weasel::tsf::ShouldHandleCompositionContextEvent(true, true),
               "the owning context may inspect its live composition");
 static_assert(!weasel::tsf::ShouldHandleCompositionContextEvent(true, false),

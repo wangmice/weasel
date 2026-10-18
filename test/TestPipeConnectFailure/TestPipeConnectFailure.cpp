@@ -36,10 +36,10 @@ class ExposedClient : public weasel::PipeChannel<weasel::PipeMessage> {
 
 int main() {
   const std::wstring name = unique_pipe_name();
-  HANDLE server = ::CreateNamedPipeW(
-      name.c_str(), PIPE_ACCESS_DUPLEX,
-      PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 1024, 1024, 0,
-      nullptr);
+  HANDLE server =
+      ::CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX,
+                         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1,
+                         1024, 1024, 0, nullptr);
   check(server != INVALID_HANDLE_VALUE, "create byte-mode server pipe");
   if (server == INVALID_HANDLE_VALUE)
     return 1;

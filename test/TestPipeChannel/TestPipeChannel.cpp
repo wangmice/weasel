@@ -60,10 +60,8 @@ static bool connect_with_retry(ClientChannel& client, int ms = 2000) {
 /* Smoke test: request/response roundtrip through Listen + Transact */
 static void test_roundtrip() {
   std::wstring name = unique_pipe_name(L"smoke");
-  weasel::PipeServer* server =
-      new weasel::PipeServer(std::wstring(name));
-  auto handler = [](weasel::PipeMessage msg,
-                    weasel::PipeServer::Respond resp) {
+  weasel::PipeServer* server = new weasel::PipeServer(std::wstring(name));
+  auto handler = [](weasel::PipeMessage msg, weasel::PipeServer::Respond resp) {
     resp(msg.wParam + 1);
   };
   boost::thread listener([server, &handler] { server->Listen(handler); });
@@ -123,8 +121,8 @@ static void test_pipe_connected_race() {
   HANDLE instance = server.ExposedCreate();
   check(instance != INVALID_HANDLE_VALUE, "1.1: create instance");
 
-  HANDLE client = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                0, NULL, OPEN_EXISTING, 0, NULL);
+  HANDLE client = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                                NULL, OPEN_EXISTING, 0, NULL);
   check(client != INVALID_HANDLE_VALUE, "1.1: early client connect");
 
   bool accepted = false;
@@ -161,8 +159,7 @@ static void test_pipe_connected_race() {
  * other clients (regression for FlushFileBuffers under the api mutex) */
 static void test_hung_client_does_not_freeze_others() {
   std::wstring name = unique_pipe_name(L"flush");
-  weasel::PipeServer* server =
-      new weasel::PipeServer(std::wstring(name));
+  weasel::PipeServer* server = new weasel::PipeServer(std::wstring(name));
   std::mutex api_mutex;  // mirrors ServerImpl's request serialization
   auto handler = [&api_mutex](weasel::PipeMessage msg,
                               weasel::PipeServer::Respond resp) {
@@ -265,8 +262,8 @@ static void test_connect_bounded_wait() {
   HANDLE holder = INVALID_HANDLE_VALUE;
   for (int waited = 0; waited < 2000 && holder == INVALID_HANDLE_VALUE;
        waited += 25) {
-    holder = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                           NULL, OPEN_EXISTING, 0, NULL);
+    holder = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                           OPEN_EXISTING, 0, NULL);
     if (holder == INVALID_HANDLE_VALUE)
       Sleep(25);
   }
@@ -298,8 +295,9 @@ static void test_connect_bounded_wait() {
 static void test_ordered_shutdown() {
   std::wstring name = unique_pipe_name(L"sd");
   auto* server = new weasel::PipeServer(std::wstring(name));
-  auto handler = [](weasel::PipeMessage msg,
-                    weasel::PipeServer::Respond resp) { resp(1); };
+  auto handler = [](weasel::PipeMessage msg, weasel::PipeServer::Respond resp) {
+    resp(1);
+  };
   boost::thread listener([server, &handler] { server->Listen(handler); });
 
   ClientChannel client{std::wstring(name)};
@@ -340,8 +338,8 @@ static void test_finished_worker_is_reaped_without_new_connection() {
   HANDLE instance = server.ExposedCreate();
   check(instance != INVALID_HANDLE_VALUE, "1.5b: create server instance");
 
-  HANDLE client = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                0, NULL, OPEN_EXISTING, 0, NULL);
+  HANDLE client = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                                NULL, OPEN_EXISTING, 0, NULL);
   check(client != INVALID_HANDLE_VALUE, "1.5b: connect raw client");
   if (instance == INVALID_HANDLE_VALUE || client == INVALID_HANDLE_VALUE) {
     if (client != INVALID_HANDLE_VALUE)
@@ -468,8 +466,9 @@ static void test_failed_listener_backs_off() {
         "B17: unprefixed pipe name makes CreateNamedPipe fail");
 
   std::atomic<DWORD> listener_tid{0};
-  auto handler = [](weasel::PipeMessage msg,
-                    weasel::PipeServer::Respond resp) { resp(1); };
+  auto handler = [](weasel::PipeMessage msg, weasel::PipeServer::Respond resp) {
+    resp(1);
+  };
   boost::thread listener([&] {
     listener_tid = GetCurrentThreadId();
     server.Listen(handler);
@@ -478,8 +477,8 @@ static void test_failed_listener_backs_off() {
     Sleep(5);
 
   // open the thread handle before it exits: needed for GetThreadTimes later
-  HANDLE hthread =
-      ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, listener_tid.load());
+  HANDLE hthread = ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE,
+                                listener_tid.load());
   check(hthread != NULL, "B17: opened listener thread for CPU query");
 
   const int kSpinWindowMs = 600;
@@ -491,8 +490,7 @@ static void test_failed_listener_backs_off() {
 
   if (hthread) {
     FILETIME ft_create, ft_exit, ft_kernel, ft_user;
-    if (::GetThreadTimes(hthread, &ft_create, &ft_exit, &ft_kernel,
-                         &ft_user)) {
+    if (::GetThreadTimes(hthread, &ft_create, &ft_exit, &ft_kernel, &ft_user)) {
       auto to_ms = [](const FILETIME& ft) -> long long {
         ULARGE_INTEGER u;
         u.LowPart = ft.dwLowDateTime;
@@ -503,8 +501,8 @@ static void test_failed_listener_backs_off() {
       // a busy spin burns most of the spin window; a 50ms backoff burns ~0
       check(cpu_ms < kSpinWindowMs / 2,
             "B17: failing listener backs off instead of busy-spinning");
-      std::cout << "  listener CPU during " << kSpinWindowMs << "ms window: "
-                << cpu_ms << "ms" << std::endl;
+      std::cout << "  listener CPU during " << kSpinWindowMs
+                << "ms window: " << cpu_ms << "ms" << std::endl;
     } else {
       check(false, "B17: GetThreadTimes on listener thread");
     }
@@ -520,8 +518,9 @@ static void test_failed_listener_backs_off() {
 static void test_fast_disconnect_leaves_no_stale_worker() {
   std::wstring name = unique_pipe_name(L"b18");
   ExposedServer* server = new ExposedServer(std::wstring(name));
-  auto handler = [](weasel::PipeMessage msg,
-                    weasel::PipeServer::Respond resp) { resp(msg.wParam + 1); };
+  auto handler = [](weasel::PipeMessage msg, weasel::PipeServer::Respond resp) {
+    resp(msg.wParam + 1);
+  };
   boost::thread listener([server, &handler] { server->Listen(handler); });
 
   const int kRounds = 30;
@@ -763,8 +762,9 @@ static void test_failed_transact_leaves_no_staged_body() {
 static void test_thread_exit_closes_pipe_handle() {
   std::wstring name = unique_pipe_name(L"b6");
   ExposedServer* server = new ExposedServer(std::wstring(name));
-  auto handler = [](weasel::PipeMessage msg,
-                    weasel::PipeServer::Respond resp) { resp(msg.wParam + 1); };
+  auto handler = [](weasel::PipeMessage msg, weasel::PipeServer::Respond resp) {
+    resp(msg.wParam + 1);
+  };
   boost::thread listener([server, &handler] { server->Listen(handler); });
 
   // one shared channel on the main thread, as one ClientImpl serves every
@@ -809,11 +809,13 @@ static void test_thread_exit_closes_pipe_handle() {
         "B6: workers released after client threads exited");
 
   // direct leak evidence: each leaked TSS handle would keep count +1
-  bool handles_released = wait_until([&] {
-    DWORD now = 0;
-    return ::GetProcessHandleCount(::GetCurrentProcess(), &now) &&
-           now <= handles_before;
-  }, 5000);
+  bool handles_released = wait_until(
+      [&] {
+        DWORD now = 0;
+        return ::GetProcessHandleCount(::GetCurrentProcess(), &now) &&
+               now <= handles_before;
+      },
+      5000);
   check(handles_released, "B6: thread exit closed its pipe handle");
 
   listener.interrupt();
@@ -831,8 +833,9 @@ static void test_thread_exit_closes_pipe_handle() {
 static void test_listener_stop_cancels_blocked_accept() {
   std::wstring name = unique_pipe_name(L"listener_stop");
   ExposedServer server{std::wstring(name)};
-  auto handler = [](weasel::PipeMessage msg,
-                    weasel::PipeServer::Respond resp) { resp(msg.wParam); };
+  auto handler = [](weasel::PipeMessage msg, weasel::PipeServer::Respond resp) {
+    resp(msg.wParam);
+  };
   boost::thread listener([&] { server.Listen(handler); });
 
   // Let the listener reach its synchronous accept with no real client.
@@ -852,10 +855,10 @@ static void test_pending_write_timeout_is_ambiguous() {
   DWORD handles_before = 0;
   GetProcessHandleCount(GetCurrentProcess(), &handles_before);
   for (int round = 0; round < 8; ++round) {
-    HANDLE instance = CreateNamedPipeW(
-        name.c_str(), PIPE_ACCESS_DUPLEX,
-        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-        1, 1024, 1024, 0, NULL);
+    HANDLE instance =
+        CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX,
+                         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                         1, 1024, 1024, 0, NULL);
     check(instance != INVALID_HANDLE_VALUE, "write timeout: create small pipe");
     if (instance == INVALID_HANDLE_VALUE)
       return;
@@ -873,7 +876,8 @@ static void test_pending_write_timeout_is_ambiguous() {
                           error.request_may_have_been_delivered;
     }
     check(ambiguous_timeout && GetTickCount64() - started < 1000,
-          "write timeout: pending write is cancelled without claiming safe replay");
+          "write timeout: pending write is cancelled without claiming safe "
+          "replay");
     check(!client.Connected(), "write timeout: partial connection is closed");
     CloseHandle(instance);
   }
@@ -885,15 +889,16 @@ static void test_pending_write_timeout_is_ambiguous() {
 
 static void test_connect_and_reply_share_deadline() {
   const std::wstring name = unique_pipe_name(L"shared_deadline");
-  HANDLE instance = CreateNamedPipeW(
-      name.c_str(), PIPE_ACCESS_DUPLEX,
-      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-      1, 1024, 1024, 0, NULL);
-  check(instance != INVALID_HANDLE_VALUE, "deadline: create single-instance pipe");
+  HANDLE instance =
+      CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX,
+                       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1,
+                       1024, 1024, 0, NULL);
+  check(instance != INVALID_HANDLE_VALUE,
+        "deadline: create single-instance pipe");
   if (instance == INVALID_HANDLE_VALUE)
     return;
-  HANDLE holder = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
-                              0, NULL, OPEN_EXISTING, 0, NULL);
+  HANDLE holder = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                              NULL, OPEN_EXISTING, 0, NULL);
   check(holder != INVALID_HANDLE_VALUE, "deadline: occupy the only instance");
   if (holder == INVALID_HANDLE_VALUE) {
     CloseHandle(instance);
@@ -904,7 +909,8 @@ static void test_connect_and_reply_share_deadline() {
     Sleep(300);
     DisconnectNamedPipe(instance);
     CloseHandle(holder);
-    if (!ConnectNamedPipe(instance, NULL) && GetLastError() != ERROR_PIPE_CONNECTED)
+    if (!ConnectNamedPipe(instance, NULL) &&
+        GetLastError() != ERROR_PIPE_CONNECTED)
       return;
     weasel::PipeMessage request{};
     DWORD transferred = 0;
@@ -952,7 +958,8 @@ static void test_explicit_long_transaction_budget() {
     completed = client.Transact(request, 2500) == 42;
   } catch (...) {
   }
-  check(completed, "long budget: slow maintenance can use an explicit deadline");
+  check(completed,
+        "long budget: slow maintenance can use an explicit deadline");
   client.Disconnect();
   server.StopListener(listener);
   server.DrainWorkers();

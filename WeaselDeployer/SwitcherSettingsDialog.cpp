@@ -142,10 +142,7 @@ LRESULT SwitcherSettingsDialog::OnClose(UINT, WPARAM, LPARAM, BOOL&) {
   return 0;
 }
 
-LRESULT SwitcherSettingsDialog::OnTimer(UINT,
-                                        WPARAM wParam,
-                                        LPARAM,
-                                        BOOL&) {
+LRESULT SwitcherSettingsDialog::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL&) {
   if (schemata_timer_id_ == 0 || wParam != schemata_timer_id_ ||
       !schemata_process_) {
     return 0;
@@ -188,10 +185,7 @@ LRESULT SwitcherSettingsDialog::OnTimer(UINT,
   return 0;
 }
 
-LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD,
-                                               WORD,
-                                               HWND hWndCtl,
-                                               BOOL&) {
+LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
   if (schemata_process_)
     return 0;
 
@@ -199,15 +193,14 @@ LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD,
                              : L"Software\\Rime\\Weasel";
   // RegGetStringValue 内部走 RegGetValueW，保证结果以 NUL 结尾
   std::wstring weaselRoot;
-  if (RegGetStringValue(HKEY_LOCAL_MACHINE, hPath, L"WeaselRoot",
-                        weaselRoot) != ERROR_SUCCESS) {
+  if (RegGetStringValue(HKEY_LOCAL_MACHINE, hPath, L"WeaselRoot", weaselRoot) !=
+      ERROR_SUCCESS) {
     LOG(ERROR) << "Error reading registry value WeaselRoot.";
     return 0;
   }
   WCHAR parameters[MAX_PATH + 37];
   wcscpy_s<_countof(parameters)>(
-      parameters,
-      (L"/c \"" + weaselRoot + L"\\rime-install.bat\"").c_str());
+      parameters, (L"/c \"" + weaselRoot + L"\\rime-install.bat\"").c_str());
   SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO),
                            SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
                            hWndCtl,
@@ -235,7 +228,8 @@ LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD,
   schemata_process_ = cmd.hProcess;
   schemata_started_at_ = GetTickCount64();
   get_schemata_.EnableWindow(FALSE);
-  schemata_timer_id_ = SetTimer(kInstallSchemataTimerId, kInstallSchemataPollMs);
+  schemata_timer_id_ =
+      SetTimer(kInstallSchemataTimerId, kInstallSchemataPollMs);
   if (schemata_timer_id_ == 0) {
     LOG(ERROR) << "Unable to start asynchronous rime-install.bat monitor.";
     StopSchemataInstallMonitor();

@@ -349,8 +349,7 @@ bool WeaselTSF::_EnsureServerConnected() {
 
   // One absolute deadline bounds the complete first-key recovery sequence.
   // Connect and StartSession receive only the time still available from it.
-  const ULONGLONG deadline =
-      GetTickCount64() + kFirstKeyRecoveryTimeoutMs;
+  const ULONGLONG deadline = GetTickCount64() + kFirstKeyRecoveryTimeoutMs;
   const auto reconnect_until = [&](ULONGLONG recovery_deadline) {
     m_client.Disconnect();
 
@@ -385,11 +384,11 @@ bool WeaselTSF::_EnsureServerConnected() {
 
     std::wstring dir = _GetRootDir();
     std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
-    launch_started = QueueDllBackgroundTask(
-        [dir = std::move(dir),
-         launch_mutex_name = std::move(launch_mutex_name)]() mutable {
-          launch_server_serialized(std::move(dir), std::move(launch_mutex_name));
-        });
+    launch_started = QueueDllBackgroundTask([dir = std::move(dir),
+                                             launch_mutex_name = std::move(
+                                                 launch_mutex_name)]() mutable {
+      launch_server_serialized(std::move(dir), std::move(launch_mutex_name));
+    });
 #endif
   };
 
@@ -403,7 +402,7 @@ bool WeaselTSF::_EnsureServerConnected() {
     if (!remaining)
       break;
     Sleep(remaining < kFirstKeyRecoveryPollMs ? remaining
-                                             : kFirstKeyRecoveryPollMs);
+                                              : kFirstKeyRecoveryPollMs);
     if (reconnect_until(deadline)) {
       _reconnectRetry = 0;
       return true;

@@ -75,11 +75,8 @@ struct LayoutOrTipProfile {
   DWORD dwFlags;
   WCHAR szId[MAX_PATH];
 };
-using EnumEnabledLayoutOrTipFn = UINT(WINAPI*)(LPCWSTR,
-                                               LPCWSTR,
-                                               LPCWSTR,
-                                               LayoutOrTipProfile*,
-                                               UINT);
+using EnumEnabledLayoutOrTipFn =
+    UINT(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, LayoutOrTipProfile*, UINT);
 
 inline LANGID ProfileLangId(const std::wstring& profile) {
   if (profile == L"hant")
@@ -98,7 +95,8 @@ inline std::wstring ProfileTitle(const std::wstring& profile) {
   WCHAR profile_guid[64] = {};
   WCHAR langid[5] = {};
   if (StringFromGUID2(kTextServiceClsid, clsid, _countof(clsid)) <= 0 ||
-      StringFromGUID2(kProfileGuid, profile_guid, _countof(profile_guid)) <= 0 ||
+      StringFromGUID2(kProfileGuid, profile_guid, _countof(profile_guid)) <=
+          0 ||
       FAILED(StringCchPrintfW(langid, _countof(langid), L"%04X",
                               ProfileLangId(profile)))) {
     return {};
@@ -220,8 +218,8 @@ struct RegistryValueSnapshot {
       return;
     }
     if (RegCreateKeyExW(root, key.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE,
-                        KEY_SET_VALUE, nullptr, &handle, nullptr) !=
-        ERROR_SUCCESS) {
+                        KEY_SET_VALUE, nullptr, &handle,
+                        nullptr) != ERROR_SUCCESS) {
       return;
     }
     RegSetValueExW(handle, name.c_str(), 0, type,
@@ -311,9 +309,9 @@ inline int InstallFreshTransactional(const std::wstring& profile,
       write_failed(SetRegKeyValue(per_user_root(), user_key.c_str(), L"Hant",
                                   profile == L"hant" ? 1 : 0, REG_DWORD));
   if (!registry_failed && !user_dir.empty()) {
-    registry_failed = write_failed(SetRegKeyValue(
-        per_user_root(), user_key.c_str(), L"RimeUserDir", user_dir.c_str(),
-        REG_SZ, false));
+    registry_failed = write_failed(
+        SetRegKeyValue(per_user_root(), user_key.c_str(), L"RimeUserDir",
+                       user_dir.c_str(), REG_SZ, false));
   }
   if (registry_failed) {
     rollback();
@@ -330,8 +328,8 @@ inline int InstallFreshTransactional(const std::wstring& profile,
       L"SOFTWARE\\Microsoft\\Windows\\Windows Error "
       L"Reporting\\LocalDumps\\WeaselServer.exe";
   const std::wstring dump_path = WeaselLogPath().wstring();
-  SetRegKeyValue(HKEY_LOCAL_MACHINE, kWerKey, L"DumpFolder",
-                 dump_path.c_str(), REG_SZ, true);
+  SetRegKeyValue(HKEY_LOCAL_MACHINE, kWerKey, L"DumpFolder", dump_path.c_str(),
+                 REG_SZ, true);
   SetRegKeyValue(HKEY_LOCAL_MACHINE, kWerKey, L"DumpType", 1, REG_DWORD, true);
   SetRegKeyValue(HKEY_LOCAL_MACHINE, kWerKey, L"DumpCount", 10, REG_DWORD,
                  true);

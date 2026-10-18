@@ -9,9 +9,7 @@ class UIImpl {
   WeaselPanel panel;
   UIImpl(UI& ui) : panel(ui) {}
   ~UIImpl() {}
-  bool IsShown() const {
-    return panel.IsShown();
-  }
+  bool IsShown() const { return panel.IsShown(); }
   void Refresh() {
     if (!panel.IsWindow())
       return;

@@ -76,10 +76,11 @@ void test_4() {
   ci.candies.push_back(weasel::Text{L"候選甲"});
   ci.candies.push_back(weasel::Text{L"候選乙"});
 
-  std::wstring resp = L"action=commit,ctx\n"
-                      L"ctx.preedit=候選乙=3.14\n"
-                      L"ctx.preedit.cursor=0,3,3\n" +
-                      make_cand_line(ci);
+  std::wstring resp =
+      L"action=commit,ctx\n"
+      L"ctx.preedit=候選乙=3.14\n"
+      L"ctx.preedit.cursor=0,3,3\n" +
+      make_cand_line(ci);
   std::vector<WCHAR> buf(resp.begin(), resp.end());
   buf.push_back(L'\0');
   DWORD len = buf.size() - 1;
@@ -186,10 +187,10 @@ void test_7() {
 // MAX_CANDIDATES_COUNT）视为损坏数据，整体丢弃
 void test_8() {
   const WCHAR* responses[] = {
-      L"action=ctx\nctx.cand=garbage header\n",              // 非归档数据
-      L"action=ctx\nctx.cand=22 serialization::archive\n",   // 截断归档
+      L"action=ctx\nctx.cand=garbage header\n",                // 非归档数据
+      L"action=ctx\nctx.cand=22 serialization::archive\n",     // 截断归档
       L"action=ctx\nctx.cand=99 serialization::archive 15\n",  // 版本不匹配
-      L"action=style\nstyle=not an archive\n",               // Styler 同路径
+      L"action=style\nstyle=not an archive\n",                 // Styler 同路径
   };
   for (auto* resp : responses) {
     std::vector<WCHAR> buf(resp, resp + wcslen(resp) + 1);
@@ -277,7 +278,7 @@ void test_11() {
   const std::wstring zh = L"小狼毫";
   std::string utf8 = wtou8(zh);
   BOOST_TEST(!utf8.empty());
-  BOOST_TEST(u8tow(utf8) == zh);  // utf-8 decode restores the text
+  BOOST_TEST(u8tow(utf8) == zh);   // utf-8 decode restores the text
   BOOST_TEST(acptow(utf8) != zh);  // the old ACP decode mangled it
 }
 

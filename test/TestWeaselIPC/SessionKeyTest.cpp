@@ -27,17 +27,20 @@ struct SessionKeySelfTest {
     require(parsed.has_value() && *parsed == expected,
             "valid 32-character key round-trips");
 
-    require(!weasel::ParseSessionKey(L"").has_value(),
-            "empty key is rejected");
+    require(!weasel::ParseSessionKey(L"").has_value(), "empty key is rejected");
     require(!weasel::ParseSessionKey(L"abc").has_value(),
             "short key is rejected");
-    require(!weasel::ParseSessionKey(L"000102030405060708090a0b0c0d0e0").has_value(),
+    require(!weasel::ParseSessionKey(L"000102030405060708090a0b0c0d0e0")
+                 .has_value(),
             "31-character key is rejected");
-    require(!weasel::ParseSessionKey(L"000102030405060708090a0b0c0d0e0f0").has_value(),
+    require(!weasel::ParseSessionKey(L"000102030405060708090a0b0c0d0e0f0")
+                 .has_value(),
             "33-character key is rejected");
-    require(!weasel::ParseSessionKey(L"000102030405060708090a0b0c0d0e0g").has_value(),
+    require(!weasel::ParseSessionKey(L"000102030405060708090a0b0c0d0e0g")
+                 .has_value(),
             "non-hex key is rejected");
-    require(!weasel::ParseSessionKey(L"000102030405060708090A0B0C0D0E0F").has_value(),
+    require(!weasel::ParseSessionKey(L"000102030405060708090A0B0C0D0E0F")
+                 .has_value(),
             "uppercase key is rejected to keep one canonical wire form");
 
 #ifdef _WIN32

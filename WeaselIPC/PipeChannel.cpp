@@ -22,8 +22,8 @@ DWORD RemainingTime(ULONGLONG deadline) {
   const ULONGLONG now = GetTickCount64();
   if (now >= deadline)
     return 0;
-  return static_cast<DWORD>((std::min)(deadline - now,
-                                      static_cast<ULONGLONG>(MAXDWORD - 1)));
+  return static_cast<DWORD>(
+      (std::min)(deadline - now, static_cast<ULONGLONG>(MAXDWORD - 1)));
 }
 
 struct PipeIoResult {
@@ -41,8 +41,11 @@ struct PipeIoOperation {
   ~PipeIoOperation() { CloseHandle(overlapped.hEvent); }
 };
 
-PipeIoResult TransferPipe(HANDLE pipe, void* buffer, DWORD size,
-                          bool writing, ULONGLONG deadline) {
+PipeIoResult TransferPipe(HANDLE pipe,
+                          void* buffer,
+                          DWORD size,
+                          bool writing,
+                          ULONGLONG deadline) {
   PipeIoResult result;
   if (!deadline) {
     // Server workers keep synchronous I/O; their owner cancels it at shutdown.
@@ -172,7 +175,9 @@ HANDLE PipeChannelBase::_TryConnect(const wchar_t* name) {
   return INVALID_HANDLE_VALUE;
 }
 
-size_t PipeChannelBase::_WritePipe(HANDLE pipe, size_t s, char* b,
+size_t PipeChannelBase::_WritePipe(HANDLE pipe,
+                                   size_t s,
+                                   char* b,
                                    ULONGLONG deadline) {
   // No FlushFileBuffers here: message-mode WriteFile delivers atomically,
   // while flushing blocks until the peer has read, so a single hung client
@@ -186,10 +191,12 @@ size_t PipeChannelBase::_WritePipe(HANDLE pipe, size_t s, char* b,
   return result.bytes;
 }
 
-void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len,
+void PipeChannelBase::_Receive(HANDLE pipe,
+                               LPVOID msg,
+                               size_t rec_len,
                                ULONGLONG deadline) {
-  auto result = TransferPipe(pipe, msg, static_cast<DWORD>(rec_len), false,
-                             deadline);
+  auto result =
+      TransferPipe(pipe, msg, static_cast<DWORD>(rec_len), false, deadline);
   if (!result.error && result.bytes != rec_len) {
     // Message-mode pipes can successfully return a complete message that is
     // shorter than the caller's fixed header. Treat it as a malformed frame
@@ -202,8 +209,8 @@ void PipeChannelBase::_Receive(HANDLE pipe, LPVOID msg, size_t rec_len,
 
     auto ctx = _GetContext();
     memset(ctx->buffer.get(), 0, buff_size);
-    result = TransferPipe(pipe, ctx->buffer.get(), static_cast<DWORD>(buff_size),
-                          false, deadline);
+    result = TransferPipe(pipe, ctx->buffer.get(),
+                          static_cast<DWORD>(buff_size), false, deadline);
     if (result.error)
       throw result.error;
     ctx->resp_serial++;  // a fresh response body now occupies the buffer

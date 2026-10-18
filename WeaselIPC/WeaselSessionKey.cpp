@@ -57,9 +57,9 @@ std::optional<SessionKey> ParseSessionKey(std::wstring_view text) {
 std::optional<SessionKey> GenerateSessionKey() {
 #ifdef _WIN32
   SessionKey key{};
-  const NTSTATUS status = BCryptGenRandom(
-      nullptr, key.bytes.data(), static_cast<ULONG>(key.bytes.size()),
-      BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+  const NTSTATUS status = BCryptGenRandom(nullptr, key.bytes.data(),
+                                          static_cast<ULONG>(key.bytes.size()),
+                                          BCRYPT_USE_SYSTEM_PREFERRED_RNG);
   if (!BCRYPT_SUCCESS(status))
     return std::nullopt;
   return key;

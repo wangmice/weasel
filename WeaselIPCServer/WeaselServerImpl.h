@@ -98,8 +98,8 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
 
   void SetRequestHandler(RequestHandler* pHandler) {
     session_router.SetBackend(pHandler);
-    m_pRequestHandler = pHandler ? static_cast<RequestHandler*>(&session_router)
-                                : nullptr;
+    m_pRequestHandler =
+        pHandler ? static_cast<RequestHandler*>(&session_router) : nullptr;
   }
   void AddMenuHandler(UINT uID, CommandHandler& handler) {
     m_MenuHandlers[uID] = handler;
@@ -111,8 +111,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
  private:
   friend class ServerImplTestAccess;
 
-  using PPhysicalToLogicalPointForPerMonitorDPI =
-      BOOL(WINAPI*)(HWND, LPPOINT);
+  using PPhysicalToLogicalPointForPerMonitorDPI = BOOL(WINAPI*)(HWND, LPPOINT);
 
   void _Finailize();
   void _OnClientProcessExit(ClientProcessToken token);
@@ -138,7 +137,8 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   HMODULE m_hUser32Module;
   /* Resolved once in the ctor; stays null if user32 does not export it
    * (below Win8.1), and OnUpdateInputPosition then keeps physical coords */
-  PPhysicalToLogicalPointForPerMonitorDPI m_pPhysicalToLogicalPointForPerMonitorDPI;
+  PPhysicalToLogicalPointForPerMonitorDPI
+      m_pPhysicalToLogicalPointForPerMonitorDPI;
   BOOL m_darkMode;
 };
 

@@ -49,8 +49,8 @@ HRESULT DeviceResources::CreateGenerationLocked(
     hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                            D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels,
                            _countof(featureLevels), D3D11_SDK_VERSION,
-                           next->direct3dDevice.ReleaseAndGetAddressOf(), nullptr,
-                           nullptr);
+                           next->direct3dDevice.ReleaseAndGetAddressOf(),
+                           nullptr, nullptr);
     if (FAILED(hr)) {
       DEBUG << "D3D11CreateDevice hardware fallback failed: "
             << HRESULTToString(hr);
@@ -87,10 +87,10 @@ HRESULT DeviceResources::CreateGenerationLocked(
                                      next->d2Device.ReleaseAndGetAddressOf());
   if (FAILED(hr))
     return hr;
-  hr = DWriteCreateFactory(
-      DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2),
-      reinterpret_cast<IUnknown**>(
-          next->m_pWriteFactory.ReleaseAndGetAddressOf()));
+  hr =
+      DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2),
+                          reinterpret_cast<IUnknown**>(
+                              next->m_pWriteFactory.ReleaseAndGetAddressOf()));
   if (FAILED(hr))
     return hr;
 
@@ -770,8 +770,9 @@ void D2D::GetTextSize(const wstring& text,
   }
   if (!m_pWriteFactory)
     HR(E_POINTER);
-  const auto count = static_cast<UINT32>((std::min)({nCount, text.size(),
-        static_cast<size_t>((std::numeric_limits<UINT32>::max)())}));
+  const auto count = static_cast<UINT32>(
+      (std::min)({nCount, text.size(),
+                  static_cast<size_t>((std::numeric_limits<UINT32>::max)())}));
   ComPtr<IDWriteTextLayout> pTextLayout;
   bool vertical_text_layout =
       (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
@@ -780,18 +781,18 @@ void D2D::GetTextSize(const wstring& text,
                                    ? DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT
                                    : DWRITE_FLOW_DIRECTION_RIGHT_TO_LEFT;
   if (vertical_text_layout) {
-    HR(m_pWriteFactory->CreateTextLayout(
-        text.c_str(), count, pTextFormat.Get(), 0.0f,
-        (float)m_style.max_height, pTextLayout.ReleaseAndGetAddressOf()));
+    HR(m_pWriteFactory->CreateTextLayout(text.c_str(), count, pTextFormat.Get(),
+                                         0.0f, (float)m_style.max_height,
+                                         pTextLayout.ReleaseAndGetAddressOf()));
     if (!pTextLayout)
       HR(E_POINTER);
     HR(pTextLayout->SetReadingDirection(
         DWRITE_READING_DIRECTION_TOP_TO_BOTTOM));
     HR(pTextLayout->SetFlowDirection(flow));
   } else
-    HR(m_pWriteFactory->CreateTextLayout(
-        text.c_str(), count, pTextFormat.Get(), (float)m_style.max_width,
-        0, pTextLayout.ReleaseAndGetAddressOf()));
+    HR(m_pWriteFactory->CreateTextLayout(text.c_str(), count, pTextFormat.Get(),
+                                         (float)m_style.max_width, 0,
+                                         pTextLayout.ReleaseAndGetAddressOf()));
 
   if (!pTextLayout)
     HR(E_POINTER);
@@ -818,9 +819,9 @@ void D2D::GetTextSize(const wstring& text,
     auto max_width = m_style.max_width == 0
                          ? textMetrics.widthIncludingTrailingWhitespace
                          : m_style.max_width;
-    HR(m_pWriteFactory->CreateTextLayout(
-        text.c_str(), count, pTextFormat.Get(), max_width,
-        textMetrics.height, pTextLayout.ReleaseAndGetAddressOf()));
+    HR(m_pWriteFactory->CreateTextLayout(text.c_str(), count, pTextFormat.Get(),
+                                         max_width, textMetrics.height,
+                                         pTextLayout.ReleaseAndGetAddressOf()));
   }
 
   if (!pTextLayout)
@@ -1081,8 +1082,9 @@ HRESULT D2D::FillGeometry(const CRect& rect,
       return hr;
     }
     blurEffect->SetInput(0, bitmap.Get());
-    hr = blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
-                              (float)(m_dpiScaleLayout * m_style.shadow_radius));
+    hr =
+        blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
+                             (float)(m_dpiScaleLayout * m_style.shadow_radius));
     if (FAILED(hr))
       return hr;
     // Draw the blurred rounded rectangle onto the main render target

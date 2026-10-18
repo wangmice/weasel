@@ -128,12 +128,12 @@ class SerialApplyQueue {
 };
 
 constexpr bool ShouldEndCandidateUIForContextHandoff(bool hasComposition,
-                                                      bool sameContext) {
+                                                     bool sameContext) {
   return hasComposition && !sameContext;
 }
 
 constexpr bool ShouldHandleCompositionContextEvent(bool hasComposition,
-                                                    bool sameContext) {
+                                                   bool sameContext) {
   return hasComposition && sameContext;
 }
 

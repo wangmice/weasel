@@ -159,9 +159,8 @@ bool RimeWithWeaselHandler::_ValidateRimeSession(WeaselSessionId ipc_id,
     return false;
 
   SessionStatus& session_status = it->second;
-  if (!force &&
-      !weasel::interaction_policy::NeedsRimeSessionValidation(
-          session_status.validated_cleanup_epoch, m_cleanup_epoch))
+  if (!force && !weasel::interaction_policy::NeedsRimeSessionValidation(
+                    session_status.validated_cleanup_epoch, m_cleanup_epoch))
     return true;
 
   if (rime_api->find_session(session_status.session_id)) {
@@ -210,7 +209,8 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
 
   WeaselSessionId ipc_id = AllocateMonotonicSessionId(
       m_next_ipc_session_id, [this](WeaselSessionId candidate) {
-        return m_session_status_map.find(candidate) != m_session_status_map.end();
+        return m_session_status_map.find(candidate) !=
+               m_session_status_map.end();
       });
   if (!ipc_id) {
     LOG(ERROR) << "AddSession: exhausted IPC session ids.";
@@ -287,8 +287,8 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   for (auto& pair : m_session_status_map) {
     RIME_STRUCT(RimeStatus, status);
     if (rime_api->get_status(to_session_id(pair.first), &status)) {
-      _LoadSchemaSpecificSettings(
-          pair.first, status.schema_id ? status.schema_id : "");
+      _LoadSchemaSpecificSettings(pair.first,
+                                  status.schema_id ? status.schema_id : "");
       _LoadAppInlinePreeditSet(pair.first, true);
       _UpdateInlinePreeditStatus(pair.first);
       pair.second.status = status;
@@ -378,10 +378,9 @@ void RimeWithWeaselHandler::ClearComposition(WeaselSessionId ipc_id) {
   m_active_session = ipc_id;
 }
 
-void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
-    size_t index,
-    WeaselSessionId ipc_id,
-    EatLine eat) {
+void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(size_t index,
+                                                         WeaselSessionId ipc_id,
+                                                         EatLine eat) {
   DLOG(INFO) << "select candidate on current page, ipc_id = " << ipc_id
              << ", index = " << index;
   if (m_disabled)
@@ -986,7 +985,8 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id,
           for (auto i = 0; i < ctx.menu.num_candidates; i++) {
             std::wstring label_w;
             if (label_valid) {
-              // 有界安全格式化：超长截断、非法格式回退（B23，见 WeaselUtility.h）
+              // 有界安全格式化：超长截断、非法格式回退（B23，见
+              // WeaselUtility.h）
               label_w = FormatLabelText(
                   session_status.style.label_text_format.c_str(),
                   cinfo.labels.at(i).str);
@@ -1475,7 +1475,9 @@ void LoadWeaselUIStyle(RimeConfig* config,
     _UpdateUIStyleColor(config, style, color_scheme);
 }
 
-static void _UpdateUIStyle(RimeConfig* config, UIStyle& style, bool initialize) {
+static void _UpdateUIStyle(RimeConfig* config,
+                           UIStyle& style,
+                           bool initialize) {
   LoadWeaselUIStyle(config, style, initialize);
 }
 // load color configs to style, by "style/color_scheme" or specific scheme name
