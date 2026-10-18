@@ -8,6 +8,7 @@ $languageBar = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\LanguageBar.
 $switcherHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\SwitcherSettingsDialog.h') -Raw
 $switcher = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\SwitcherSettingsDialog.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
+$deployerProject = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\WeaselDeployer.vcxproj') -Raw
 
 if ($globalsHeader -notmatch 'bool\s+QueueDllBackgroundTask\s*\(') {
   throw 'TSF must expose one DLL-lifetime-aware background task helper'
@@ -95,6 +96,13 @@ if (([regex]::Matches($configurator, 'return ConfigureResult::Unchanged;')).Coun
 if ($configurator -match 'Failed to save switcher settings' -or
     $configurator -match 'Failed to save UI style settings') {
   throw 'save_settings(false) means unchanged in librime and must not be logged as failure'
+}
+
+if (([regex]::Matches($deployerProject, '<OptimizeReferences>false</OptimizeReferences>')).Count -ne 2) {
+  throw 'Release Win32 and x64 WeaselDeployer links must disable /OPT:REF to preserve ATL selectany dynamic initialization'
+}
+if ($deployerProject -match '<OptimizeReferences>true</OptimizeReferences>') {
+  throw 'WeaselDeployer must not re-enable /OPT:REF while ATL::_AtlWinModule depends on selectany dynamic initialization'
 }
 
 Write-Host 'Background lifetime and deployer policy: PASS'
