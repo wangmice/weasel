@@ -8,11 +8,8 @@ if exist env.bat call env.bat
 
 if not defined WEASEL_ROOT set WEASEL_ROOT=%CD%
 
-if not defined VERSION_MAJOR set VERSION_MAJOR=0
-if not defined VERSION_MINOR set VERSION_MINOR=17
-if not defined VERSION_PATCH set VERSION_PATCH=4
-
-if not defined WEASEL_VERSION set WEASEL_VERSION=%VERSION_MAJOR%.%VERSION_MINOR%.%VERSION_PATCH%
+call "%~dp0update\load-version.bat"
+if errorlevel 1 exit /b 1
 if not defined WEASEL_BUILD set WEASEL_BUILD=0
 
 rem use numeric build version for release build
