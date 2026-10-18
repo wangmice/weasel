@@ -108,8 +108,8 @@ if ($updateBody -notmatch 'return\s+retval\s*;') {
   throw 'UpdateWorkspace must return its accumulated deployment result'
 }
 
-if ($configurator -notmatch 'enum\s+class\s+ConfigureResult\s*\{\s*Cancelled\s*,\s*Saved\s*,\s*Failed\s*\}') {
-  throw 'deployer settings steps must distinguish cancelled, saved, and failed outcomes'
+if ($configurator -notmatch 'enum\s+class\s+ConfigureResult\s*\{\s*Cancelled\s*,\s*Unchanged\s*,\s*Saved\s*,\s*Failed\s*\}') {
+  throw 'deployer settings steps must distinguish cancelled, unchanged, saved, and failed outcomes'
 }
 
 $switcherStart = $configurator.IndexOf('static ConfigureResult configure_switcher')
@@ -127,11 +127,13 @@ foreach ($functionName in $helperBodies.Keys) {
   if ($body -notmatch '!api->load_settings\(settings\)[\s\S]*?ConfigureResult::Failed') {
     throw "$functionName must propagate load_settings failure"
   }
-  if ($body -notmatch '!api->save_settings\(settings\)[\s\S]*?ConfigureResult::Failed') {
-    throw "$functionName must propagate save_settings failure"
+  if ($body -notmatch '!api->save_settings\(settings\)[\s\S]*?ConfigureResult::Unchanged') {
+    throw "$functionName must treat save_settings(false) as unchanged"
   }
-  if ($body -notmatch 'ConfigureResult::Cancelled' -or $body -notmatch 'ConfigureResult::Saved') {
-    throw "$functionName must preserve cancel and saved outcomes separately"
+  if ($body -notmatch 'ConfigureResult::Cancelled' -or
+      $body -notmatch 'ConfigureResult::Unchanged' -or
+      $body -notmatch 'ConfigureResult::Saved') {
+    throw "$functionName must preserve cancel, unchanged, and saved outcomes separately"
   }
 }
 

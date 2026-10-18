@@ -19,8 +19,11 @@ if ($ensure -match '_reconnectRetry\s*>?=\s*6') {
 if ($ensure -notmatch 'bool\s+launch_started\s*=\s*false') {
   throw 'first-key recovery must track whether a launcher has already been started'
 }
-if ($ensure -notmatch 'try_start_recovery\s*=\s*\[&\]\(\)[\s\S]*?count_server_process_in_current_session\(\)\s*!=\s*0[\s\S]*?std::thread') {
+if ($ensure -notmatch 'try_start_recovery\s*=\s*\[&\]\(\)[\s\S]*?count_server_process_in_current_session\(\)\s*!=\s*0[\s\S]*?QueueDllBackgroundTask\s*\(') {
   throw 'first failed reconnect must launch once the server is actually absent'
+}
+if ($ensure -match 'std::thread[\s\S]*?\.detach\s*\(') {
+  throw 'first-key recovery must not launch through a detached thread that can outlive the TSF DLL'
 }
 if ($tsf -notmatch 'constexpr\s+ULONGLONG\s+kFirstKeyRecoveryTimeoutMs\s*=\s*1000') {
   throw 'first-key recovery must allow up to one second for server startup'

@@ -57,6 +57,24 @@ if (-not $tsfXmake.Contains('add_shflags("/DEBUG", "/OPT:REF", "/OPT:ICF", "/LTC
   throw 'xmake LTCG policy regression: WeaselTSF shared link must carry explicit /LTCG'
 }
 
+# WeaselTSF is the final DLL consumer of WeaselUI/WeaselIPC static libraries.
+# Their Windows SDK dependencies must be explicit here because static target
+# link lists are not reliably transitive for ARM32.
+if ($tsfXmake -notmatch 'add_syslinks\s*\(') {
+  throw 'xmake ARM/system-link regression: WeaselTSF Windows SDK libraries must use add_syslinks'
+}
+if ($tsfXmake -match 'add_links\s*\([\s\S]*?["'']kernel32["'']') {
+  throw 'xmake ARM/system-link regression: Windows SDK libraries must not be ordered as ordinary add_links'
+}
+foreach ($library in @(
+  'Usp10', 'd2d1', 'dwrite', 'd3d11', 'dxgi', 'dcomp', 'shcore',
+  'kernel32', 'user32', 'gdi32', 'winspool', 'comdlg32', 'advapi32',
+  'shell32', 'ole32', 'oleaut32', 'uuid', 'odbc32', 'odbccp32')) {
+  if ($tsfXmake -notmatch ('(?i)["'']' + [regex]::Escape($library) + '["'']')) {
+    throw "xmake ARM/system-link regression: WeaselTSF is missing explicit $library"
+  }
+}
+
 if (-not $rootXmake.Contains('target:add("ldflags", "/SUBSYSTEM:CONSOLE", {force = true})')) {
   throw 'xmake subsystem policy regression: console subsystem flag is not forced'
 }

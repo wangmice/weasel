@@ -65,6 +65,20 @@ if ($source -match 'os\.cp\(') {
 if ($source -match '\bpcall\s*\(') {
   throw 'xmake toolchain policy regression: sandbox callbacks must use try instead of unavailable pcall'
 }
+
+# io.readfile is a built-in xmake script-domain API, but helpers declared in
+# description scope must not resolve it as a global. Pass the callback's
+# io.readfile function explicitly into VERSION loading instead.
+if ($source.Contains('import("core.base.io"')) {
+  throw 'xmake script-domain regression: nonexistent core.base.io import returned'
+}
+if (-not $source.Contains('local function load_weasel_version(readfile)') -or
+    -not $source.Contains('load_weasel_version(io.readfile)')) {
+  throw 'xmake script-domain regression: VERSION loading does not receive io.readfile from the callback'
+}
+if ($source -notmatch 'local version = readfile\(version_file\):trim\(\)') {
+  throw 'xmake script-domain regression: VERSION helper still resolves file I/O outside its callback'
+}
 if ($source -match 'path\.filename\([^\x0d\x0a]*:gsub\(') {
   throw 'xmake toolchain policy regression: gsub replacement count must not become the path separator'
 }
@@ -102,8 +116,16 @@ foreach ($required in @(
 if ($xbuildNormalized -notmatch ':build_xmake_arch\n\s*setlocal') {
   throw 'xbuild target-environment regression: per-architecture helper is not environment-isolated'
 }
-if ($xbuildNormalized -notmatch 'call "%XMAKE_VCVARSALL%" %vcvars_arch%\n\s*if errorlevel 1 exit /b 1') {
-  throw 'xbuild target-environment regression: vcvarsall failure is not propagated'
+if ($xbuild -notmatch 'set "VSINSTALLDIR="') {
+  throw 'xbuild target-environment regression: inherited VS installation state is not cleared before vcvarsall'
+}
+foreach ($variable in @('INCLUDE', 'LIB', 'LIBPATH')) {
+  if ($xbuild -notmatch ('set "' + $variable + '="')) {
+    throw "xbuild target-environment regression: inherited $variable is not cleared before vcvarsall"
+  }
+}
+if ($xbuildNormalized -notmatch 'if defined SDKVER \(\n\s*call "%XMAKE_VCVARSALL%" %vcvars_arch% %SDKVER%\n\s*\) else \(\n\s*call "%XMAKE_VCVARSALL%" %vcvars_arch%\n\s*\)\n\s*if errorlevel 1 exit /b 1') {
+  throw 'xbuild target-environment regression: vcvarsall is not pinned to SDKVER with failure propagation'
 }
 if ($xbuildNormalized -notmatch 'xmake f -c -a %xmake_arch%[^\n]*\n\s*if errorlevel 1 exit /b 1') {
   throw 'xbuild target-environment regression: helper does not cleanly configure the requested architecture'
@@ -127,6 +149,18 @@ foreach ($required in @(
 )) {
   if (-not $xbuild.Contains($required)) {
     throw "xbuild VS discovery regression: missing '$required'"
+  }
+}
+
+# ARM32 must preserve the target-specific vcvarsall LIB search directories.
+foreach ($required in @(
+  'rule("weasel_msvc_arm_linkdirs")',
+  'target:arch() ~= "arm"',
+  'os.getenv("LIB")',
+  'target:add("linkdirs", dir)'
+)) {
+  if (-not $source.Contains($required)) {
+    throw "xmake ARM32 SDK-link regression: missing '$required'"
   }
 }
 
@@ -162,6 +196,10 @@ foreach ($legacy in @(
 # and hide the root cause.
 if ($xbuildNormalized -notmatch 'xmake clean\n\s*if errorlevel 1 exit /b 1') {
   throw 'xbuild fail-fast regression: per-architecture clean failure is not propagated'
+}
+if ($xbuild -notmatch 'set "expected_artifact=.*WeaselTSF' -or
+    $xbuild -notmatch 'if not exist "!expected_artifact!"') {
+  throw 'xbuild fail-fast regression: per-architecture WeaselTSF artifact is not verified'
 }
 if ($xbuildNormalized -notmatch 'xmake project -k compile_commands -m %build_config%\n\s*if errorlevel 1 goto error') {
   throw 'xbuild fail-fast regression: compile_commands failure is not propagated'

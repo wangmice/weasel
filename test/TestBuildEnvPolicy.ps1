@@ -25,6 +25,7 @@ if ($buildBlock.Groups['body'].Value -match 'xmake\s+f\s+-a\s+(?:x64|x86)') {
 
 foreach ($policy in @(
   'TestBuildEnvPolicy.ps1',
+  'TestReleaseMetadataPolicy.ps1',
   'TestRuntimeHardeningPolicy.ps1',
   'TestSetupTransactionPolicy.ps1',
   'TestResourcePolicy.ps1',
@@ -34,28 +35,16 @@ foreach ($policy in @(
   }
 }
 
-foreach ($target in @(
-  'TestWeaselIPC',
-  'TestInteractionPolicy',
-  'TestPipeSecurityPolicy',
-  'TestResponseParser',
-  'TestPipeChannel',
-  'TestPipeConnectFailure',
-  'TestKeyEvent',
-  'TestRegisterTipKeys',
-  'TestDeviceResources',
-  'TestWeaselUI',
-  'TestWeaselUILayout',
-  'TestFindIME',
-  'TestCompartmentUtil',
-  'TestPerUserReg',
-  'TestBstrUtil',
-  'TestWeaselSetup',
-  'TestServerCommands',
-  'TestTrayRecovery')) {
-  if ($ci -notmatch ("'" + [regex]::Escape($target) + "'")) {
-    throw "CI does not execute xmake regression target $target"
-  }
+if (-not [regex]::IsMatch($ci, '(?m)^  xmake-preflight:\s*$') -or
+    -not [regex]::IsMatch($ci, '(?m)^    needs: policy\s*$') -or
+    -not [regex]::IsMatch($ci, '(?m)^  build:\s*\r?\n    needs: xmake-preflight\s*$')) {
+  throw 'CI must run xmake preflight after policy and before expensive build jobs'
+}
+
+if ($ci -notmatch 'name: Validate xmake configuration' -or
+    $ci -notmatch 'xmake f -c -a x64 -m debug --vs=2022 --vs_toolset=14.3 -y' -or
+    $ci -notmatch 'weasel-preflight-boost') {
+  throw 'CI xmake preflight must run a lightweight real configuration before expensive builds'
 }
 
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("weasel-boost-policy-" + [guid]::NewGuid())
