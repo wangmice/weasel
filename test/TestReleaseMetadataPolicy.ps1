@@ -16,6 +16,18 @@ foreach ($name in @('build.bat', 'xbuild.bat')) {
   }
 }
 
+$makeInstaller = Get-Content -LiteralPath (Join-Path $repo 'make-installer.ps1') -Raw
+if ($makeInstaller -notmatch "Join-Path\s+\$repo\s+'VERSION'" -or
+    $makeInstaller -notmatch "Get-Content\s+-LiteralPath\s+\$versionPath\s+-Raw" -or
+    $makeInstaller -notmatch '\$repositoryVersion\.Split\(' -or
+    $makeInstaller -match "else\s*\{\s*'0'\s*\}[\s\S]*?else\s*\{\s*'17'\s*\}[\s\S]*?else\s*\{\s*'\d+'\s*\}") {
+  throw 'make-installer.ps1 must derive its default version from VERSION instead of hard-coded components'
+}
+if ($makeInstaller -notmatch '\$releaseBuild\s*=\s*\$Release' -or
+    $makeInstaller -notmatch "if\s*\(\$releaseBuild\)[\s\S]*?\$weaselBuild\s*=\s*'0'") {
+  throw 'make-installer.ps1 -Release must keep VERSION and force only WEASEL_BUILD=0'
+}
+
 $xmake = Get-Content -LiteralPath (Join-Path $repo 'xmake.lua') -Raw
 if ($xmake -notmatch 'path\.join\(os\.projectdir\(\),\s*"VERSION"\)') {
   throw 'xmake.lua must load the repository VERSION file for direct xmake builds'
