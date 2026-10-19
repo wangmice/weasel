@@ -113,31 +113,48 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
       else if (ke.keycode == ibus::Down)
         ke.keycode = ibus::Up;
     }
-    // 模拟期间的键不转发服务器，但 *pfEaten 必须有确定值
-    // （下文无条件存入 _prevfEaten，且要上报 TSF）
+    // Only callbacks that were already expected on entry may consume the
+    // CapsLock simulation budget. The real CapsLock release that schedules
+    // SendInput must not immediately consume one of the callbacks it just
+    // queued.
+    const bool suppress_simulated_caps =
+        _keyCountToSimulate > 0 && ke.keycode == ibus::Caps_Lock;
+
+    // Chrome and other hosts can drop injected callbacks. If a real
+    // non-CapsLock key arrives first, discard the stale simulation budget and
+    // process that same key normally instead of bypassing Rime indefinitely.
+    if (_keyCountToSimulate && !suppress_simulated_caps)
+      _keyCountToSimulate = 0;
+
+    // Simulated CapsLock callbacks are local bookkeeping only; every other
+    // key follows the normal server path.
     *pfEaten = FALSE;
-    if (!_keyCountToSimulate) {
+    if (!suppress_simulated_caps) {
       *pfEaten =
           _ProcessKeyEventWithRecovery(ke, recovery_deadline) ? TRUE : FALSE;
     }
 
     if (ke.keycode == ibus::Caps_Lock) {
       if (_prevKeyEvent.keycode == ibus::Caps_Lock && _prevfEaten == TRUE &&
-          (ke.mask & ibus::RELEASE_MASK) && (!_keyCountToSimulate)) {
+          (ke.mask & ibus::RELEASE_MASK) && !suppress_simulated_caps) {
         if ((GetKeyState(VK_CAPITAL) & 0x01)) {
           if (_committed || (!*pfEaten && _status.composing)) {
-            _keyCountToSimulate = 2;
             INPUT inputs[2];
             inputs[0].type = INPUT_KEYBOARD;
             inputs[0].ki = {VK_CAPITAL, 0, 0, 0, 0};
             inputs[1].type = INPUT_KEYBOARD;
             inputs[1].ki = {VK_CAPITAL, 0, KEYEVENTF_KEYUP, 0, 0};
-            ::SendInput(sizeof(inputs) / sizeof(INPUT), inputs, sizeof(INPUT));
+            // Track exactly the callbacks Windows accepted. This assignment
+            // happens after suppress_simulated_caps was captured, so the
+            // current real CapsLock release does not consume the new budget.
+            _keyCountToSimulate = static_cast<int>(
+                ::SendInput(sizeof(inputs) / sizeof(INPUT), inputs,
+                            sizeof(INPUT)));
           }
         }
         *pfEaten = TRUE;
       }
-      if (_keyCountToSimulate)
+      if (suppress_simulated_caps && _keyCountToSimulate)
         _keyCountToSimulate--;
     }
 
@@ -147,9 +164,13 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
 }
 
 STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
-  // 焦点切换后，任何等待配对回调的 pending 状态都已失效
+  // 焦点切换后，任何等待配对回调和 CapsLock 模拟的瞬态状态都已失效。
+  // Chrome 可在 DocumentMgr/renderer 之间切换焦点而不回送注入事件。
   _testKeyDownPending.Clear();
   _testKeyUpPending.Clear();
+  _keyCountToSimulate = 0;
+  _prevKeyEvent = weasel::KeyEvent();
+  _prevfEaten = FALSE;
   if (fForeground)
     m_client.FocusIn();
   else {
