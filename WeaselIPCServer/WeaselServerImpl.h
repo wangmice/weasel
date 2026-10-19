@@ -119,6 +119,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   LRESULT _HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled);
   /* Interrupt and join the pipe listener and its workers; idempotent */
   void _StopPipeServer();
+  int _RequestStopUnderApiLock() noexcept;
   void _SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept;
   ServerLifecycle _RuntimeLifecycle() const noexcept;
   bool _TryTransitionRuntimeLifecycle(ServerLifecycle expected,

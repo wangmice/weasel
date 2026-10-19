@@ -327,12 +327,19 @@ HWND ServerImpl::Start() {
   return hwnd;
 }
 
-int ServerImpl::Stop() {
+int ServerImpl::_RequestStopUnderApiLock() noexcept {
   _SetRuntimeLifecycle(ServerLifecycle::Stopping);
-  // DO NOT exit process or finalize here
-  // Let WeaselServer handle this
+  // DO NOT exit process or finalize here. Let WeaselServer unwind Run().
   PostMessage(WM_QUIT);
   return 0;
+}
+
+int ServerImpl::Stop() {
+  // Lifecycle publication must linearize with pipe handlers that can enter or
+  // leave maintenance. OnShutdownServer already runs under this lock and calls
+  // the lock-held helper directly.
+  std::lock_guard guard(g_api_mutex);
+  return _RequestStopUnderApiLock();
 }
 
 int ServerImpl::Run() {
@@ -413,7 +420,12 @@ int ServerImpl::Run() {
   _Module.AddMessageLoop(&theLoop);
   int nRet = theLoop.Run();
   _Module.RemoveMessageLoop();
-  _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+  {
+    // A maintenance handler that linearized first may finish cleanly; one that
+    // arrives after this point observes Stopping and is rejected.
+    std::lock_guard guard(g_api_mutex);
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+  }
   // Stop the pipe server before the caller (WeaselServerApp::Run) starts
   // destroying the handler and UI: late requests would touch freed objects.
   _StopPipeServer();
@@ -474,7 +486,8 @@ DWORD ServerImpl::OnKeyEvent(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnShutdownServer(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
                                    DWORD lParam) {
-  Stop();
+  // Pipe dispatch already owns g_api_mutex here.
+  _RequestStopUnderApiLock();
   return 0;
 }
 

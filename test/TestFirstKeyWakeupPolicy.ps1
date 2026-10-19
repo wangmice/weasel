@@ -100,6 +100,11 @@ if ($ipc -notmatch 'class\s+ServerLifecycleLock' -or
 if ($ipc -match 'GetServerReadyEventName|ServerRuntimeIdentity|GetServerRuntimeIdentityName') {
   throw 'ready events and seqlock identity must not duplicate runtime lifecycle state'
 }
+if ($serverImpl -notmatch 'int\s+ServerImpl::Stop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?_RequestStopUnderApiLock\(\)' -or
+    $serverImpl -notmatch 'OnShutdownServer[\s\S]*?_RequestStopUnderApiLock\(\)' -or
+    $serverImpl -notmatch '_Module\.RemoveMessageLoop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?ServerLifecycle::Stopping') {
+  throw 'server stop publication must serialize with maintenance handlers through g_api_mutex'
+}
 if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE,\s*sa\.get_attr\(\)\)' -or
     $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
     $serverImpl -notmatch 'ServerLifecycle::Starting' -or
@@ -128,7 +133,7 @@ if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
     $tsf -notmatch 'ObserveServerUnavailableLongEnough\(\)') {
   throw 'live-server restart must require sustained unavailability'
 }
-$stopStart = $tsf.IndexOf('bool StopPersistentlyUnavailableServer(')
+$stopStart = $tsf.IndexOf('StopServerResult StopPersistentlyUnavailableServer(')
 $stopEnd = $tsf.IndexOf('void RunServerRecoveryOnce()', $stopStart)
 if ($stopStart -lt 0 -or $stopEnd -le $stopStart) {
   throw 'unable to isolate StopPersistentlyUnavailableServer'

@@ -54,6 +54,10 @@ if ($rimeHandler -notmatch 'RimeWithWeaselHandler::AddSession[\s\S]*?if\s*\(m_di
     $rimeHandler -match 'RimeWithWeaselHandler::AddSession[\s\S]{0,300}?EndMaintenance\(\)') {
   throw 'START_SESSION must never end maintenance or reinitialize disabled librime'
 }
+if ($serverImpl -notmatch 'int\s+ServerImpl::Stop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?_RequestStopUnderApiLock\(\)' -or
+    $serverImpl -notmatch 'OnShutdownServer[\s\S]*?_RequestStopUnderApiLock\(\)') {
+  throw 'server stop and maintenance transitions must share the API serialization boundary'
+}
 if ($serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
     $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)' -or
     $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
