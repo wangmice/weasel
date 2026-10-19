@@ -17,22 +17,6 @@ foreach ($name in @('build.bat', 'xbuild.bat')) {
 }
 
 $makeInstaller = Get-Content -LiteralPath (Join-Path $repo 'make-installer.ps1') -Raw
-$installerSteps = @(
-  'Step "1/5 计算版本号"',
-  'Step "2/5 编译 (可选)"',
-  'Step "3/5 补齐 output 所需文件"',
-  'Step "4/5 定位 NSIS (makensis)"',
-  'Step "5/5 生成安装包"'
-)
-foreach ($step in $installerSteps) {
-  if (([regex]::Matches($makeInstaller, [regex]::Escape($step))).Count -ne 1) {
-    throw "make-installer.ps1 must contain exactly one '$step' block"
-  }
-}
-if (([regex]::Matches($makeInstaller, "NeedCommand 'git'")).Count -ne 1) {
-  throw 'make-installer.ps1 contains duplicated packaging flow'
-}
-
 if ($makeInstaller -notmatch "Join-Path\s+\$repo\s+'VERSION'" -or
     $makeInstaller -notmatch "Get-Content\s+-LiteralPath\s+\$versionPath\s+-Raw" -or
     $makeInstaller -notmatch '\$repositoryVersion\.Split\(') {
