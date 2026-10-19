@@ -203,9 +203,9 @@ LRESULT ServerImpl::OnEndSystemSession(UINT uMsg,
                                        WPARAM wParam,
                                        LPARAM lParam,
                                        BOOL& bHandled) {
+  std::lock_guard guard(g_api_mutex);
   _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   if (m_pRequestHandler) {
-    std::lock_guard guard(g_api_mutex);
     m_pRequestHandler->Finalize();
     session_router.SetBackend(nullptr);
     m_pRequestHandler = nullptr;
