@@ -274,6 +274,7 @@ constexpr DWORD kServerGracefulShutdownTimeoutMs = 1500;
 constexpr DWORD kServerForceTerminateThresholdMs = 5000;
 constexpr DWORD kServerForcedExitTimeoutMs = 1000;
 constexpr DWORD kServerLivenessProbeTimeoutMs = 100;
+constexpr DWORD kServerRecoveryWorkerRetryBudgetMs = 2500;
 constexpr DWORD kFirstKeyRecoveryPollMs = 5;
 
 DWORD RemainingRecoveryTime(ULONGLONG deadline) {
@@ -612,6 +613,43 @@ void RunServerRecoveryOnce() noexcept {
     FinishServerRecoveryFailure();
   }
 }
+
+void RunServerRecoveryWorker() noexcept {
+  // One failed key must be enough to carry transient recovery through the
+  // sustained-unavailability threshold even if the user types nothing else.
+  // Keep the retry lease short: this callback is background-only and exits
+  // once the bounded budget is exhausted.
+  const ULONGLONG deadline =
+      GetTickCount64() + kServerRecoveryWorkerRetryBudgetMs;
+
+  for (;;) {
+    RunServerRecoveryOnce();
+
+    ULONGLONG retry_after = g_serverRecovery.RetryAfter();
+    if (!retry_after)
+      return;
+
+    ULONGLONG now = GetTickCount64();
+    if (now >= deadline || retry_after > deadline)
+      return;
+
+    if (retry_after > now) {
+      Sleep(static_cast<DWORD>(retry_after - now));
+      now = GetTickCount64();
+      if (now >= deadline)
+        return;
+    }
+
+    // A foreground reconnect after the previous attempt may have cleared the
+    // deadline while this background callback was sleeping.
+    retry_after = g_serverRecovery.RetryAfter();
+    if (!retry_after)
+      return;
+
+    if (!TryBeginServerRecovery())
+      return;
+  }
+}
 #endif
 }  // namespace
 
@@ -622,7 +660,7 @@ void WeaselTSF::_ScheduleServerRecovery() noexcept {
 
   bool queued = false;
   try {
-    queued = QueueDllBackgroundTask([]() { RunServerRecoveryOnce(); });
+    queued = QueueDllBackgroundTask([]() { RunServerRecoveryWorker(); });
   } catch (...) {
     // Scheduling is best-effort and must never escape through a TSF callback.
   }

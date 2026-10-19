@@ -14,8 +14,9 @@ $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Ra
 if ($tsf -notmatch 'void\s+RunServerRecoveryOnce\(\)\s+noexcept') {
   throw 'TSF recovery must have one background worker implementation'
 }
-if ($tsf -notmatch 'QueueDllBackgroundTask\(\[\]\(\)\s*\{\s*RunServerRecoveryOnce\(\);\s*\}\)') {
-  throw 'TSF recovery must queue the worker without carrying stale health epochs'
+if ($tsf -notmatch 'void\s+RunServerRecoveryWorker\(\)\s+noexcept' -or
+    $tsf -notmatch 'QueueDllBackgroundTask\(\[\]\(\)\s*\{\s*RunServerRecoveryWorker\(\);\s*\}\)') {
+  throw 'TSF recovery must queue the bounded retry worker without carrying stale health epochs'
 }
 if ($ipc -notmatch 'class\s+ServerLifecycleLock' -or
     $tsf -notmatch 'ServerLifecycleLock\s+lifecycle_lock[\s\S]*?lifecycle_lock\.Acquire\(0\)') {
@@ -72,7 +73,7 @@ if ($ipc -match 'GetServerReadyEventName|ServerRuntimeIdentity|GetServerRuntimeI
 }
 if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
     $tsf -notmatch 'kServerForceTerminateThresholdMs\s*=\s*5000' -or
-    $tsf -notmatch 'bool\s+StopPersistentlyUnavailableServer\(') {
+    $tsf -notmatch 'StopServerResult\s+StopPersistentlyUnavailableServer\(') {
   throw 'persistent live-server failure must escalate through bounded restart thresholds'
 }
 if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs[\s\S]*?ProbeServer\(remaining\)' -or
@@ -84,8 +85,9 @@ if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_in
 }
 if ($recoveryCoordinator -notmatch 'retry_after_' -or
     $recoveryCoordinator -notmatch 'RetryAfter\(\)' -or
-    $tsf -match 'kServerRecoveryRetryCooldownMs') {
-  throw 'recovery backoff must use a coordinator deadline instead of sleeping a cooldown worker'
+    $tsf -notmatch 'kServerRecoveryWorkerRetryBudgetMs\s*=\s*2500' -or
+    $tsf -notmatch 'RunServerRecoveryWorker\(\)[\s\S]*?RetryAfter\(\)[\s\S]*?TryBeginServerRecovery\(\)') {
+  throw 'recovery backoff must drive one bounded background self-retry lease'
 }
 
 # Uninstall must surface profile/layout/file/registry cleanup failures.

@@ -39,8 +39,8 @@ if ($fastPath -match 'GetTickCount64|Sleep|Interlocked|QueueDllBackgroundTask|Re
   throw 'healthy connection path must not touch recovery machinery'
 }
 
-if ($schedule -notmatch 'TryBeginServerRecovery\(\)[\s\S]*?QueueDllBackgroundTask\s*\(\[\]\(\)\s*\{\s*RunServerRecoveryOnce\(\);\s*\}\)') {
-  throw 'failed recovery must be deduplicated before queueing one DLL-safe worker'
+if ($schedule -notmatch 'TryBeginServerRecovery\(\)[\s\S]*?QueueDllBackgroundTask\s*\(\[\]\(\)\s*\{\s*RunServerRecoveryWorker\(\);\s*\}\)') {
+  throw 'failed recovery must be deduplicated before queueing one DLL-safe recovery worker'
 }
 if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLifecycleMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
   throw 'TSF callback-side scheduler must not perform server discovery or launch work'
@@ -75,8 +75,9 @@ if ($tsf -notmatch 'ServerRecoveryCoordinator\s+g_serverRecovery' -or
     $tsf -notmatch 'g_serverRecovery\.FinishBackoff\(delay_ms,\s*GetTickCount64\(\)\)') {
   throw 'production recovery must use the testable coordinator implementation'
 }
-if ($tsf -match 'kServerRecoveryRetryCooldownMs') {
-  throw 'backoff must not be implemented by sleeping a worker for a cooldown'
+if ($tsf -notmatch 'kServerRecoveryWorkerRetryBudgetMs\s*=\s*2500' -or
+    $tsf -notmatch 'RunServerRecoveryWorker\(\)[\s\S]*?RetryAfter\(\)[\s\S]*?Sleep\([\s\S]*?TryBeginServerRecovery\(\)') {
+  throw 'background recovery must consume coordinator backoff within one bounded self-retry budget'
 }
 if ($tsf -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*mutex_name\.c_str\(\)\)') {
   throw 'background recovery must observe named server singleton mutexes'
