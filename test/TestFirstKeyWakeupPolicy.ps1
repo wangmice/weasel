@@ -46,6 +46,15 @@ if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLaunchMut
 if ($tsf -notmatch 'enum\s+class\s+ServerRecoveryState\s*:\s*LONG[\s\S]*?Idle[\s\S]*?Busy[\s\S]*?Backoff') {
   throw 'server recovery coordinator must expose Idle/Busy/Backoff states'
 }
+if ($tsf -notmatch 'PublishServerRecoveryBackoff\([\s\S]*?InterlockedCompareExchange\(&g_serverRecoveryState,\s*backoff,\s*busy\)') {
+  throw 'only the Busy owner may publish Backoff'
+}
+if ($tsf -notmatch 'g_serverRecoveryHealthEpoch[\s\S]*?LoadServerRecoveryHealthEpoch\(\)[\s\S]*?recovery_epoch') {
+  throw 'Backoff publication must be tied to the recovery health epoch'
+}
+if ($tsf -notmatch 'observed_epoch\s*=\s*LoadServerRecoveryHealthEpoch\(\)[\s\S]*?ServerRecoveryState::Busy[\s\S]*?LoadServerRecoveryHealthEpoch\(\)\s*!=\s*observed_epoch') {
+  throw 'Busy acquisition must reject a concurrent healthy-epoch transition'
+}
 if ($tsf -notmatch 'g_serverRecoveryRetryAfter') {
   throw 'backoff must be represented by a retry deadline'
 }
@@ -74,6 +83,23 @@ if ($tsf -notmatch 'WaitForServerInstanceState\([\s\S]*?kServerLaunchQuickObserv
 if ($tsf -notmatch 'WaitForSingleObject\(launch_mutex\.handle,\s*0\)') {
   throw 'cross-process launch arbitration must stay nonblocking'
 }
+if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
+    $tsf -notmatch 'ObserveServerUnavailableLongEnough\(\)') {
+  throw 'live-server restart must require sustained unavailability'
+}
+if ($tsf -notmatch 'StopPersistentlyUnavailableServer\(\)[\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE[\s\S]*?kServerForceTerminateThresholdMs') {
+  throw 'persistent live-server recovery must try graceful shutdown before bounded forced termination'
+}
+if ($tsf -notmatch 'OpenCurrentSessionServerTarget[\s\S]*?ProcessIdToSessionId[\s\S]*?QueryFullProcessImageNameW[\s\S]*?WeaselServer\.exe') {
+  throw 'forced recovery must verify the current-session WeaselServer target'
+}
+if ($tsf -notmatch 'kServerLivenessProbeTimeoutMs\s*=\s*100' -or
+    $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?Connect\(kServerLivenessProbeTimeoutMs\)[\s\S]*?StartSession\(kServerLivenessProbeTimeoutMs\)') {
+  throw 'persistent restart must perform a fresh bounded IPC/session liveness probe'
+}
+if ($tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?ResetServerUnavailableObservation\(\)[\s\S]*?PublishServerRecoveryBackoff') {
+  throw 'a recovered server must cancel stale local unavailability before restart'
+}
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
   throw 'launcher must double-check the server singleton around launch arbitration'
 }
@@ -85,7 +111,10 @@ if ($until -notmatch '_ScheduleServerRecovery\(\)') {
   throw 'failed bounded reconnect must hand server startup to the background coordinator'
 }
 if (([regex]::Matches($until, 'NoteServerRecoveryHealthy\(\)')).Count -lt 2) {
-  throw 'successful cold reconnects must reset the previous launch failure streak'
+  throw 'successful cold reconnects must reset the previous launch failure epoch'
+}
+if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)[\s\S]*?InterlockedIncrement\(&g_serverRecoveryHealthEpoch\)[\s\S]*?ResetServerRecoveryFailureStreak\(\)[\s\S]*?ResetServerUnavailableObservation\(\)[\s\S]*?InterlockedCompareExchange\([\s\S]*?ServerRecoveryState::Idle[\s\S]*?ServerRecoveryState::Backoff') {
+  throw 'successful cold reconnect must advance the health epoch and retract stale Backoff'
 }
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
   throw 'physical-key recovery must carry a shared deadline'

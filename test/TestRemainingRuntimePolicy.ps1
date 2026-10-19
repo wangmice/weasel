@@ -33,8 +33,20 @@ if ($tsf -notmatch 'kServerExitObservationTimeoutMs\s*=\s*250' -or
 if ($tsf -notmatch 'remaining_launch_lease\s*=\s*kServerLaunchLeaseTimeoutMs\s*-\s*kServerLaunchQuickObservationTimeoutMs') {
   throw 'slow startup must retain the original launch mutex for the remainder of the lease'
 }
-if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)') {
-  throw 'successful cold recovery must reset stale launch failure history'
+if ($tsf -notmatch 'PublishServerRecoveryBackoff\([\s\S]*?InterlockedCompareExchange\(&g_serverRecoveryState,\s*backoff,\s*busy\)') {
+  throw 'recovery Backoff must be published only by the Busy owner'
+}
+if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)[\s\S]*?InterlockedIncrement\(&g_serverRecoveryHealthEpoch\)[\s\S]*?ResetServerUnavailableObservation\(\)') {
+  throw 'successful cold recovery must invalidate stale failure and unavailability epochs'
+}
+if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
+    $tsf -notmatch 'kServerForceTerminateThresholdMs\s*=\s*5000' -or
+    $tsf -notmatch 'StopPersistentlyUnavailableServer\(\)') {
+  throw 'persistent live-server failure must escalate through bounded restart thresholds'
+}
+if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs' -or
+    $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?ResetServerUnavailableObservation\(\)') {
+  throw 'restart escalation must re-probe server health after acquiring launch ownership'
 }
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
   throw 'launcher must double-check server presence across launch mutex acquisition'

@@ -270,6 +270,11 @@ constexpr DWORD kServerLaunchBusyBackoffMs = 100;
 constexpr DWORD kServerQueueFailureBackoffMs = 100;
 constexpr DWORD kServerLaunchFailureBaseBackoffMs = 250;
 constexpr DWORD kServerLaunchFailureMaxBackoffMs = 2000;
+constexpr DWORD kServerUnavailableRestartThresholdMs = 1500;
+constexpr DWORD kServerGracefulShutdownTimeoutMs = 1500;
+constexpr DWORD kServerForceTerminateThresholdMs = 5000;
+constexpr DWORD kServerForcedExitTimeoutMs = 1000;
+constexpr DWORD kServerLivenessProbeTimeoutMs = 100;
 constexpr DWORD kFirstKeyRecoveryPollMs = 5;
 
 DWORD RemainingRecoveryTime(ULONGLONG deadline) {
@@ -289,7 +294,9 @@ enum class ServerRecoveryState : LONG {
 volatile LONG g_serverRecoveryState =
     static_cast<LONG>(ServerRecoveryState::Idle);
 alignas(8) volatile LONG64 g_serverRecoveryRetryAfter = 0;
+alignas(8) volatile LONG64 g_serverUnavailableSince = 0;
 volatile LONG g_serverRecoveryFailureStreak = 0;
+volatile LONG g_serverRecoveryHealthEpoch = 0;
 
 ServerRecoveryState LoadServerRecoveryState() noexcept {
   return static_cast<ServerRecoveryState>(
@@ -301,25 +308,88 @@ ULONGLONG LoadServerRecoveryRetryAfter() noexcept {
       InterlockedCompareExchange64(&g_serverRecoveryRetryAfter, 0, 0));
 }
 
-void EnterServerRecoveryBackoff(DWORD delay_ms) noexcept {
-  InterlockedExchange64(
-      &g_serverRecoveryRetryAfter,
-      static_cast<LONG64>(GetTickCount64() + delay_ms));
-  InterlockedExchange(&g_serverRecoveryState,
-                      static_cast<LONG>(ServerRecoveryState::Backoff));
+void ResetServerUnavailableObservation() noexcept {
+  InterlockedExchange64(&g_serverUnavailableSince, 0);
+}
+
+ULONGLONG ServerUnavailableDurationMs() noexcept {
+  const ULONGLONG since = static_cast<ULONGLONG>(
+      InterlockedCompareExchange64(&g_serverUnavailableSince, 0, 0));
+  if (!since)
+    return 0;
+  const ULONGLONG now = GetTickCount64();
+  return now >= since ? now - since : 0;
+}
+
+bool ObserveServerUnavailableLongEnough() noexcept {
+  const ULONGLONG now = GetTickCount64();
+  LONG64 since = InterlockedCompareExchange64(
+      &g_serverUnavailableSince, static_cast<LONG64>(now), 0);
+  if (!since)
+    since = static_cast<LONG64>(now);
+  return now - static_cast<ULONGLONG>(since) >=
+         kServerUnavailableRestartThresholdMs;
 }
 
 void ResetServerRecoveryFailureStreak() noexcept {
   InterlockedExchange(&g_serverRecoveryFailureStreak, 0);
 }
 
-void NoteServerRecoveryHealthy() noexcept {
-  // A successful cold reconnect starts a fresh failure epoch. Do not disturb
-  // an in-flight Busy worker; it still owns the right to publish its outcome.
-  ResetServerRecoveryFailureStreak();
+LONG LoadServerRecoveryHealthEpoch() noexcept {
+  return InterlockedCompareExchange(&g_serverRecoveryHealthEpoch, 0, 0);
 }
 
-void EnterServerRecoveryFailureBackoff() noexcept {
+void PublishServerRecoveryBackoff(DWORD delay_ms,
+                                  LONG recovery_epoch) noexcept {
+  const LONG busy = static_cast<LONG>(ServerRecoveryState::Busy);
+  const LONG backoff = static_cast<LONG>(ServerRecoveryState::Backoff);
+
+  // If recovery already succeeded after this worker acquired Busy, do not let
+  // an old worker publish any state into the new health epoch.
+  if (LoadServerRecoveryHealthEpoch() != recovery_epoch) {
+    ResetServerRecoveryFailureStreak();
+    InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
+    InterlockedCompareExchange(
+        &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
+        busy);
+    return;
+  }
+
+  InterlockedExchange64(
+      &g_serverRecoveryRetryAfter,
+      static_cast<LONG64>(GetTickCount64() + delay_ms));
+
+  if (InterlockedCompareExchange(&g_serverRecoveryState, backoff, busy) !=
+      busy) {
+    return;
+  }
+
+  // A successful reconnect can race between publishing the deadline and the
+  // Busy -> Backoff CAS. Retract the stale result before exposing Idle again,
+  // including its failure streak, so a new worker cannot inherit old history.
+  if (LoadServerRecoveryHealthEpoch() != recovery_epoch) {
+    ResetServerRecoveryFailureStreak();
+    InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
+    InterlockedCompareExchange(
+        &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
+        backoff);
+  }
+}
+
+void NoteServerRecoveryHealthy() noexcept {
+  // Advance the health epoch before retracting Backoff. A Busy worker that
+  // started in the previous failure epoch will detect this after publication
+  // and withdraw its stale result.
+  InterlockedIncrement(&g_serverRecoveryHealthEpoch);
+  ResetServerRecoveryFailureStreak();
+  ResetServerUnavailableObservation();
+  InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
+  InterlockedCompareExchange(
+      &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
+      static_cast<LONG>(ServerRecoveryState::Backoff));
+}
+
+void PublishServerRecoveryFailureBackoff(LONG recovery_epoch) noexcept {
   const LONG streak = InterlockedIncrement(&g_serverRecoveryFailureStreak);
   const unsigned int shift =
       streak <= 1 ? 0U
@@ -328,10 +398,10 @@ void EnterServerRecoveryFailureBackoff() noexcept {
   DWORD delay_ms = kServerLaunchFailureBaseBackoffMs << shift;
   if (delay_ms > kServerLaunchFailureMaxBackoffMs)
     delay_ms = kServerLaunchFailureMaxBackoffMs;
-  EnterServerRecoveryBackoff(delay_ms);
+  PublishServerRecoveryBackoff(delay_ms, recovery_epoch);
 }
 
-bool TryBeginServerRecovery() noexcept {
+bool TryBeginServerRecovery(LONG& recovery_epoch) noexcept {
   for (;;) {
     const ServerRecoveryState observed = LoadServerRecoveryState();
     if (observed == ServerRecoveryState::Busy)
@@ -342,13 +412,26 @@ bool TryBeginServerRecovery() noexcept {
       return false;
     }
 
+    const LONG observed_epoch = LoadServerRecoveryHealthEpoch();
     const LONG expected = static_cast<LONG>(observed);
     if (InterlockedCompareExchange(
             &g_serverRecoveryState,
             static_cast<LONG>(ServerRecoveryState::Busy),
-            expected) == expected) {
-      return true;
+            expected) != expected) {
+      continue;
     }
+
+    // A successful reconnect may have raced the state acquisition. Do not
+    // queue recovery work from an epoch that was already superseded.
+    if (LoadServerRecoveryHealthEpoch() != observed_epoch) {
+      InterlockedCompareExchange(
+          &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
+          static_cast<LONG>(ServerRecoveryState::Busy));
+      return false;
+    }
+
+    recovery_epoch = observed_epoch;
+    return true;
   }
 }
 
@@ -395,6 +478,95 @@ bool WaitForServerInstanceState(const std::wstring& instance_name,
   }
 }
 
+struct RunningServerTarget {
+  HWND window = nullptr;
+  HANDLE process = nullptr;
+
+  ~RunningServerTarget() {
+    if (process)
+      CloseHandle(process);
+  }
+};
+
+bool OpenCurrentSessionServerTarget(RunningServerTarget& target) noexcept {
+  target.window = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
+  if (!target.window)
+    return false;
+
+  DWORD process_id = 0;
+  if (!GetWindowThreadProcessId(target.window, &process_id) || !process_id)
+    return false;
+
+  DWORD current_session_id = 0;
+  DWORD process_session_id = 0;
+  if (!weasel::GetCurrentWindowsSessionId(current_session_id) ||
+      !ProcessIdToSessionId(process_id, &process_session_id) ||
+      process_session_id != current_session_id) {
+    return false;
+  }
+
+  target.process =
+      OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION |
+                      PROCESS_TERMINATE,
+                  FALSE, process_id);
+  if (!target.process)
+    return false;
+
+  wchar_t image_path[32768] = {};
+  DWORD image_path_length =
+      static_cast<DWORD>(sizeof(image_path) / sizeof(image_path[0]));
+  if (!QueryFullProcessImageNameW(target.process, 0, image_path,
+                                  &image_path_length)) {
+    return false;
+  }
+
+  const std::wstring path(image_path, image_path_length);
+  const size_t separator = path.find_last_of(L"\\/");
+  const std::wstring file_name =
+      separator == std::wstring::npos ? path : path.substr(separator + 1);
+  return _wcsicmp(file_name.c_str(), L"WeaselServer.exe") == 0;
+}
+
+bool ProbeServerResponsive() noexcept {
+  try {
+    weasel::Client probe;
+    if (!probe.Connect(kServerLivenessProbeTimeoutMs))
+      return false;
+    probe.StartSession(kServerLivenessProbeTimeoutMs);
+    return probe.IsSessionActive();
+  } catch (...) {
+    return false;
+  }
+}
+
+bool StopPersistentlyUnavailableServer() noexcept {
+  RunningServerTarget target;
+  if (!OpenCurrentSessionServerTarget(target))
+    return false;
+
+  if (!PostMessageW(target.window, WM_CLOSE, 0, 0))
+    return false;
+
+  DWORD wait_result =
+      WaitForSingleObject(target.process, kServerGracefulShutdownTimeoutMs);
+  if (wait_result == WAIT_OBJECT_0)
+    return true;
+  if (wait_result == WAIT_FAILED)
+    return false;
+
+  // A fully wedged UI thread cannot consume WM_CLOSE. Only force termination
+  // after the server has remained continuously unavailable for several
+  // seconds, and only after verifying the target is this session's
+  // WeaselServer.exe.
+  if (ServerUnavailableDurationMs() < kServerForceTerminateThresholdMs)
+    return false;
+  if (!TerminateProcess(target.process, ERROR_TIMEOUT))
+    return false;
+
+  return WaitForSingleObject(target.process, kServerForcedExitTimeoutMs) ==
+         WAIT_OBJECT_0;
+}
+
 struct LaunchMutexGuard {
   HANDLE handle = nullptr;
   bool owned = false;
@@ -408,13 +580,13 @@ struct LaunchMutexGuard {
   }
 };
 
-void RunServerRecoveryOnce() noexcept {
+void RunServerRecoveryOnce(LONG recovery_epoch) noexcept {
   try {
     std::wstring dir;
     if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
                           L"WeaselRoot", dir) != ERROR_SUCCESS ||
         dir.empty()) {
-      EnterServerRecoveryFailureBackoff();
+      PublishServerRecoveryFailureBackoff(recovery_epoch);
       return;
     }
 
@@ -423,46 +595,80 @@ void RunServerRecoveryOnce() noexcept {
         weasel::GetLegacyServerInstanceName();
     const std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
 
-    // If an old server still owns the singleton object, allow only a short
-    // background grace period for an already-in-progress exit. Never wait on
-    // the TSF callback thread and never scan the process table.
-    if (IsServerInstancePresent(instance_name, legacy_instance_name) &&
-        !WaitForServerInstanceState(instance_name, legacy_instance_name, false,
-                                    kServerExitObservationTimeoutMs)) {
-      ResetServerRecoveryFailureStreak();
-      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
-      return;
+    bool server_present =
+        IsServerInstancePresent(instance_name, legacy_instance_name);
+    if (server_present) {
+      // Give an already-exiting server a short background grace period before
+      // classifying it as persistently unavailable.
+      if (WaitForServerInstanceState(instance_name, legacy_instance_name, false,
+                                     kServerExitObservationTimeoutMs)) {
+        ResetServerUnavailableObservation();
+        server_present = false;
+      } else if (!ObserveServerUnavailableLongEnough()) {
+        ResetServerRecoveryFailureStreak();
+        PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
+        return;
+      }
+    } else {
+      ResetServerUnavailableObservation();
     }
 
     LaunchMutexGuard launch_mutex;
     launch_mutex.handle =
         CreateMutexW(nullptr, FALSE, launch_mutex_name.c_str());
     if (!launch_mutex.handle) {
-      EnterServerRecoveryFailureBackoff();
+      PublishServerRecoveryFailureBackoff(recovery_epoch);
       return;
     }
 
     const DWORD wait_result = WaitForSingleObject(launch_mutex.handle, 0);
     if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
       ResetServerRecoveryFailureStreak();
-      EnterServerRecoveryBackoff(kServerLaunchBusyBackoffMs);
+      PublishServerRecoveryBackoff(kServerLaunchBusyBackoffMs, recovery_epoch);
       return;
     }
     launch_mutex.owned = true;
 
-    // Cross-process double check: another TSF host may have launched the
-    // service between our first observation and acquiring the launch mutex.
-    if (IsServerInstancePresent(instance_name, legacy_instance_name)) {
-      ResetServerRecoveryFailureStreak();
-      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
-      return;
+    // Cross-process double check: another TSF host may have launched or
+    // recovered the service while this worker was acquiring the launch mutex.
+    server_present =
+        IsServerInstancePresent(instance_name, legacy_instance_name);
+    if (server_present) {
+      if (!ObserveServerUnavailableLongEnough()) {
+        ResetServerRecoveryFailureStreak();
+        PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
+        return;
+      }
+
+      // Another host may have recovered the server while this worker was
+      // waiting for the launch mutex. Probe the real IPC/session path before
+      // treating an old local unavailability timer as evidence of a hang.
+      if (ProbeServerResponsive()) {
+        ResetServerRecoveryFailureStreak();
+        ResetServerUnavailableObservation();
+        PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
+        return;
+      }
+
+      // The instance has stayed unavailable across multiple recovery attempts
+      // and also failed a fresh liveness probe. Restart it only while holding
+      // the cross-process launch mutex, so other TSF hosts cannot concurrently
+      // stop or replace the same server.
+      if (!StopPersistentlyUnavailableServer() ||
+          !WaitForServerInstanceState(instance_name, legacy_instance_name,
+                                      false,
+                                      kServerGracefulShutdownTimeoutMs)) {
+        PublishServerRecoveryFailureBackoff(recovery_epoch);
+        return;
+      }
+      ResetServerUnavailableObservation();
     }
 
     const HINSTANCE launched =
         ShellExecuteW(nullptr, L"open", (dir + L"\\start_service.bat").c_str(),
                       nullptr, dir.c_str(), SW_HIDE);
     if (reinterpret_cast<INT_PTR>(launched) <= 32) {
-      EnterServerRecoveryFailureBackoff();
+      PublishServerRecoveryFailureBackoff(recovery_epoch);
       return;
     }
 
@@ -475,7 +681,8 @@ void RunServerRecoveryOnce() noexcept {
             instance_name, legacy_instance_name, true,
             kServerLaunchQuickObservationTimeoutMs)) {
       ResetServerRecoveryFailureStreak();
-      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
+      ResetServerUnavailableObservation();
+      PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
       return;
     }
 
@@ -487,13 +694,14 @@ void RunServerRecoveryOnce() noexcept {
         WaitForServerInstanceState(instance_name, legacy_instance_name, true,
                                    remaining_launch_lease)) {
       ResetServerRecoveryFailureStreak();
-      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
+      ResetServerUnavailableObservation();
+      PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
       return;
     }
 
-    EnterServerRecoveryFailureBackoff();
+    PublishServerRecoveryFailureBackoff(recovery_epoch);
   } catch (...) {
-    EnterServerRecoveryFailureBackoff();
+    PublishServerRecoveryFailureBackoff(recovery_epoch);
   }
 }
 #endif
@@ -501,18 +709,20 @@ void RunServerRecoveryOnce() noexcept {
 
 void WeaselTSF::_ScheduleServerRecovery() noexcept {
 #if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
-  if (!TryBeginServerRecovery())
+  LONG recovery_epoch = 0;
+  if (!TryBeginServerRecovery(recovery_epoch))
     return;
 
   bool queued = false;
   try {
-    queued = QueueDllBackgroundTask([]() { RunServerRecoveryOnce(); });
+    queued = QueueDllBackgroundTask(
+        [recovery_epoch]() { RunServerRecoveryOnce(recovery_epoch); });
   } catch (...) {
     // Scheduling is best-effort and must never escape through a TSF callback.
   }
 
   if (!queued)
-    EnterServerRecoveryBackoff(kServerQueueFailureBackoffMs);
+    PublishServerRecoveryBackoff(kServerQueueFailureBackoffMs, recovery_epoch);
 #endif
 }
 
