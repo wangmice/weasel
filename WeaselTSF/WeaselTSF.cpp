@@ -530,10 +530,13 @@ bool OpenCurrentSessionServerTarget(RunningServerTarget& target) noexcept {
 bool ProbeServerResponsive() noexcept {
   try {
     weasel::Client probe;
+    const ULONGLONG deadline =
+        GetTickCount64() + kServerLivenessProbeTimeoutMs;
     if (!probe.Connect(kServerLivenessProbeTimeoutMs))
       return false;
-    probe.StartSession(kServerLivenessProbeTimeoutMs);
-    return probe.IsSessionActive();
+
+    const DWORD remaining = RemainingRecoveryTime(deadline);
+    return remaining && probe.ProbeServer(remaining);
   } catch (...) {
     return false;
   }

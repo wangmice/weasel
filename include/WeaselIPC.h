@@ -154,8 +154,10 @@ class Client {
   bool StartMaintenance();
   // 退出維護模式
   void EndMaintenance();
-  // 测试连接
+  // 测试当前逻辑会话
   bool Echo();
+  // 仅测试服务端 IPC 往返，不创建/销毁 Rime 会话，也不改变活动会话
+  bool ProbeServer(DWORD timeout_ms);
   // 会话已建立在活连接上（失败后为 false，直到重新建立会话）
   bool IsSessionActive();
   // 保留未吃键、失效会话与传输失败之间的区别；TSF 用它决定是否可安全重试

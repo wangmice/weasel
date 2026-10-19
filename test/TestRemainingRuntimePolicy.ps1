@@ -44,9 +44,9 @@ if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
     $tsf -notmatch 'StopPersistentlyUnavailableServer\(\)') {
   throw 'persistent live-server failure must escalate through bounded restart thresholds'
 }
-if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs' -or
+if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs[\s\S]*?ProbeServer\(remaining\)' -or
     $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?ResetServerUnavailableObservation\(\)') {
-  throw 'restart escalation must re-probe server health after acquiring launch ownership'
+  throw 'restart escalation must re-probe server IPC health after acquiring launch ownership'
 }
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
   throw 'launcher must double-check server presence across launch mutex acquisition'

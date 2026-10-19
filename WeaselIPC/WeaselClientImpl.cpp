@@ -358,6 +358,23 @@ bool ClientImpl::Echo() {
       expected_session, _SessionId(), server_echo);
 }
 
+bool ClientImpl::ProbeServer(DWORD timeout_ms) {
+  if (!_Connected() || !timeout_ms)
+    return false;
+
+  try {
+    // Session id 0 is intentionally invalid. Liveness is established by the
+    // bounded request/response completing, not by the ECHO return value. This
+    // probes the pipe dispatcher without creating, destroying, or activating a
+    // Rime session.
+    PipeMessage req{WEASEL_IPC_ECHO, 0, 0};
+    channel.Transact(req, timeout_ms);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool ClientImpl::GetResponseData(ResponseHandler const& handler) {
   if (!handler) {
     return false;
@@ -553,6 +570,10 @@ void Client::TrayCommand(UINT menuId) {
 
 bool Client::Echo() {
   return m_pImpl->Echo();
+}
+
+bool Client::ProbeServer(DWORD timeout_ms) {
+  return m_pImpl->ProbeServer(timeout_ms);
 }
 
 bool Client::IsSessionActive() {

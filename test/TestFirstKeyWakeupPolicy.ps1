@@ -37,7 +37,7 @@ if ($fastPath -match 'GetTickCount64|Sleep|Interlocked|QueueDllBackgroundTask|Re
   throw 'healthy connection path must not touch recovery machinery'
 }
 
-if ($schedule -notmatch 'TryBeginServerRecovery\(\)[\s\S]*?QueueDllBackgroundTask\s*\(') {
+if ($schedule -notmatch 'TryBeginServerRecovery\(recovery_epoch\)[\s\S]*?QueueDllBackgroundTask\s*\(') {
   throw 'failed recovery must be deduplicated before queueing DLL-safe background work'
 }
 if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLaunchMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
@@ -94,8 +94,15 @@ if ($tsf -notmatch 'OpenCurrentSessionServerTarget[\s\S]*?ProcessIdToSessionId[\
   throw 'forced recovery must verify the current-session WeaselServer target'
 }
 if ($tsf -notmatch 'kServerLivenessProbeTimeoutMs\s*=\s*100' -or
-    $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?Connect\(kServerLivenessProbeTimeoutMs\)[\s\S]*?StartSession\(kServerLivenessProbeTimeoutMs\)') {
-  throw 'persistent restart must perform a fresh bounded IPC/session liveness probe'
+    $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?Connect\(kServerLivenessProbeTimeoutMs\)[\s\S]*?RemainingRecoveryTime\(deadline\)[\s\S]*?ProbeServer\(remaining\)') {
+  throw 'persistent restart must perform a fresh bounded side-effect-free IPC liveness probe'
+}
+if ($ipc -notmatch 'ProbeServer\(DWORD\s+timeout_ms\)' -or
+    $client -notmatch 'ClientImpl::ProbeServer\(DWORD\s+timeout_ms\)[\s\S]*?PipeMessage\s+req\{WEASEL_IPC_ECHO,\s*0,\s*0\}[\s\S]*?channel\.Transact\(req,\s*timeout_ms\)') {
+  throw 'liveness probe must use ECHO session 0 without creating a logical session'
+}
+if ($client -match 'ClientImpl::ProbeServer\(DWORD\s+timeout_ms\)[\s\S]*?StartSession') {
+  throw 'liveness probe must not create or activate a Rime session'
 }
 if ($tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?ResetServerUnavailableObservation\(\)[\s\S]*?PublishServerRecoveryBackoff') {
   throw 'a recovered server must cancel stale local unavailability before restart'
