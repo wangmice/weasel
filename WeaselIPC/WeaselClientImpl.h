@@ -28,8 +28,7 @@ class ClientImpl {
   bool Echo();
   bool ProbeServer(DWORD timeout_ms);
   KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
-  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent,
-                                   DWORD timeout_ms);
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent, DWORD timeout_ms);
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   bool CommitComposition();
   bool ClearComposition();

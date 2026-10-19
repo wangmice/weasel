@@ -43,6 +43,13 @@ if ($schedule -notmatch 'TryBeginServerRecovery\(recovery_epoch\)[\s\S]*?QueueDl
 if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLaunchMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
   throw 'TSF callback-side scheduler must not perform server discovery or launch work'
 }
+
+if ($tsf -match 'GetWeaselRegName\(') {
+  throw 'background recovery must not reference the undefined GetWeaselRegName helper'
+}
+if ($tsf -notmatch 'RegGetStringValue\(HKEY_LOCAL_MACHINE,\s*WEASEL_REG_KEY,\s*L"WeaselRoot"') {
+  throw 'background recovery must read WeaselRoot from the canonical HKLM Weasel registry key'
+}
 if ($tsf -notmatch 'enum\s+class\s+ServerRecoveryState\s*:\s*LONG[\s\S]*?Idle[\s\S]*?Busy[\s\S]*?Backoff') {
   throw 'server recovery coordinator must expose Idle/Busy/Backoff states'
 }

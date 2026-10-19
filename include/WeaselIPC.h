@@ -163,8 +163,7 @@ class Client {
   // 保留未吃键、失效会话与传输失败之间的区别；TSF 用它决定是否可安全重试
   KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
   // 使用调用方给定的有限预算处理按键；TSF 物理键路径用它限制宿主阻塞
-  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent,
-                                   DWORD timeout_ms);
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent, DWORD timeout_ms);
   // 请求服务处理按键消息
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   // 上屏正在編輯的文字

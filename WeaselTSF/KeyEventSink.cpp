@@ -4,13 +4,11 @@
 #include <KeyEvent.h>
 #include "CandidateList.h"
 
-bool WeaselTSF::_ProcessKeyEventWithRecovery(
-    const weasel::KeyEvent& keyEvent,
-    ULONGLONG recovery_deadline) {
+bool WeaselTSF::_ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent,
+                                             ULONGLONG recovery_deadline) {
   const auto ensure_recovery_deadline = [&]() {
     if (!recovery_deadline) {
-      recovery_deadline =
-          GetTickCount64() + kFastSessionRecoveryBudgetMs;
+      recovery_deadline = GetTickCount64() + kFastSessionRecoveryBudgetMs;
     }
     return recovery_deadline;
   };
@@ -21,8 +19,7 @@ bool WeaselTSF::_ProcessKeyEventWithRecovery(
     return static_cast<DWORD>(deadline - now);
   };
   const auto process_key_bounded = [&]() {
-    return m_client.ProcessKeyEventEx(keyEvent,
-                                      kKeyEventTransactionTimeoutMs);
+    return m_client.ProcessKeyEventEx(keyEvent, kKeyEventTransactionTimeoutMs);
   };
 
   // The successful hot path remains one IPC transaction, but a wedged server
@@ -84,11 +81,11 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
   }
 
   // Allocate the recovery deadline only on the inactive-session path. Healthy
-  // typing keeps the same local IsSessionActive() check and never reads a clock.
+  // typing keeps the same local IsSessionActive() check and never reads a
+  // clock.
   ULONGLONG recovery_deadline = 0;
   if (!m_client.IsSessionActive()) {
-    recovery_deadline =
-        GetTickCount64() + kFastSessionRecoveryBudgetMs;
+    recovery_deadline = GetTickCount64() + kFastSessionRecoveryBudgetMs;
     if (!_EnsureServerConnectedUntil(recovery_deadline)) {
       *pfEaten = FALSE;
       return;
@@ -147,9 +144,8 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
             // Track exactly the callbacks Windows accepted. This assignment
             // happens after suppress_simulated_caps was captured, so the
             // current real CapsLock release does not consume the new budget.
-            _keyCountToSimulate = static_cast<int>(
-                ::SendInput(sizeof(inputs) / sizeof(INPUT), inputs,
-                            sizeof(INPUT)));
+            _keyCountToSimulate = static_cast<int>(::SendInput(
+                sizeof(inputs) / sizeof(INPUT), inputs, sizeof(INPUT)));
           }
         }
         *pfEaten = TRUE;

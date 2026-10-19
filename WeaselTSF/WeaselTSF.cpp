@@ -323,8 +323,8 @@ ULONGLONG ServerUnavailableDurationMs() noexcept {
 
 bool ObserveServerUnavailableLongEnough() noexcept {
   const ULONGLONG now = GetTickCount64();
-  LONG64 since = InterlockedCompareExchange64(
-      &g_serverUnavailableSince, static_cast<LONG64>(now), 0);
+  LONG64 since = InterlockedCompareExchange64(&g_serverUnavailableSince,
+                                              static_cast<LONG64>(now), 0);
   if (!since)
     since = static_cast<LONG64>(now);
   return now - static_cast<ULONGLONG>(since) >=
@@ -349,15 +349,14 @@ void PublishServerRecoveryBackoff(DWORD delay_ms,
   if (LoadServerRecoveryHealthEpoch() != recovery_epoch) {
     ResetServerRecoveryFailureStreak();
     InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
-    InterlockedCompareExchange(
-        &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
-        busy);
+    InterlockedCompareExchange(&g_serverRecoveryState,
+                               static_cast<LONG>(ServerRecoveryState::Idle),
+                               busy);
     return;
   }
 
-  InterlockedExchange64(
-      &g_serverRecoveryRetryAfter,
-      static_cast<LONG64>(GetTickCount64() + delay_ms));
+  InterlockedExchange64(&g_serverRecoveryRetryAfter,
+                        static_cast<LONG64>(GetTickCount64() + delay_ms));
 
   if (InterlockedCompareExchange(&g_serverRecoveryState, backoff, busy) !=
       busy) {
@@ -370,9 +369,9 @@ void PublishServerRecoveryBackoff(DWORD delay_ms,
   if (LoadServerRecoveryHealthEpoch() != recovery_epoch) {
     ResetServerRecoveryFailureStreak();
     InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
-    InterlockedCompareExchange(
-        &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
-        backoff);
+    InterlockedCompareExchange(&g_serverRecoveryState,
+                               static_cast<LONG>(ServerRecoveryState::Idle),
+                               backoff);
   }
 }
 
@@ -384,17 +383,16 @@ void NoteServerRecoveryHealthy() noexcept {
   ResetServerRecoveryFailureStreak();
   ResetServerUnavailableObservation();
   InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
-  InterlockedCompareExchange(
-      &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
-      static_cast<LONG>(ServerRecoveryState::Backoff));
+  InterlockedCompareExchange(&g_serverRecoveryState,
+                             static_cast<LONG>(ServerRecoveryState::Idle),
+                             static_cast<LONG>(ServerRecoveryState::Backoff));
 }
 
 void PublishServerRecoveryFailureBackoff(LONG recovery_epoch) noexcept {
   const LONG streak = InterlockedIncrement(&g_serverRecoveryFailureStreak);
   const unsigned int shift =
       streak <= 1 ? 0U
-                  : (streak >= 4 ? 3U
-                                 : static_cast<unsigned int>(streak - 1));
+                  : (streak >= 4 ? 3U : static_cast<unsigned int>(streak - 1));
   DWORD delay_ms = kServerLaunchFailureBaseBackoffMs << shift;
   if (delay_ms > kServerLaunchFailureMaxBackoffMs)
     delay_ms = kServerLaunchFailureMaxBackoffMs;
@@ -414,19 +412,18 @@ bool TryBeginServerRecovery(LONG& recovery_epoch) noexcept {
 
     const LONG observed_epoch = LoadServerRecoveryHealthEpoch();
     const LONG expected = static_cast<LONG>(observed);
-    if (InterlockedCompareExchange(
-            &g_serverRecoveryState,
-            static_cast<LONG>(ServerRecoveryState::Busy),
-            expected) != expected) {
+    if (InterlockedCompareExchange(&g_serverRecoveryState,
+                                   static_cast<LONG>(ServerRecoveryState::Busy),
+                                   expected) != expected) {
       continue;
     }
 
     // A successful reconnect may have raced the state acquisition. Do not
     // queue recovery work from an epoch that was already superseded.
     if (LoadServerRecoveryHealthEpoch() != observed_epoch) {
-      InterlockedCompareExchange(
-          &g_serverRecoveryState, static_cast<LONG>(ServerRecoveryState::Idle),
-          static_cast<LONG>(ServerRecoveryState::Busy));
+      InterlockedCompareExchange(&g_serverRecoveryState,
+                                 static_cast<LONG>(ServerRecoveryState::Idle),
+                                 static_cast<LONG>(ServerRecoveryState::Busy));
       return false;
     }
 
@@ -505,10 +502,9 @@ bool OpenCurrentSessionServerTarget(RunningServerTarget& target) noexcept {
     return false;
   }
 
-  target.process =
-      OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION |
-                      PROCESS_TERMINATE,
-                  FALSE, process_id);
+  target.process = OpenProcess(
+      SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+      FALSE, process_id);
   if (!target.process)
     return false;
 
@@ -530,8 +526,7 @@ bool OpenCurrentSessionServerTarget(RunningServerTarget& target) noexcept {
 bool ProbeServerResponsive() noexcept {
   try {
     weasel::Client probe;
-    const ULONGLONG deadline =
-        GetTickCount64() + kServerLivenessProbeTimeoutMs;
+    const ULONGLONG deadline = GetTickCount64() + kServerLivenessProbeTimeoutMs;
     if (!probe.Connect(kServerLivenessProbeTimeoutMs))
       return false;
 
@@ -586,8 +581,8 @@ struct LaunchMutexGuard {
 void RunServerRecoveryOnce(LONG recovery_epoch) noexcept {
   try {
     std::wstring dir;
-    if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
-                          L"WeaselRoot", dir) != ERROR_SUCCESS ||
+    if (RegGetStringValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"WeaselRoot",
+                          dir) != ERROR_SUCCESS ||
         dir.empty()) {
       PublishServerRecoveryFailureBackoff(recovery_epoch);
       return;
@@ -680,9 +675,8 @@ void RunServerRecoveryOnce(LONG recovery_epoch) noexcept {
     // observation window; if startup is cold/slow, retain the same launch
     // mutex for the rest of the 2 s lease so another TSF host cannot start a
     // competing WeaselServer and trigger an avoidable restart cycle.
-    if (WaitForServerInstanceState(
-            instance_name, legacy_instance_name, true,
-            kServerLaunchQuickObservationTimeoutMs)) {
+    if (WaitForServerInstanceState(instance_name, legacy_instance_name, true,
+                                   kServerLaunchQuickObservationTimeoutMs)) {
       ResetServerRecoveryFailureStreak();
       ResetServerUnavailableObservation();
       PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
