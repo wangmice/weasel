@@ -2,67 +2,104 @@ $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
+$tsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
 $keySink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\KeyEventSink.cpp') -Raw
 $client = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
 $pipe = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
 $ipc = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
 
-$ensureStart = $tsf.IndexOf('bool WeaselTSF::_EnsureServerConnected()')
-if ($ensureStart -lt 0) {
-  throw 'unable to isolate _EnsureServerConnected'
+$scheduleStart = $tsf.IndexOf('void WeaselTSF::_ScheduleServerRecovery()')
+$untilStart = $tsf.IndexOf('bool WeaselTSF::_EnsureServerConnectedUntil(', $scheduleStart)
+$ensureStart = $tsf.IndexOf('bool WeaselTSF::_EnsureServerConnected()', $untilStart)
+if ($scheduleStart -lt 0 -or $untilStart -le $scheduleStart -or $ensureStart -le $untilStart) {
+  throw 'unable to isolate recovery scheduler and bounded reconnect paths'
 }
+$schedule = $tsf.Substring($scheduleStart, $untilStart - $scheduleStart)
+$until = $tsf.Substring($untilStart, $ensureStart - $untilStart)
 $ensure = $tsf.Substring($ensureStart)
 
-if ($ensure -match '_reconnectRetry\s*>?=\s*6') {
-  throw 'server recovery must not wait for six failed keystrokes before launching'
+if ($tsfHeader -notmatch 'kKeyEventTransactionTimeoutMs\s*=\s*100') {
+  throw 'healthy physical-key transaction timeout must remain 100 ms'
 }
-if ($ensure -notmatch 'bool\s+launch_started\s*=\s*false') {
-  throw 'first-key recovery must track whether a launcher has already been started'
+if ($tsfHeader -notmatch 'kFastSessionRecoveryBudgetMs\s*=\s*20') {
+  throw 'synchronous recovery budget must remain 20 ms'
 }
-if ($ensure -notmatch 'try_start_recovery\s*=\s*\[&\]\(\)[\s\S]*?count_server_process_in_current_session\(\)\s*!=\s*0[\s\S]*?QueueDllBackgroundTask\s*\(') {
-  throw 'first failed reconnect must launch once the server is actually absent'
+if ($ensure -notmatch 'if\s*\(m_client\.IsSessionActive\(\)\)\s*return true;') {
+  throw 'healthy connection check must return before recovery work'
 }
-if ($ensure -match 'std::thread[\s\S]*?\.detach\s*\(') {
-  throw 'first-key recovery must not launch through a detached thread that can outlive the TSF DLL'
+$fastReturn = $ensure.IndexOf('return true;')
+$clockRead = $ensure.IndexOf('GetTickCount64()')
+if ($fastReturn -lt 0 -or $clockRead -le $fastReturn) {
+  throw 'healthy connection check must precede the first recovery clock read'
 }
-if ($tsf -notmatch 'constexpr\s+ULONGLONG\s+kFirstKeyRecoveryTimeoutMs\s*=\s*1000') {
-  throw 'first-key recovery must allow up to one second for server startup'
-}
-if ($tsf -notmatch 'constexpr\s+DWORD\s+kFirstKeyRecoveryPollMs\s*=\s*[1-9][0-9]*') {
-  throw 'first-key recovery must use a bounded reconnect polling interval'
-}
-if ($ensure -notmatch 'deadline\s*=\s*GetTickCount64\(\)\s*\+\s*kFirstKeyRecoveryTimeoutMs') {
-  throw 'first failed key must establish a bounded recovery deadline'
+$fastPath = $ensure.Substring(0, $fastReturn + 'return true;'.Length)
+if ($fastPath -match 'GetTickCount64|Sleep|Interlocked|QueueDllBackgroundTask|RegGetStringValue|OpenMutex') {
+  throw 'healthy connection path must not touch recovery machinery'
 }
 
-$loopStart = $ensure.IndexOf('while (GetTickCount64() < deadline)')
-if ($loopStart -lt 0) {
-  throw 'first failed key must retry only while the shared deadline remains live'
+if ($schedule -notmatch 'TryBeginServerRecovery\(\)[\s\S]*?QueueDllBackgroundTask\s*\(') {
+  throw 'failed recovery must be deduplicated before queueing DLL-safe background work'
 }
-$loopEnd = $ensure.IndexOf('return false;', $loopStart)
-if ($loopEnd -lt 0) {
-  throw 'unable to isolate the bounded first-key recovery loop'
+if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLaunchMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
+  throw 'TSF callback-side scheduler must not perform server discovery or launch work'
 }
-$recoveryLoop = $ensure.Substring($loopStart, $loopEnd - $loopStart)
-if ($recoveryLoop -notmatch 'RemainingRecoveryTime\(deadline\)') {
-  throw 'first-key retry loop must consume the remaining shared deadline budget'
+if ($tsf -notmatch 'enum\s+class\s+ServerRecoveryState\s*:\s*LONG[\s\S]*?Idle[\s\S]*?Busy[\s\S]*?Backoff') {
+  throw 'server recovery coordinator must expose Idle/Busy/Backoff states'
 }
-if ($recoveryLoop -notmatch 'Sleep\([\s\S]*?kFirstKeyRecoveryPollMs') {
-  throw 'first-key retry loop must retain bounded polling sleeps'
+if ($tsf -notmatch 'g_serverRecoveryRetryAfter') {
+  throw 'backoff must be represented by a retry deadline'
 }
-if ($recoveryLoop -notmatch 'if\s*\(reconnect_until\(deadline\)\)\s*\{[\s\S]*?return\s+true;') {
-  throw 'first failed key must reconnect until a session is active or the shared deadline expires'
+if ($tsf -match 'kServerRecoveryRetryCooldownMs') {
+  throw 'backoff must not be implemented by sleeping a worker for a cooldown'
 }
-if ($recoveryLoop -notmatch 'try_start_recovery\(\)') {
-  throw 'first-key recovery must re-check for an exiting server becoming absent during the same key'
+if ($tsf -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*mutex_name\.c_str\(\)\)') {
+  throw 'background recovery must observe named server singleton mutexes'
 }
-if ($ensure -notmatch 'return\s+false;') {
-  throw 'timed-out recovery must still release the key to the host'
+if ($tsf -notmatch 'GetLegacyServerInstanceName\(\)') {
+  throw 'background recovery must preserve the pre-session-scoping server singleton during upgrades'
+}
+if ($tsf -match 'CreateToolhelp32Snapshot') {
+  throw 'background recovery must not poll the full process table'
+}
+if ($tsf -notmatch 'WaitForServerInstanceState\(instance_name,\s*legacy_instance_name,\s*false,[\s\S]*?kServerExitObservationTimeoutMs') {
+  throw 'old-server exit observation must be short and background-only'
+}
+if ($tsf -notmatch 'kServerLaunchQuickObservationTimeoutMs\s*=\s*500' -or
+    $tsf -notmatch 'kServerLaunchLeaseTimeoutMs\s*=\s*2000') {
+  throw 'server launch must use a 500 ms fast observation inside a 2 s cross-process lease'
+}
+if ($tsf -notmatch 'WaitForServerInstanceState\([\s\S]*?kServerLaunchQuickObservationTimeoutMs[\s\S]*?remaining_launch_lease\s*=\s*kServerLaunchLeaseTimeoutMs\s*-\s*kServerLaunchQuickObservationTimeoutMs[\s\S]*?WaitForServerInstanceState\([\s\S]*?remaining_launch_lease') {
+  throw 'launch mutex must remain held through the slow-start remainder of the launch lease'
+}
+if ($tsf -notmatch 'WaitForSingleObject\(launch_mutex\.handle,\s*0\)') {
+  throw 'cross-process launch arbitration must stay nonblocking'
+}
+if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
+  throw 'launcher must double-check the server singleton around launch arbitration'
 }
 
-# Recovery enters Disconnect only after IsSessionActive() is false. In that
-# state Disconnect is a transport reset and must not retire SessionKey, or a
-# lost START_SESSION response cannot be retried idempotently.
+if ($until -notmatch 'm_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(remaining\)') {
+  throw 'bounded reconnect must share one absolute deadline across Connect and StartSession'
+}
+if ($until -notmatch '_ScheduleServerRecovery\(\)') {
+  throw 'failed bounded reconnect must hand server startup to the background coordinator'
+}
+if (([regex]::Matches($until, 'NoteServerRecoveryHealthy\(\)')).Count -lt 2) {
+  throw 'successful cold reconnects must reset the previous launch failure streak'
+}
+if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
+  throw 'physical-key recovery must carry a shared deadline'
+}
+if ($keySink -notmatch 'if\s*\(!m_client\.IsSessionActive\(\)\)[\s\S]*?recovery_deadline\s*=[\s\S]*?kFastSessionRecoveryBudgetMs[\s\S]*?_EnsureServerConnectedUntil\(recovery_deadline\)') {
+  throw 'inactive-session first-key recovery must allocate its deadline only on the failure path'
+}
+if ($keySink -notmatch '_ProcessKeyEventWithRecovery\(ke,\s*recovery_deadline\)') {
+  throw 'the original first-key deadline must flow into transport/session retry logic'
+}
+if ($keySink -notmatch 'InvalidSession[\s\S]*?remaining_recovery_time\(deadline\)[\s\S]*?StartSession\(remaining\)') {
+  throw 'invalid-session rebuild must consume only the remaining physical-key budget'
+}
+
 $disconnectStart = $client.IndexOf('void ClientImpl::Disconnect()')
 $shutdownStart = $client.IndexOf('void ClientImpl::ShutdownServer()', $disconnectStart)
 if ($disconnectStart -lt 0 -or $shutdownStart -le $disconnectStart) {
@@ -73,35 +110,28 @@ if ($disconnectBody -match 'channel\.Disconnect\(\);\s*_RetireSessionKey\(\)') {
   throw 'inactive transport disconnect must preserve SessionKey for START retry'
 }
 if ($disconnectBody -notmatch 'if\s*\(_Active\(\)\)[\s\S]*?EndSession\(\)[\s\S]*?channel\.Disconnect\(\)') {
-  throw 'active Disconnect must still end the established logical session before closing transport'
+  throw 'active Disconnect must still end the established logical session'
 }
-
-# A stale local pipe handle after WeaselServer exits is not proof that the
-# first key reached the server. Distinguish a send-stage failure (safe replay)
-# from a response-stage failure (ambiguous; replay could duplicate input).
 if ($ipc -notmatch 'TransportNotDelivered') {
-  throw 'key result must distinguish transport failure before request delivery'
+  throw 'key result must distinguish a definitely-unsent request'
 }
 if ($pipe -notmatch 'class\s+PipeTransactionError[\s\S]*?request_may_have_been_delivered') {
-  throw 'pipe transaction failures must carry request-delivery ambiguity'
-}
-if ($pipe -notmatch 'bool\s+request_sent\s*=\s*false[\s\S]*?_Send\([^;]+;[\s\S]*?request_sent\s*=\s*true[\s\S]*?_ReceiveResponse\(deadline\)') {
-  throw 'pipe transaction must mark delivery only after the request write succeeds'
+  throw 'pipe transaction failure must carry delivery ambiguity'
 }
 if ($client -notmatch 'catch\s*\(const\s+PipeTransactionError&[\s\S]*?request_may_have_been_delivered[\s\S]*?TransportNotDelivered') {
-  throw 'key processing must map definitely-unsent pipe failures to TransportNotDelivered'
+  throw 'client must map definitely-unsent transport failures to TransportNotDelivered'
 }
-if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnected\(\)[\s\S]*?ProcessKeyEventEx\(keyEvent\)') {
-  throw 'TSF must recover and replay a key only when transport proves it was not delivered'
+if ($keySink -notmatch 'process_key_bounded[\s\S]*?ProcessKeyEventEx\(keyEvent,[\s\S]*?kKeyEventTransactionTimeoutMs\)') {
+  throw 'healthy physical keys must use the bounded key transaction overload'
+}
+if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnectedUntil\(deadline\)[\s\S]*?process_key_bounded\(\)') {
+  throw 'only definitely-unsent keys may recover and replay once with a bounded key IPC'
 }
 if ($keySink -match 'TransportError\s*\|\||\|\|\s*[^\r\n]*TransportError') {
-  throw 'ambiguous TransportError must never be grouped into the safe replay path'
+  throw 'ambiguous TransportError must never be grouped into the replay path'
 }
-if ($keySink -notmatch 'kInvalidSessionRecoveryTimeoutMs\s*=\s*1000') {
-  throw 'invalid-session recovery must use the one-second first-key budget'
-}
-if ($keySink -notmatch 'InvalidSession[\s\S]*?StartSession\(kInvalidSessionRecoveryTimeoutMs\)') {
-  throw 'invalid-session recovery must not fall back to the three-second default StartSession budget'
+if ($keySink -notmatch 'TransportError[\s\S]*?_ScheduleServerRecovery\(\)') {
+  throw 'ambiguous transport failure must schedule recovery without replay'
 }
 
 Write-Host 'First-key wakeup policy: PASS'

@@ -309,9 +309,12 @@ static void test_unavailable_private_server_stays_isolated() {
                             L"_UnavailablePrivateTest_" +
                             std::to_wstring(GetCurrentProcessId());
   TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(client), name);
+  const ULONGLONG started = GetTickCount64();
   check(!tsf._EnsureServerConnected(),
         "missing private server fails recovery without launching the real "
         "service");
+  check(GetTickCount64() - started < 250,
+        "missing server recovery returns promptly instead of stalling input");
   check(!client.IsSessionActive(),
         "missing private server leaves the test client inactive");
 }
@@ -460,8 +463,8 @@ static void test_maintenance_session_recovery() {
   check(!WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
             tsf, weasel::KeyEvent('c')),
         "response timeout is released instead of replayed");
-  check(GetTickCount64() - started < 1400,
-        "TSF returns before the slow engine reply");
+  check(GetTickCount64() - started < 400,
+        "TSF bounds a wedged healthy key transaction well below one second");
   check(start_session_messages == start_before && !tsf_client.IsSessionActive(),
         "response timeout does not rebuild the session");
   check(handler.accepted_keys == accepted_before + 1,

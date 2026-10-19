@@ -132,6 +132,12 @@ void ClientImpl::ShutdownServer() {
 }
 
 KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
+  return ProcessKeyEventEx(keyEvent,
+                           PipeChannelBase::kDefaultTransactionTimeoutMs);
+}
+
+KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent,
+                                             DWORD timeout_ms) {
   const UINT request_session = _SessionId();
   if (!_Connected() || request_session == 0)
     return KeyEventResult::TransportNotDelivered;
@@ -140,7 +146,7 @@ KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
   LRESULT ret = 0;
   try {
     PipeMessage req{WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, request_session};
-    ret = channel.Transact(req);
+    ret = channel.Transact(req, timeout_ms);
   } catch (const PipeTransactionError& error) {
     _ClearSessionIdIf(request_session);
     return error.request_may_have_been_delivered
@@ -482,6 +488,11 @@ bool Client::ProcessKeyEvent(KeyEvent const& keyEvent) {
 
 KeyEventResult Client::ProcessKeyEventEx(KeyEvent const& keyEvent) {
   return m_pImpl->ProcessKeyEventEx(keyEvent);
+}
+
+KeyEventResult Client::ProcessKeyEventEx(KeyEvent const& keyEvent,
+                                         DWORD timeout_ms) {
+  return m_pImpl->ProcessKeyEventEx(keyEvent, timeout_ms);
 }
 
 bool Client::CommitComposition() {

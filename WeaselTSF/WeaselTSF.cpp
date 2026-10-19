@@ -2,7 +2,6 @@
 
 #include <WeaselIPCData.h>
 #include <shellapi.h>
-#include <tlhelp32.h>
 #include "WeaselTSF.h"
 #include "CandidateList.h"
 #include "LanguageBar.h"
@@ -261,47 +260,17 @@ void WeaselTSF::_Reconnect() {
   _ConsumeResponseIfFresh();
 }
 
-static int count_server_process_in_current_session() {
-  DWORD current_session_id = 0;
-  const bool have_current_session =
-      weasel::GetCurrentWindowsSessionId(current_session_id);
-
-  int count = 0;
-  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if (snap == INVALID_HANDLE_VALUE)
-    return 0;
-  PROCESSENTRY32 pe;
-  pe.dwSize = sizeof(pe);
-  if (Process32First(snap, &pe)) {
-    do {
-      if (_wcsicmp(pe.szExeFile, L"WeaselServer.exe") != 0)
-        continue;
-
-      // If the current session id could not be resolved, preserve the older
-      // conservative behavior and count every server rather than risking a
-      // duplicate launch. Normally only the matching RDP/console session is
-      // relevant to this TSF instance.
-      if (!have_current_session) {
-        count++;
-        continue;
-      }
-
-      DWORD process_session_id = 0;
-      if (ProcessIdToSessionId(pe.th32ProcessID, &process_session_id) &&
-          process_session_id == current_session_id) {
-        count++;
-      }
-    } while (Process32Next(snap, &pe));
-  }
-  CloseHandle(snap);
-  return count;
-}
-
 namespace {
-constexpr ULONGLONG kServerLaunchObservationTimeoutMs = 5000;
-constexpr DWORD kServerLaunchObservationPollMs = 50;
-constexpr ULONGLONG kFirstKeyRecoveryTimeoutMs = 1000;
-constexpr DWORD kFirstKeyRecoveryPollMs = 25;
+constexpr DWORD kServerExitObservationTimeoutMs = 250;
+constexpr DWORD kServerLaunchQuickObservationTimeoutMs = 500;
+constexpr DWORD kServerLaunchLeaseTimeoutMs = 2000;
+constexpr DWORD kServerRecoveryPollMs = 25;
+constexpr DWORD kServerPresentBackoffMs = 100;
+constexpr DWORD kServerLaunchBusyBackoffMs = 100;
+constexpr DWORD kServerQueueFailureBackoffMs = 100;
+constexpr DWORD kServerLaunchFailureBaseBackoffMs = 250;
+constexpr DWORD kServerLaunchFailureMaxBackoffMs = 2000;
+constexpr DWORD kFirstKeyRecoveryPollMs = 5;
 
 DWORD RemainingRecoveryTime(ULONGLONG deadline) {
   const ULONGLONG now = GetTickCount64();
@@ -310,54 +279,255 @@ DWORD RemainingRecoveryTime(ULONGLONG deadline) {
   return static_cast<DWORD>(deadline - now);
 }
 
-void launch_server_serialized(std::wstring dir, std::wstring mutex_name) {
-  HANDLE launch_mutex = CreateMutex(NULL, FALSE, mutex_name.c_str());
-  if (!launch_mutex)
-    return;
+#if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
+enum class ServerRecoveryState : LONG {
+  Idle = 0,
+  Busy = 1,
+  Backoff = 2,
+};
 
-  const DWORD wait_result = WaitForSingleObject(launch_mutex, 0);
-  if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
-    CloseHandle(launch_mutex);
-    return;
-  }
+volatile LONG g_serverRecoveryState =
+    static_cast<LONG>(ServerRecoveryState::Idle);
+alignas(8) volatile LONG64 g_serverRecoveryRetryAfter = 0;
+volatile LONG g_serverRecoveryFailureStreak = 0;
 
-  if (count_server_process_in_current_session() == 0) {
-    const HINSTANCE launched =
-        ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
-                      NULL, dir.c_str(), SW_HIDE);
-    if (reinterpret_cast<INT_PTR>(launched) > 32) {
-      const ULONGLONG deadline =
-          GetTickCount64() + kServerLaunchObservationTimeoutMs;
-      while (GetTickCount64() < deadline) {
-        if (count_server_process_in_current_session() > 0)
-          break;
-        Sleep(kServerLaunchObservationPollMs);
-      }
+ServerRecoveryState LoadServerRecoveryState() noexcept {
+  return static_cast<ServerRecoveryState>(
+      InterlockedCompareExchange(&g_serverRecoveryState, 0, 0));
+}
+
+ULONGLONG LoadServerRecoveryRetryAfter() noexcept {
+  return static_cast<ULONGLONG>(
+      InterlockedCompareExchange64(&g_serverRecoveryRetryAfter, 0, 0));
+}
+
+void EnterServerRecoveryBackoff(DWORD delay_ms) noexcept {
+  InterlockedExchange64(
+      &g_serverRecoveryRetryAfter,
+      static_cast<LONG64>(GetTickCount64() + delay_ms));
+  InterlockedExchange(&g_serverRecoveryState,
+                      static_cast<LONG>(ServerRecoveryState::Backoff));
+}
+
+void ResetServerRecoveryFailureStreak() noexcept {
+  InterlockedExchange(&g_serverRecoveryFailureStreak, 0);
+}
+
+void NoteServerRecoveryHealthy() noexcept {
+  // A successful cold reconnect starts a fresh failure epoch. Do not disturb
+  // an in-flight Busy worker; it still owns the right to publish its outcome.
+  ResetServerRecoveryFailureStreak();
+}
+
+void EnterServerRecoveryFailureBackoff() noexcept {
+  const LONG streak = InterlockedIncrement(&g_serverRecoveryFailureStreak);
+  const unsigned int shift =
+      streak <= 1 ? 0U
+                  : (streak >= 4 ? 3U
+                                 : static_cast<unsigned int>(streak - 1));
+  DWORD delay_ms = kServerLaunchFailureBaseBackoffMs << shift;
+  if (delay_ms > kServerLaunchFailureMaxBackoffMs)
+    delay_ms = kServerLaunchFailureMaxBackoffMs;
+  EnterServerRecoveryBackoff(delay_ms);
+}
+
+bool TryBeginServerRecovery() noexcept {
+  for (;;) {
+    const ServerRecoveryState observed = LoadServerRecoveryState();
+    if (observed == ServerRecoveryState::Busy)
+      return false;
+
+    if (observed == ServerRecoveryState::Backoff &&
+        GetTickCount64() < LoadServerRecoveryRetryAfter()) {
+      return false;
+    }
+
+    const LONG expected = static_cast<LONG>(observed);
+    if (InterlockedCompareExchange(
+            &g_serverRecoveryState,
+            static_cast<LONG>(ServerRecoveryState::Busy),
+            expected) == expected) {
+      return true;
     }
   }
-
-  ReleaseMutex(launch_mutex);
-  CloseHandle(launch_mutex);
 }
+
+bool IsNamedMutexPresent(const std::wstring& mutex_name) noexcept {
+  HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, mutex_name.c_str());
+  if (mutex) {
+    CloseHandle(mutex);
+    return true;
+  }
+
+  // Be conservative if the object exists but its DACL denies SYNCHRONIZE:
+  // treating it as absent could launch a duplicate server.
+  return GetLastError() == ERROR_ACCESS_DENIED;
+}
+
+bool IsServerInstancePresent(
+    const std::wstring& instance_name,
+    const std::wstring& legacy_instance_name) noexcept {
+  if (IsNamedMutexPresent(instance_name))
+    return true;
+  return legacy_instance_name != instance_name &&
+         IsNamedMutexPresent(legacy_instance_name);
+}
+
+bool WaitForServerInstanceState(const std::wstring& instance_name,
+                                const std::wstring& legacy_instance_name,
+                                bool expected_present,
+                                DWORD timeout_ms) noexcept {
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+  for (;;) {
+    if (IsServerInstancePresent(instance_name, legacy_instance_name) ==
+        expected_present) {
+      return true;
+    }
+
+    const DWORD remaining = RemainingRecoveryTime(deadline);
+    if (!remaining) {
+      return IsServerInstancePresent(instance_name, legacy_instance_name) ==
+             expected_present;
+    }
+
+    Sleep(remaining < kServerRecoveryPollMs ? remaining
+                                            : kServerRecoveryPollMs);
+  }
+}
+
+struct LaunchMutexGuard {
+  HANDLE handle = nullptr;
+  bool owned = false;
+
+  ~LaunchMutexGuard() {
+    if (!handle)
+      return;
+    if (owned)
+      ReleaseMutex(handle);
+    CloseHandle(handle);
+  }
+};
+
+void RunServerRecoveryOnce() noexcept {
+  try {
+    std::wstring dir;
+    if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
+                          L"WeaselRoot", dir) != ERROR_SUCCESS ||
+        dir.empty()) {
+      EnterServerRecoveryFailureBackoff();
+      return;
+    }
+
+    const std::wstring instance_name = weasel::GetServerInstanceName();
+    const std::wstring legacy_instance_name =
+        weasel::GetLegacyServerInstanceName();
+    const std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
+
+    // If an old server still owns the singleton object, allow only a short
+    // background grace period for an already-in-progress exit. Never wait on
+    // the TSF callback thread and never scan the process table.
+    if (IsServerInstancePresent(instance_name, legacy_instance_name) &&
+        !WaitForServerInstanceState(instance_name, legacy_instance_name, false,
+                                    kServerExitObservationTimeoutMs)) {
+      ResetServerRecoveryFailureStreak();
+      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
+      return;
+    }
+
+    LaunchMutexGuard launch_mutex;
+    launch_mutex.handle =
+        CreateMutexW(nullptr, FALSE, launch_mutex_name.c_str());
+    if (!launch_mutex.handle) {
+      EnterServerRecoveryFailureBackoff();
+      return;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(launch_mutex.handle, 0);
+    if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
+      ResetServerRecoveryFailureStreak();
+      EnterServerRecoveryBackoff(kServerLaunchBusyBackoffMs);
+      return;
+    }
+    launch_mutex.owned = true;
+
+    // Cross-process double check: another TSF host may have launched the
+    // service between our first observation and acquiring the launch mutex.
+    if (IsServerInstancePresent(instance_name, legacy_instance_name)) {
+      ResetServerRecoveryFailureStreak();
+      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
+      return;
+    }
+
+    const HINSTANCE launched =
+        ShellExecuteW(nullptr, L"open", (dir + L"\\start_service.bat").c_str(),
+                      nullptr, dir.c_str(), SW_HIDE);
+    if (reinterpret_cast<INT_PTR>(launched) <= 32) {
+      EnterServerRecoveryFailureBackoff();
+      return;
+    }
+
+    // Keep the cross-process launch lease until the launched server has had a
+    // realistic chance to publish its singleton. The first 500 ms is the fast
+    // observation window; if startup is cold/slow, retain the same launch
+    // mutex for the rest of the 2 s lease so another TSF host cannot start a
+    // competing WeaselServer and trigger an avoidable restart cycle.
+    if (WaitForServerInstanceState(
+            instance_name, legacy_instance_name, true,
+            kServerLaunchQuickObservationTimeoutMs)) {
+      ResetServerRecoveryFailureStreak();
+      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
+      return;
+    }
+
+    static_assert(kServerLaunchLeaseTimeoutMs >=
+                  kServerLaunchQuickObservationTimeoutMs);
+    const DWORD remaining_launch_lease =
+        kServerLaunchLeaseTimeoutMs - kServerLaunchQuickObservationTimeoutMs;
+    if (remaining_launch_lease &&
+        WaitForServerInstanceState(instance_name, legacy_instance_name, true,
+                                   remaining_launch_lease)) {
+      ResetServerRecoveryFailureStreak();
+      EnterServerRecoveryBackoff(kServerPresentBackoffMs);
+      return;
+    }
+
+    EnterServerRecoveryFailureBackoff();
+  } catch (...) {
+    EnterServerRecoveryFailureBackoff();
+  }
+}
+#endif
 }  // namespace
 
-bool WeaselTSF::_EnsureServerConnected() {
-  // Healthy typing is a local fast path. A remotely invalidated session is
-  // detected by PROCESS_KEY_EVENT itself, avoiding an Echo roundtrip per key.
+void WeaselTSF::_ScheduleServerRecovery() noexcept {
+#if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
+  if (!TryBeginServerRecovery())
+    return;
+
+  bool queued = false;
+  try {
+    queued = QueueDllBackgroundTask([]() { RunServerRecoveryOnce(); });
+  } catch (...) {
+    // Scheduling is best-effort and must never escape through a TSF callback.
+  }
+
+  if (!queued)
+    EnterServerRecoveryBackoff(kServerQueueFailureBackoffMs);
+#endif
+}
+
+bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
   if (m_client.IsSessionActive())
     return true;
 
-  // One absolute deadline bounds the complete first-key recovery sequence.
-  // Connect and StartSession receive only the time still available from it.
-  const ULONGLONG deadline = GetTickCount64() + kFirstKeyRecoveryTimeoutMs;
-  const auto reconnect_until = [&](ULONGLONG recovery_deadline) {
+  const auto reconnect_until = [&](ULONGLONG deadline) {
     m_client.Disconnect();
 
-    DWORD remaining = RemainingRecoveryTime(recovery_deadline);
+    DWORD remaining = RemainingRecoveryTime(deadline);
     if (!remaining || !m_client.Connect(remaining))
       return false;
 
-    remaining = RemainingRecoveryTime(recovery_deadline);
+    remaining = RemainingRecoveryTime(deadline);
     if (!remaining) {
       m_client.Disconnect();
       return false;
@@ -368,51 +538,41 @@ bool WeaselTSF::_EnsureServerConnected() {
     return m_client.IsSessionActive();
   };
 
-  if (reconnect_until(deadline)) {
+  if (reconnect_until(recovery_deadline)) {
+#if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
+    NoteServerRecoveryHealthy();
+#endif
     _reconnectRetry = 0;
     return true;
   }
 
-  // The pipe can disappear slightly before a quitting WeaselServer process
-  // leaves the process table. Keep checking that transition during this same
-  // key, so recovery does not need a second physical keystroke to start.
-  bool launch_started = false;
-  const auto try_start_recovery = [&]() {
-#if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
-    if (launch_started || count_server_process_in_current_session() != 0)
-      return;
+  _ScheduleServerRecovery();
 
-    std::wstring dir = _GetRootDir();
-    std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
-    launch_started = QueueDllBackgroundTask([dir = std::move(dir),
-                                             launch_mutex_name = std::move(
-                                                 launch_mutex_name)]() mutable {
-      launch_server_serialized(std::move(dir), std::move(launch_mutex_name));
-    });
-#endif
-  };
-
-  try_start_recovery();
-
-  // Give this same key one short, bounded recovery window. Once the pipe and
-  // session are live, _ProcessKeyEvent continues normally and sends the current
-  // key exactly once. Healthy input never reaches this wait.
-  while (GetTickCount64() < deadline) {
-    const DWORD remaining = RemainingRecoveryTime(deadline);
+  while (GetTickCount64() < recovery_deadline) {
+    const DWORD remaining = RemainingRecoveryTime(recovery_deadline);
     if (!remaining)
       break;
     Sleep(remaining < kFirstKeyRecoveryPollMs ? remaining
                                               : kFirstKeyRecoveryPollMs);
-    if (reconnect_until(deadline)) {
+    if (reconnect_until(recovery_deadline)) {
+#if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
+      NoteServerRecoveryHealthy();
+#endif
       _reconnectRetry = 0;
       return true;
     }
-
-    // If the first check caught the old server during its final shutdown,
-    // launch as soon as that process actually disappears.
-    try_start_recovery();
   }
 
   _reconnectRetry = 0;
   return false;
+}
+
+bool WeaselTSF::_EnsureServerConnected() {
+  // The healthy input path is strictly local: no clocks, atomics, registry
+  // access, process probing, or background scheduling while the session lives.
+  if (m_client.IsSessionActive())
+    return true;
+
+  return _EnsureServerConnectedUntil(GetTickCount64() +
+                                     kFastSessionRecoveryBudgetMs);
 }

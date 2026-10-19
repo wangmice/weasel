@@ -29,15 +29,18 @@ if ($globalsCpp -notmatch 'TrySubmitThreadpoolCallback[\s\S]*?FreeLibrary\s*\(')
   throw 'failed background submission must release the loader reference'
 }
 
-$recoveryStart = $tsf.IndexOf('const auto try_start_recovery')
-$recoveryEnd = $tsf.IndexOf('try_start_recovery();', $recoveryStart)
+$recoveryStart = $tsf.IndexOf('void WeaselTSF::_ScheduleServerRecovery()')
+$recoveryEnd = $tsf.IndexOf('bool WeaselTSF::_EnsureServerConnectedUntil(', $recoveryStart)
 if ($recoveryStart -lt 0 -or $recoveryEnd -le $recoveryStart) {
-  throw 'unable to isolate first-key background launcher'
+  throw 'unable to isolate first-key background scheduler'
 }
 $recoveryLaunch = $tsf.Substring($recoveryStart, $recoveryEnd - $recoveryStart)
 if ($recoveryLaunch -match '\.detach\s*\(' -or
     $recoveryLaunch -notmatch 'QueueDllBackgroundTask\s*\(') {
-  throw 'first-key server launch must use the DLL-lifetime-aware background helper'
+  throw 'first-key server recovery must use the DLL-lifetime-aware background helper'
+}
+if ($recoveryLaunch -match 'RegGetStringValue|GetServerInstanceName|GetServerLaunchMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
+  throw 'callback-side recovery scheduling must not perform blocking discovery or launch work'
 }
 
 $langStart = $languageBar.IndexOf('case ID_WEASELTRAY_RERUN_SERVICE:')

@@ -60,8 +60,8 @@ if ($serverCommandsXmake -match 'add_forceincludes\s*\(') {
 if ($serverCommandsXmake -notmatch 'add_defines\("WEASEL_TEST_DISABLE_SERVER_LAUNCH"\)') {
   throw 'TestServerCommands must compile out the real server launcher'
 }
-if ($tsf -notmatch 'try_start_recovery\s*=\s*\[&\]\(\)\s*\{\s*#if !defined\(WEASEL_TEST_DISABLE_SERVER_LAUNCH\)') {
-  throw 'the test build must disable recovery launch before process and registry access'
+if ($tsf -notmatch 'void\s+WeaselTSF::_ScheduleServerRecovery\(\)\s+noexcept\s*\{\s*#if !defined\(WEASEL_TEST_DISABLE_SERVER_LAUNCH\)') {
+  throw 'the test build must disable recovery scheduling before background launch work'
 }
 if ($weaselTsfHeader -notmatch 'friend\s+class\s+WeaselTSFTestAccess\s*;') {
   throw 'WeaselTSF must grant access only to the dedicated test accessor'
@@ -183,6 +183,7 @@ if ($restartFlow -match 'while\s*\(client\.Connect\(\)') {
 foreach ($required in @(
   'GetCurrentWindowsSessionId',
   'GetLegacyPipeName',
+  'GetLegacyServerInstanceName',
   'GetServerInstanceName',
   'GetServerLaunchMutexName'
 )) {
@@ -209,14 +210,16 @@ if ($serverImpl -notmatch 'const\s+std::wstring\s+instanceName\s*=\s*GetServerIn
     $serverImpl -notmatch 'CreateMutex\(NULL,\s*FALSE,\s*instanceName\.c_str\(\)\)') {
   throw 'server singleton mutex must use the same Windows-session scope as IPC'
 }
-if ($tsf -notmatch 'count_server_process_in_current_session') {
-  throw 'TSF recovery must count only WeaselServer processes in the current Windows session'
+if ($tsf -match 'CreateToolhelp32Snapshot|Process32First|Process32Next') {
+  throw 'TSF recovery must use the server singleton object instead of polling the process table'
 }
-if ($tsf -notmatch 'ProcessIdToSessionId\(pe\.th32ProcessID,\s*&process_session_id\)') {
-  throw 'TSF recovery process enumeration must filter by Terminal Services session id'
+if ($tsf -notmatch 'GetServerInstanceName\(\)' -or
+    $tsf -notmatch 'GetLegacyServerInstanceName\(\)' -or
+    $tsf -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*mutex_name\.c_str\(\)\)') {
+  throw 'TSF recovery must observe both current and legacy server singleton mutexes'
 }
 if ($tsf -notmatch 'GetServerLaunchMutexName\(\)') {
-  throw 'TSF recovery launch serialization must be scoped to the current Windows session'
+  throw 'TSF recovery launch serialization must remain scoped to the current Windows session'
 }
 
 Write-Host 'Runtime hardening policy: PASS'

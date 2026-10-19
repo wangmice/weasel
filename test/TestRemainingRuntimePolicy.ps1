@@ -5,28 +5,43 @@ $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $imeSetup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\imesetup.cpp') -Raw
 $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
 
-# Server recovery serialization must be owned by the detached launcher thread,
-# so the mutex stays held until the launched server becomes observable.
-if ($tsf -notmatch 'launch_server_serialized\s*\(') {
-  throw 'TSF recovery must use a serialized launcher helper'
+# Recovery launch arbitration belongs entirely to a DLL-safe background task.
+if ($tsf -notmatch 'void\s+RunServerRecoveryOnce\(\)\s+noexcept') {
+  throw 'TSF recovery must have a single background recovery worker'
 }
-if ($tsf -notmatch 'CreateMutex\(NULL,\s*FALSE,\s*mutex_name\.c_str\(\)\)') {
-  throw 'launcher mutex must be created unowned and acquired by the launcher thread'
+if ($tsf -notmatch 'CreateMutexW\(nullptr,\s*FALSE,\s*launch_mutex_name\.c_str\(\)\)') {
+  throw 'background recovery must create the launch mutex unowned'
 }
-if ($tsf -notmatch 'WaitForSingleObject\(launch_mutex,\s*0\)') {
-  throw 'launcher thread must acquire the launch mutex without blocking TSF input'
+if ($tsf -notmatch 'WaitForSingleObject\(launch_mutex\.handle,\s*0\)') {
+  throw 'cross-process launch arbitration must be nonblocking'
 }
-if ($tsf -notmatch 'ReleaseMutex\(launch_mutex\)') {
-  throw 'launcher thread must release the launch mutex after launch arbitration'
+if ($tsf -notmatch 'ReleaseMutex\(handle\)') {
+  throw 'launch mutex guard must release ownership after the launch window'
 }
-if ($tsf -notmatch 'count_server_process_in_current_session\(\)\s*>\s*0') {
-  throw 'launcher mutex must be held until a server process becomes observable'
+if ($tsf -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*mutex_name\.c_str\(\)\)' -or
+    $tsf -notmatch 'GetLegacyServerInstanceName\(\)') {
+  throw 'server presence must cover current and legacy singleton mutexes'
 }
-if ($tsf -notmatch 'GetTickCount64\(\)[\s\S]*?kServerLaunchObservationTimeoutMs') {
-  throw 'launcher observation wait must be bounded'
+if ($tsf -match 'CreateToolhelp32Snapshot|Process32First|Process32Next') {
+  throw 'recovery must not poll the process table'
 }
-if ($tsf -match 'CreateMutex\(NULL,\s*TRUE,\s*launch_mutex_name\.c_str\(\)\)') {
-  throw 'TSF input thread must not briefly own and immediately release the launch mutex'
+if ($tsf -notmatch 'kServerExitObservationTimeoutMs\s*=\s*250' -or
+    $tsf -notmatch 'kServerLaunchQuickObservationTimeoutMs\s*=\s*500' -or
+    $tsf -notmatch 'kServerLaunchLeaseTimeoutMs\s*=\s*2000') {
+  throw 'background transition observation and cross-process launch lease must stay bounded'
+}
+if ($tsf -notmatch 'remaining_launch_lease\s*=\s*kServerLaunchLeaseTimeoutMs\s*-\s*kServerLaunchQuickObservationTimeoutMs') {
+  throw 'slow startup must retain the original launch mutex for the remainder of the lease'
+}
+if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)') {
+  throw 'successful cold recovery must reset stale launch failure history'
+}
+if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
+  throw 'launcher must double-check server presence across launch mutex acquisition'
+}
+if ($tsf -notmatch 'g_serverRecoveryRetryAfter' -or
+    $tsf -match 'kServerRecoveryRetryCooldownMs') {
+  throw 'recovery backoff must use a deadline instead of sleeping a cooldown worker'
 }
 
 # Uninstall must surface profile/layout/file/registry cleanup failures.

@@ -6,6 +6,7 @@ $pipeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h')
 $clientCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
 $clientHeader = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
+$keySink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\KeyEventSink.cpp') -Raw
 
 # FILE_FLAG_OVERLAPPED handles must not use the initiating call's byte-count
 # output. Microsoft documents lpNumberOfBytes{Read,Written}=NULL for async
@@ -70,11 +71,35 @@ if ($clientHeader -notmatch 'void\s+StartSession\(DWORD\s+timeout_ms\)') {
 if ($pipeHeader -notmatch 'bool\s+Connect\(DWORD\s+timeout_ms\)') {
   throw 'PipeChannel must accept the caller recovery budget'
 }
-if ($tsf -notmatch 'deadline\s*=\s*GetTickCount64\(\)\s*\+\s*kFirstKeyRecoveryTimeoutMs[\s\S]*?reconnect_until\(deadline\)') {
-  throw 'first-key deadline must be created before the initial recovery attempt'
+if ($clientHeader -notmatch 'ProcessKeyEventEx\(KeyEvent\s+const&\s+keyEvent,\s*DWORD\s+timeout_ms\)') {
+  throw 'ClientImpl must expose a bounded key transaction overload'
 }
-if ($tsf -notmatch 'reconnect_until\s*=\s*\[&\]\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(remaining\)') {
+if ($clientCpp -notmatch 'ProcessKeyEventEx\(KeyEvent\s+const&\s+keyEvent,\s*DWORD\s+timeout_ms\)[\s\S]*?channel\.Transact\(req,\s*timeout_ms\)') {
+  throw 'bounded key transactions must pass the caller timeout to PipeChannel'
+}
+if ($tsfHeader -notmatch 'kKeyEventTransactionTimeoutMs\s*=\s*100') {
+  throw 'healthy physical-key IPC must stay bounded to 100 ms'
+}
+if ($keySink -notmatch 'process_key_bounded[\s\S]*?ProcessKeyEventEx\(keyEvent,[\s\S]*?kKeyEventTransactionTimeoutMs\)') {
+  throw 'healthy TSF keys must use the bounded key IPC overload'
+}
+if ($tsf -notmatch '_EnsureServerConnected\(\)[\s\S]*?GetTickCount64\(\)\s*\+[\s\S]*?kFastSessionRecoveryBudgetMs') {
+  throw 'inactive recovery must create a bounded 20 ms absolute deadline'
+}
+if ($tsf -notmatch '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(remaining\)') {
   throw 'Connect and StartSession must consume one shared first-key deadline'
+}
+if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
+  throw 'transport/session retry must reuse the physical key recovery deadline'
+}
+if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnectedUntil\(deadline\)[\s\S]*?process_key_bounded\(\)') {
+  throw 'definitely-undelivered keys may replay only after bounded recovery'
+}
+if ($keySink -notmatch 'InvalidSession[\s\S]*?remaining_recovery_time\(deadline\)[\s\S]*?StartSession\(remaining\)[\s\S]*?process_key_bounded\(\)') {
+  throw 'InvalidSession rebuild must consume the recovery budget before one bounded replay'
+}
+if ($keySink -match 'process_key_bounded[\s\S]*?remaining_recovery_time\([^\)]*\)[\s\S]*?ProcessKeyEventEx\(keyEvent,\s*remaining') {
+  throw 'successful recovery must not squeeze the real key IPC into leftover recovery milliseconds'
 }
 
 # StartSession(timeout_ms) itself is also an end-to-end budget. If an active

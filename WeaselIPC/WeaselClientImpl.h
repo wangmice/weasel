@@ -27,6 +27,8 @@ class ClientImpl {
   void EndMaintenance();
   bool Echo();
   KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent,
+                                   DWORD timeout_ms);
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   bool CommitComposition();
   bool ClearComposition();
