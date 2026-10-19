@@ -7,8 +7,8 @@
 #   powershell -ExecutionPolicy Bypass -File .\make-installer.ps1 -Build     # 先 xmake 编译 x64+x86 再打包
 #   powershell -ExecutionPolicy Bypass -File .\make-installer.ps1 -Release   # 正式发布版本号 (WEASEL_BUILD=0, 不带 git hash)
 #
-# 版本号可用环境变量覆盖: VERSION_MAJOR / VERSION_MINOR / VERSION_PATCH / WEASEL_BUILD / RELEASE_BUILD
-# 默认版本号从仓库 VERSION 读取；非 Release 再从最近 git tag 推算 WEASEL_BUILD 与 git 短 hash
+# 非 Release 可用 VERSION_MAJOR / VERSION_MINOR / VERSION_PATCH 覆盖版本；-Release 严格使用仓库 VERSION
+# WEASEL_BUILD / RELEASE_BUILD 仍可通过环境变量控制；非 Release 从最近 git tag 推算 build 与 git 短 hash
 #
 # 前置:
 #   编译环境 (-Build 需要): 见 setup-build-env.ps1 (boost / librime / xmake)
@@ -44,7 +44,24 @@ if (-not (Test-Path -LiteralPath $versionPath)) {
   Die "未找到版本文件: $versionPath"
 }
 $repositoryVersion = (Get-Content -LiteralPath $versionPath -Raw).Trim()
-if ($repositoryVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$releaseBuild = $Release -or ($env:RELEASE_BUILD -eq '1')
+if ($repositoryVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+  Die "VERSION 必须是 MAJOR.MINOR.PATCH，当前值: $repositoryVersion"
+}
+$versionParts = $repositoryVersion.Split('.')
+$releaseBuild = $Release -or ($env:RELEASE_BUILD -eq '1')
+
+if ($releaseBuild) {
+  # 正式发布必须由仓库 VERSION 唯一决定，避免当前 shell 中残留的
+  # VERSION_MAJOR/MINOR/PATCH 把发布包静默打成旧版本。
+  $major = $versionParts[0]
+  $minor = $versionParts[1]
+  $patch = $versionParts[2]
+} else {
+  $major = if ($env:VERSION_MAJOR) { $env:VERSION_MAJOR } else { $versionParts[0] }
+  $minor = if ($env:VERSION_MINOR) { $env:VERSION_MINOR } else { $versionParts[1] }
+  $patch = if ($env:VERSION_PATCH) { $env:VERSION_PATCH } else { $versionParts[2] }
+}
+$weaselVersion = "$major.$minor.$patch"
 
 NeedCommand 'git' '打包前需要 git 计算版本号'
 $weaselBuild = $env:WEASEL_BUILD
