@@ -454,6 +454,16 @@ DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
                                  DWORD lParam) {
   if (!m_pRequestHandler || _RuntimeLifecycle() != ServerLifecycle::Ready)
     return 0;
+
+  // Session creation is a cold path and participates in lifecycle ownership:
+  // once deploy/recovery/restart owns the named lock, no process can establish
+  // a fresh session behind that lifecycle decision.
+  ServerLifecycleLock session_lifecycle;
+  if (!session_lifecycle.Acquire(0) ||
+      _RuntimeLifecycle() != ServerLifecycle::Ready) {
+    return 0;
+  }
+
   return m_pRequestHandler->AddSession(
       reinterpret_cast<LPWSTR>(channel->ReceiveBuffer()),
       [this](std::wstring& msg) -> bool {

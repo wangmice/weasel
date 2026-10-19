@@ -58,7 +58,7 @@ if ($serverImpl -notmatch 'int\s+ServerImpl::Stop\(\)[\s\S]*?lock_guard\s+guard\
     $serverImpl -notmatch 'OnShutdownServer[\s\S]*?_RequestStopUnderApiLock\(\)') {
   throw 'server stop and maintenance transitions must share the API serialization boundary'
 }
-if ($serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
+if ($serverImpl -notmatch 'OnStartSession[\s\S]*?ServerLifecycleLock\s+session_lifecycle[\s\S]*?session_lifecycle\.Acquire\(0\)[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
     $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)' -or
     $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
   throw 'server command admission must enforce monotonic Ready/Maintenance/Stopping lifecycle transitions'
@@ -81,7 +81,8 @@ if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
   throw 'persistent live-server failure must escalate through bounded restart thresholds'
 }
 if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs[\s\S]*?ProbeServer\(remaining\)' -or
-    $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?FinishServerRecoveryHealthy\(\)') {
+    $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?FinishServerRecoveryHealthy\(\)' -or
+    $tsf -notmatch 'final_probe_healthy[\s\S]*?ProbeServerResponsive\(\)[\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE') {
   throw 'restart escalation must re-probe server IPC health after acquiring lifecycle ownership'
 }
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {

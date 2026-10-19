@@ -471,6 +471,7 @@ StopServerResult StopPersistentlyUnavailableServer(
   // Linearize the final generation/lifecycle check and WM_CLOSE against
   // foreground reconnects. A successful reconnect that happens first advances
   // health_revision_ and prevents this stale worker from closing the server.
+  bool final_probe_healthy = false;
   const bool close_posted = g_serverRecovery.RunIfHealthUnchanged(
       health_revision, [&]() noexcept {
         weasel::ServerRuntimeState current_state{};
@@ -480,10 +481,19 @@ StopServerResult StopPersistentlyUnavailableServer(
                 static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
           return false;
         }
+
+        // This second probe is intentionally adjacent to WM_CLOSE. It observes
+        // recovery by any TSF process, while ServerLifecycleLock prevents a new
+        // START_SESSION from racing in behind the decision.
+        if (ProbeServerResponsive()) {
+          final_probe_healthy = true;
+          return false;
+        }
         return !!PostMessageW(target.window, WM_CLOSE, 0, 0);
       });
   if (!close_posted) {
-    return g_serverRecovery.HealthRevision() != health_revision
+    return final_probe_healthy ||
+                   g_serverRecovery.HealthRevision() != health_revision
                ? StopServerResult::SupersededByHealth
                : StopServerResult::Failed;
   }

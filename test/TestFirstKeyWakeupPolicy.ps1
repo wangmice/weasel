@@ -109,7 +109,7 @@ if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE,\s*sa\.get_
     $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
     $serverImpl -notmatch 'ServerLifecycle::Starting' -or
     $serverImpl -notmatch 'WaitForPrimaryPipeReady\(\)[\s\S]*?ServerLifecycle::Ready[\s\S]*?_UnlockStartupLifecycleLock\(\)' -or
-    $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
+    $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready[\s\S]*?ServerLifecycleLock\s+session_lifecycle[\s\S]*?session_lifecycle\.Acquire\(0\)[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
     $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)[\s\S]*?StartMaintenance\(\)' -or
     $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Maintenance[\s\S]*?EndMaintenance\(\)[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
   throw 'server must own lifecycle from singleton publication through Ready and publish maintenance transitions'
@@ -139,7 +139,7 @@ if ($stopStart -lt 0 -or $stopEnd -le $stopStart) {
   throw 'unable to isolate StopPersistentlyUnavailableServer'
 }
 $stopBody = $tsf.Substring($stopStart, $stopEnd - $stopStart)
-if ($stopBody -notmatch 'PostMessageW\(target\.window,\s*WM_CLOSE' -or
+if ($stopBody -notmatch 'ProbeServerResponsive\(\)[\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE' -or
     $stopBody -notmatch 'kServerForceTerminateThresholdMs' -or
     $stopBody -notmatch 'TerminateProcess\(target\.process') {
   throw 'persistent live-server recovery must try graceful shutdown before bounded forced termination'
