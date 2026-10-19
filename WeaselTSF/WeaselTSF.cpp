@@ -468,35 +468,41 @@ StopServerResult StopPersistentlyUnavailableServer(
   if (!OpenCurrentSessionServerTarget(expected_state, target))
     return StopServerResult::Failed;
 
-  // Linearize the final generation/lifecycle check and WM_CLOSE against
-  // foreground reconnects. A successful reconnect that happens first advances
-  // health_revision_ and prevents this stale worker from closing the server.
-  bool final_probe_healthy = false;
+  weasel::ServerRuntimeState current_state{};
+  if (!ReadServerRuntimeState(current_state) ||
+      !SameServerGeneration(current_state, expected_state) ||
+      current_state.lifecycle !=
+          static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+    return StopServerResult::Failed;
+  }
+
+  // Keep the potentially 100 ms IPC probe outside the coordinator lock.
+  // ServerLifecycleLock is already owned by the worker, so no new START_SESSION
+  // can commit while this final liveness observation is in flight.
+  if (ProbeServerResponsive())
+    return StopServerResult::SupersededByHealth;
+
+  // Linearize only the irreversible graceful-shutdown decision against a
+  // same-process foreground reconnect that completed before lifecycle
+  // ownership was acquired. Cross-process START_SESSION is excluded by the
+  // lifecycle lock above.
   const bool close_posted = g_serverRecovery.RunIfHealthUnchanged(
       health_revision, [&]() noexcept {
-        weasel::ServerRuntimeState current_state{};
-        if (!ReadServerRuntimeState(current_state) ||
-            !SameServerGeneration(current_state, expected_state) ||
-            current_state.lifecycle !=
+        weasel::ServerRuntimeState latest_state{};
+        if (!ReadServerRuntimeState(latest_state) ||
+            !SameServerGeneration(latest_state, expected_state) ||
+            latest_state.lifecycle !=
                 static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
-          return false;
-        }
-
-        // This second probe is intentionally adjacent to WM_CLOSE. It observes
-        // recovery by any TSF process, while ServerLifecycleLock prevents a new
-        // START_SESSION from racing in behind the decision.
-        if (ProbeServerResponsive()) {
-          final_probe_healthy = true;
           return false;
         }
         return !!PostMessageW(target.window, WM_CLOSE, 0, 0);
       });
   if (!close_posted) {
-    return final_probe_healthy ||
-                   g_serverRecovery.HealthRevision() != health_revision
+    return g_serverRecovery.HealthRevision() != health_revision
                ? StopServerResult::SupersededByHealth
                : StopServerResult::Failed;
   }
+
   DWORD wait_result =
       WaitForSingleObject(target.process, kServerGracefulShutdownTimeoutMs);
   if (wait_result == WAIT_OBJECT_0)
@@ -516,18 +522,11 @@ StopServerResult StopPersistentlyUnavailableServer(
       return StopServerResult::Failed;
   }
 
-  // target.process pins the exact process object, but a successful reconnect
-  // while graceful shutdown was pending must still veto the irreversible
-  // fallback.
-  const bool terminated = g_serverRecovery.RunIfHealthUnchanged(
-      health_revision, [&]() noexcept {
-        return !!TerminateProcess(target.process, ERROR_TIMEOUT);
-      });
-  if (!terminated) {
-    return g_serverRecovery.HealthRevision() != health_revision
-               ? StopServerResult::SupersededByHealth
-               : StopServerResult::Failed;
-  }
+  // WM_CLOSE is the destructive-recovery commit point. Once it was posted,
+  // complete the shutdown instead of letting a late health hint leave a
+  // half-stopped generation alive without launching its replacement.
+  if (!TerminateProcess(target.process, ERROR_TIMEOUT))
+    return StopServerResult::Failed;
   return WaitForSingleObject(target.process, kServerForcedExitTimeoutMs) ==
                  WAIT_OBJECT_0
              ? StopServerResult::Stopped
@@ -635,29 +634,30 @@ void RunServerRecoveryWorker() noexcept {
   for (;;) {
     RunServerRecoveryOnce();
 
-    ULONGLONG retry_after = g_serverRecovery.RetryAfter();
-    if (!retry_after)
-      return;
+    // Wait until the coordinator's current deadline, re-reading it after every
+    // sleep because foreground health or another worker can clear/replace it.
+    for (;;) {
+      const ULONGLONG retry_after = g_serverRecovery.RetryAfter();
+      if (!retry_after)
+        return;
 
-    ULONGLONG now = GetTickCount64();
-    if (now >= deadline || retry_after > deadline)
-      return;
+      const ULONGLONG now = GetTickCount64();
+      if (now >= deadline || retry_after > deadline)
+        return;
 
-    if (retry_after > now) {
-      Sleep(static_cast<DWORD>(retry_after - now));
-      now = GetTickCount64();
-      if (now >= deadline)
+      if (now < retry_after) {
+        Sleep(static_cast<DWORD>(retry_after - now));
+        continue;
+      }
+
+      if (TryBeginServerRecovery())
+        break;
+
+      // Another callback may have won admission. If so it owns progress; if
+      // not, loop and observe the deadline it just published.
+      if (g_serverRecovery.WorkerInflight())
         return;
     }
-
-    // A foreground reconnect after the previous attempt may have cleared the
-    // deadline while this background callback was sleeping.
-    retry_after = g_serverRecovery.RetryAfter();
-    if (!retry_after)
-      return;
-
-    if (!TryBeginServerRecovery())
-      return;
   }
 }
 #endif

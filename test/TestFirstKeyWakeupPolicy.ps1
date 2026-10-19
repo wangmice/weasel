@@ -66,9 +66,8 @@ if ($recoveryCoordinator -match 'health_epoch_|enum\s+class\s+State|InterlockedC
 }
 if ($recoveryCoordinator -notmatch 'HealthRevision\(\)' -or
     $recoveryCoordinator -notmatch 'RunIfHealthUnchanged\(' -or
-    $tsf -notmatch 'RunIfHealthUnchanged\([\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE' -or
-    $tsf -notmatch 'RunIfHealthUnchanged\([\s\S]*?TerminateProcess\(target\.process') {
-  throw 'foreground health must revoke stale destructive recovery before graceful or forced shutdown'
+    $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?RunIfHealthUnchanged\([\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE') {
+  throw 'foreground health must revoke stale recovery before the WM_CLOSE commit point'
 }
 if ($tsf -notmatch 'ServerRecoveryCoordinator\s+g_serverRecovery' -or
     $tsf -notmatch 'g_serverRecovery\.TryBegin\(GetTickCount64\(\)\)' -or
@@ -105,11 +104,22 @@ if ($serverImpl -notmatch 'int\s+ServerImpl::Stop\(\)[\s\S]*?lock_guard\s+guard\
     $serverImpl -notmatch '_Module\.RemoveMessageLoop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?ServerLifecycle::Stopping') {
   throw 'server stop publication must serialize with maintenance handlers through g_api_mutex'
 }
+$listenerStart = $serverImpl.IndexOf('auto listener = [this]')
+$listenerEnd = $serverImpl.IndexOf('pipeThread = std::make_unique<boost::thread>', $listenerStart)
+if ($listenerStart -lt 0 -or $listenerEnd -le $listenerStart) {
+  throw 'unable to isolate server pipe listener'
+}
+$listenerBody = $serverImpl.Substring($listenerStart, $listenerEnd - $listenerStart)
+$lifecycleAcquire = $listenerBody.IndexOf('session_lifecycle.Acquire(0)')
+$apiAcquire = $listenerBody.IndexOf('std::lock_guard guard(g_api_mutex)')
+if ($lifecycleAcquire -lt 0 -or $apiAcquire -lt 0 -or $lifecycleAcquire -gt $apiAcquire) {
+  throw 'START_SESSION must acquire lifecycle ownership before g_api_mutex to preserve global lock order'
+}
 if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE,\s*sa\.get_attr\(\)\)' -or
     $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
     $serverImpl -notmatch 'ServerLifecycle::Starting' -or
     $serverImpl -notmatch 'WaitForPrimaryPipeReady\(\)[\s\S]*?ServerLifecycle::Ready[\s\S]*?_UnlockStartupLifecycleLock\(\)' -or
-    $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready[\s\S]*?ServerLifecycleLock\s+session_lifecycle[\s\S]*?session_lifecycle\.Acquire\(0\)[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
+    $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
     $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)[\s\S]*?StartMaintenance\(\)' -or
     $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Maintenance[\s\S]*?EndMaintenance\(\)[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
   throw 'server must own lifecycle from singleton publication through Ready and publish maintenance transitions'

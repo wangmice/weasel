@@ -351,26 +351,34 @@ int ServerImpl::Run() {
   //
   auto listener = [this](const PipeServer::ConnectionContext& context,
                          PipeMessage msg, PipeServer::Respond resp) -> void {
-    // Resolve the peer process generation before taking g_api_mutex. Resolve()
-    // may open a process handle or synchronously drain an old PID generation;
-    // neither operation is allowed inside the global Rime/session lock.
+    const bool starting = msg.Msg == WEASEL_IPC_START_SESSION;
+
+    // Resolve the peer process generation before taking either lifecycle or
+    // API ownership. Resolve() may open a process handle or synchronously
+    // drain an old PID generation.
     std::optional<ClientProcessToken> owner;
-    if (msg.Msg == WEASEL_IPC_START_SESSION && context.client_pid)
+    if (starting && context.client_pid)
       owner = process_tracker.Resolve(*context.client_pid);
+
+    // All paths that need both locks use the same order:
+    // ServerLifecycleLock -> g_api_mutex. Recovery/deployer already own the
+    // lifecycle lock before probing or sending maintenance IPC, so taking the
+    // locks in the opposite order here would create an AB/BA deadlock.
+    ServerLifecycleLock session_lifecycle;
+    const bool lifecycle_admitted =
+        !starting || session_lifecycle.Acquire(0);
 
     // Defer the response write until the api lock is released: a slow or
     // hung client must not extend the global critical section.
     PipeServer::Msg result = 0;
     {
       std::lock_guard guard(g_api_mutex);
-      const bool starting = msg.Msg == WEASEL_IPC_START_SESSION;
-      bool dispatch = true;
-      if (starting) {
-        // Close the Resolve -> bind race. If the process exited before this
-        // point its cleanup may already have run; do not create an ownerless
-        // session. If it exits after this check, its callback queues behind
-        // g_api_mutex and removes the session after this request commits.
-        if (owner && !process_tracker.IsAlive(*owner)) {
+      bool dispatch = lifecycle_admitted;
+      if (starting && dispatch) {
+        // Lifecycle may have reached Stopping before this request acquired the
+        // API lock. Recheck under serialization before creating any session.
+        if (_RuntimeLifecycle() != ServerLifecycle::Ready ||
+            (owner && !process_tracker.IsAlive(*owner))) {
           dispatch = false;
         } else {
           session_router.SetCurrentOwner(SessionOwner{owner});
@@ -452,17 +460,10 @@ DWORD ServerImpl::OnEcho(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
 DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
                                  DWORD wParam,
                                  DWORD lParam) {
+  // START_SESSION lifecycle admission is acquired by the pipe listener before
+  // g_api_mutex. Keep this handler side-effect-free when lifecycle is not Ready.
   if (!m_pRequestHandler || _RuntimeLifecycle() != ServerLifecycle::Ready)
     return 0;
-
-  // Session creation is a cold path and participates in lifecycle ownership:
-  // once deploy/recovery/restart owns the named lock, no process can establish
-  // a fresh session behind that lifecycle decision.
-  ServerLifecycleLock session_lifecycle;
-  if (!session_lifecycle.Acquire(0) ||
-      _RuntimeLifecycle() != ServerLifecycle::Ready) {
-    return 0;
-  }
 
   return m_pRequestHandler->AddSession(
       reinterpret_cast<LPWSTR>(channel->ReceiveBuffer()),

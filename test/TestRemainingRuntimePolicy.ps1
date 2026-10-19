@@ -58,10 +58,20 @@ if ($serverImpl -notmatch 'int\s+ServerImpl::Stop\(\)[\s\S]*?lock_guard\s+guard\
     $serverImpl -notmatch 'OnShutdownServer[\s\S]*?_RequestStopUnderApiLock\(\)') {
   throw 'server stop and maintenance transitions must share the API serialization boundary'
 }
-if ($serverImpl -notmatch 'OnStartSession[\s\S]*?ServerLifecycleLock\s+session_lifecycle[\s\S]*?session_lifecycle\.Acquire\(0\)[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
+$listenerStart = $serverImpl.IndexOf('auto listener = [this]')
+$listenerEnd = $serverImpl.IndexOf('pipeThread = std::make_unique<boost::thread>', $listenerStart)
+if ($listenerStart -lt 0 -or $listenerEnd -le $listenerStart) {
+  throw 'unable to isolate server pipe listener'
+}
+$listenerBody = $serverImpl.Substring($listenerStart, $listenerEnd - $listenerStart)
+if ($listenerBody -notmatch 'ServerLifecycleLock\s+session_lifecycle' -or
+    $listenerBody -notmatch 'session_lifecycle\.Acquire\(0\)' -or
+    $listenerBody.IndexOf('session_lifecycle.Acquire(0)') -gt
+        $listenerBody.IndexOf('std::lock_guard guard(g_api_mutex)') -or
+    $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
     $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)' -or
     $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
-  throw 'server command admission must enforce monotonic Ready/Maintenance/Stopping lifecycle transitions'
+  throw 'server command admission must enforce lifecycle-before-api lock order and monotonic lifecycle transitions'
 }
 
 if ($ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
@@ -82,8 +92,8 @@ if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
 }
 if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs[\s\S]*?ProbeServer\(remaining\)' -or
     $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?FinishServerRecoveryHealthy\(\)' -or
-    $tsf -notmatch 'final_probe_healthy[\s\S]*?ProbeServerResponsive\(\)[\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE') {
-  throw 'restart escalation must re-probe server IPC health after acquiring lifecycle ownership'
+    $tsf -notmatch 'StopPersistentlyUnavailableServer[\s\S]*?if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?RunIfHealthUnchanged\([\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE') {
+  throw 'restart escalation must re-probe before linearizing the WM_CLOSE decision'
 }
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
   throw 'recovery launch must preserve singleton observation around lifecycle ownership'
@@ -91,7 +101,7 @@ if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_in
 if ($recoveryCoordinator -notmatch 'retry_after_' -or
     $recoveryCoordinator -notmatch 'RetryAfter\(\)' -or
     $tsf -notmatch 'kServerRecoveryWorkerRetryBudgetMs\s*=\s*2500' -or
-    $tsf -notmatch 'RunServerRecoveryWorker\(\)[\s\S]*?RetryAfter\(\)[\s\S]*?TryBeginServerRecovery\(\)') {
+    $tsf -notmatch 'RunServerRecoveryWorker\(\)[\s\S]*?for\s*\(;;\)[\s\S]*?RetryAfter\(\)[\s\S]*?Sleep\([\s\S]*?TryBeginServerRecovery\(\)[\s\S]*?WorkerInflight\(\)') {
   throw 'recovery backoff must drive one bounded background self-retry lease'
 }
 
