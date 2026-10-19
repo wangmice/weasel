@@ -7,6 +7,8 @@ $keySink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\KeyEventSink.cpp
 $client = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
 $pipe = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
 $ipc = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
+$serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
+$recoveryCoordinator = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\ServerRecoveryCoordinator.h') -Raw
 
 $scheduleStart = $tsf.IndexOf('void WeaselTSF::_ScheduleServerRecovery()')
 $untilStart = $tsf.IndexOf('bool WeaselTSF::_EnsureServerConnectedUntil(', $scheduleStart)
@@ -37,10 +39,10 @@ if ($fastPath -match 'GetTickCount64|Sleep|Interlocked|QueueDllBackgroundTask|Re
   throw 'healthy connection path must not touch recovery machinery'
 }
 
-if ($schedule -notmatch 'TryBeginServerRecovery\(recovery_epoch\)[\s\S]*?QueueDllBackgroundTask\s*\(') {
-  throw 'failed recovery must be deduplicated before queueing DLL-safe background work'
+if ($schedule -notmatch 'TryBeginServerRecovery\(\)[\s\S]*?QueueDllBackgroundTask\s*\(\[\]\(\)\s*\{\s*RunServerRecoveryOnce\(\);\s*\}\)') {
+  throw 'failed recovery must be deduplicated before queueing one DLL-safe worker'
 }
-if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLaunchMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
+if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLifecycleMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
   throw 'TSF callback-side scheduler must not perform server discovery or launch work'
 }
 
@@ -50,20 +52,22 @@ if ($tsf -match 'GetWeaselRegName\(') {
 if ($tsf -notmatch 'RegGetStringValue\(HKEY_LOCAL_MACHINE,\s*WEASEL_REG_KEY,\s*L"WeaselRoot"') {
   throw 'background recovery must read WeaselRoot from the canonical HKLM Weasel registry key'
 }
-if ($tsf -notmatch 'enum\s+class\s+ServerRecoveryState\s*:\s*LONG[\s\S]*?Idle[\s\S]*?Busy[\s\S]*?Backoff') {
-  throw 'server recovery coordinator must expose Idle/Busy/Backoff states'
+if ($recoveryCoordinator -notmatch 'class\s+ServerRecoveryCoordinator' -or
+    $recoveryCoordinator -notmatch 'SRWLOCK\s+gate_' -or
+    $recoveryCoordinator -notmatch 'TryBegin\(ULONGLONG\s+now\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)[\s\S]*?worker_inflight_[\s\S]*?retry_after_' -or
+    $recoveryCoordinator -notmatch 'NoteHealthy\(\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)' -or
+    $recoveryCoordinator -notmatch 'FinishBackoff\(' -or
+    $recoveryCoordinator -notmatch 'FinishFailure\(' -or
+    $recoveryCoordinator -notmatch 'FinishHealthy\(') {
+  throw 'server recovery coordinator must remain a small worker/backoff throttle'
 }
-if ($tsf -notmatch 'PublishServerRecoveryBackoff\([\s\S]*?InterlockedCompareExchange\(&g_serverRecoveryState,\s*backoff,\s*busy\)') {
-  throw 'only the Busy owner may publish Backoff'
+if ($recoveryCoordinator -match 'health_epoch_|enum\s+class\s+State|InterlockedCompareExchange\(&worker_inflight_') {
+  throw 'recovery throttling must not grow a second lifecycle or hand-rolled atomic state machine'
 }
-if ($tsf -notmatch 'g_serverRecoveryHealthEpoch[\s\S]*?LoadServerRecoveryHealthEpoch\(\)[\s\S]*?recovery_epoch') {
-  throw 'Backoff publication must be tied to the recovery health epoch'
-}
-if ($tsf -notmatch 'observed_epoch\s*=\s*LoadServerRecoveryHealthEpoch\(\)[\s\S]*?ServerRecoveryState::Busy[\s\S]*?LoadServerRecoveryHealthEpoch\(\)\s*!=\s*observed_epoch') {
-  throw 'Busy acquisition must reject a concurrent healthy-epoch transition'
-}
-if ($tsf -notmatch 'g_serverRecoveryRetryAfter') {
-  throw 'backoff must be represented by a retry deadline'
+if ($tsf -notmatch 'ServerRecoveryCoordinator\s+g_serverRecovery' -or
+    $tsf -notmatch 'g_serverRecovery\.TryBegin\(GetTickCount64\(\)\)' -or
+    $tsf -notmatch 'g_serverRecovery\.FinishBackoff\(delay_ms,\s*GetTickCount64\(\)\)') {
+  throw 'production recovery must use the testable coordinator implementation'
 }
 if ($tsf -match 'kServerRecoveryRetryCooldownMs') {
   throw 'backoff must not be implemented by sleeping a worker for a cooldown'
@@ -77,28 +81,87 @@ if ($tsf -notmatch 'GetLegacyServerInstanceName\(\)') {
 if ($tsf -match 'CreateToolhelp32Snapshot') {
   throw 'background recovery must not poll the full process table'
 }
-if ($tsf -notmatch 'WaitForServerInstanceState\(instance_name,\s*legacy_instance_name,\s*false,[\s\S]*?kServerExitObservationTimeoutMs') {
-  throw 'old-server exit observation must be short and background-only'
+if ($tsf -notmatch 'kServerLaunchObservationTimeoutMs\s*=\s*2000') {
+  throw 'server launch observation must stay bounded'
 }
-if ($tsf -notmatch 'kServerLaunchQuickObservationTimeoutMs\s*=\s*500' -or
-    $tsf -notmatch 'kServerLaunchLeaseTimeoutMs\s*=\s*2000') {
-  throw 'server launch must use a 500 ms fast observation inside a 2 s cross-process lease'
+if ($ipc -notmatch 'class\s+ServerLifecycleLock' -or
+    $ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
+    $ipc -notmatch 'struct\s+ServerRuntimeState[\s\S]*?process_id[\s\S]*?lifecycle[\s\S]*?process_creation_time' -or
+    $ipc -notmatch 'enum\s+class\s+ServerLifecycle[\s\S]*?Starting[\s\S]*?Ready[\s\S]*?Maintenance[\s\S]*?Stopping') {
+  throw 'cross-process recovery must use one lifecycle lock and one runtime state'
 }
-if ($tsf -notmatch 'WaitForServerInstanceState\([\s\S]*?kServerLaunchQuickObservationTimeoutMs[\s\S]*?remaining_launch_lease\s*=\s*kServerLaunchLeaseTimeoutMs\s*-\s*kServerLaunchQuickObservationTimeoutMs[\s\S]*?WaitForServerInstanceState\([\s\S]*?remaining_launch_lease') {
-  throw 'launch mutex must remain held through the slow-start remainder of the launch lease'
+if ($ipc -match 'GetServerReadyEventName|ServerRuntimeIdentity|GetServerRuntimeIdentityName') {
+  throw 'ready events and seqlock identity must not duplicate runtime lifecycle state'
 }
-if ($tsf -notmatch 'WaitForSingleObject\(launch_mutex\.handle,\s*0\)') {
-  throw 'cross-process launch arbitration must stay nonblocking'
+if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE,\s*sa\.get_attr\(\)\)' -or
+    $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
+    $serverImpl -notmatch 'ServerLifecycle::Starting' -or
+    $serverImpl -notmatch 'WaitForPrimaryPipeReady\(\)[\s\S]*?ServerLifecycle::Ready[\s\S]*?_UnlockStartupLifecycleLock\(\)' -or
+    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?ServerLifecycle::Maintenance[\s\S]*?StartMaintenance\(\)' -or
+    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?EndMaintenance\(\)[\s\S]*?ServerLifecycle::Ready') {
+  throw 'server must own lifecycle from singleton publication through Ready and publish maintenance transitions'
+}
+$workerStart = $tsf.IndexOf('void RunServerRecoveryOnce()')
+$workerEnd = $tsf.IndexOf('#endif', $workerStart)
+if ($workerStart -lt 0 -or $workerEnd -le $workerStart) {
+  throw 'unable to isolate server recovery worker'
+}
+$workerBody = $tsf.Substring($workerStart, $workerEnd - $workerStart)
+if ($workerBody -notmatch 'ServerLifecycleLock\s+lifecycle_lock' -or
+    $workerBody -notmatch 'lifecycle_lock\.Acquire\(0\)' -or
+    $workerBody -notmatch 'ReadServerRuntimeState\(' -or
+    $workerBody -notmatch 'ServerLifecycle::Ready' -or
+    $workerBody -notmatch 'ProbeServerResponsive\(\)' -or
+    $workerBody -notmatch 'StopPersistentlyUnavailableServer' -or
+    $workerBody -notmatch 'ShellExecuteW') {
+  throw 'recovery probe stop and launch decisions must stay under lifecycle ownership'
 }
 if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
     $tsf -notmatch 'ObserveServerUnavailableLongEnough\(\)') {
   throw 'live-server restart must require sustained unavailability'
 }
-if ($tsf -notmatch 'StopPersistentlyUnavailableServer\(\)[\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE[\s\S]*?kServerForceTerminateThresholdMs') {
+$stopStart = $tsf.IndexOf('bool StopPersistentlyUnavailableServer(')
+$stopEnd = $tsf.IndexOf('void RunServerRecoveryOnce()', $stopStart)
+if ($stopStart -lt 0 -or $stopEnd -le $stopStart) {
+  throw 'unable to isolate StopPersistentlyUnavailableServer'
+}
+$stopBody = $tsf.Substring($stopStart, $stopEnd - $stopStart)
+if ($stopBody -notmatch 'PostMessageW\(target\.window,\s*WM_CLOSE' -or
+    $stopBody -notmatch 'kServerForceTerminateThresholdMs' -or
+    $stopBody -notmatch 'TerminateProcess\(target\.process') {
   throw 'persistent live-server recovery must try graceful shutdown before bounded forced termination'
 }
-if ($tsf -notmatch 'OpenCurrentSessionServerTarget[\s\S]*?ProcessIdToSessionId[\s\S]*?QueryFullProcessImageNameW[\s\S]*?WeaselServer\.exe') {
-  throw 'forced recovery must verify the current-session WeaselServer target'
+$stateReadStart = $tsf.IndexOf('bool ReadServerRuntimeState(')
+$stateReadEnd = $tsf.IndexOf('bool SameServerGeneration(', $stateReadStart)
+if ($stateReadStart -lt 0 -or $stateReadEnd -le $stateReadStart) {
+  throw 'unable to isolate ReadServerRuntimeState'
+}
+$stateReadBody = $tsf.Substring($stateReadStart, $stateReadEnd - $stateReadStart)
+if ($stateReadBody -notmatch 'OpenFileMappingW' -or
+    $stateReadBody -notmatch 'GetServerRuntimeStateName' -or
+    $stateReadBody -notmatch 'process_id' -or
+    $stateReadBody -notmatch 'lifecycle' -or
+    $stateReadBody -notmatch 'process_creation_time') {
+  throw 'runtime state must expose identity and lifecycle through one mapping'
+}
+$targetStart = $tsf.IndexOf('bool OpenCurrentSessionServerTarget(')
+$targetEnd = $tsf.IndexOf('bool ProbeServerResponsive()', $targetStart)
+if ($targetStart -lt 0 -or $targetEnd -le $targetStart) {
+  throw 'unable to isolate OpenCurrentSessionServerTarget'
+}
+$targetBody = $tsf.Substring($targetStart, $targetEnd - $targetStart)
+if ($targetBody -notmatch 'OpenProcess[\s\S]*?state\.process_id' -or
+    $targetBody -notmatch 'ProcessIdToSessionId\(state\.process_id' -or
+    $targetBody -notmatch 'GetProcessTimes\(target\.process' -or
+    $targetBody -notmatch 'creation\.QuadPart\s*!=\s*state\.process_creation_time' -or
+    $targetBody -notmatch 'QueryFullProcessImageNameW\(target\.process' -or
+    $targetBody -notmatch 'WeaselServer\.exe' -or
+    $targetBody -notmatch 'FindServerWindowForProcess\(state\.process_id\)') {
+  throw 'destructive recovery must target the exact published server generation'
+}
+if ($tsf -notmatch 'SameServerGeneration\(current_state,\s*expected_state\)' -or
+    $tsf -notmatch 'SameServerGeneration\(latest_state,\s*state\)') {
+  throw 'server generation must be revalidated before restart commitment while the process handle pins the termination target'
 }
 if ($tsf -notmatch 'kServerLivenessProbeTimeoutMs\s*=\s*100' -or
     $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?Connect\(kServerLivenessProbeTimeoutMs\)[\s\S]*?RemainingRecoveryTime\(deadline\)[\s\S]*?ProbeServer\(remaining\)') {
@@ -120,8 +183,8 @@ if ($probeBody -notmatch 'PipeMessage\s+req\{WEASEL_IPC_ECHO,\s*0,\s*0\}' -or
 if ($probeBody -match 'StartSession|EndSession|_SetSessionId|_InvalidateLogicalSession') {
   throw 'liveness probe must not create, destroy, or activate a Rime session'
 }
-if ($tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?ResetServerUnavailableObservation\(\)[\s\S]*?PublishServerRecoveryBackoff') {
-  throw 'a recovered server must cancel stale local unavailability before restart'
+if ($tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?FinishServerRecoveryHealthy\(\)') {
+  throw 'a healthy fresh probe must finish recovery and clear stale unavailable history'
 }
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
   throw 'launcher must double-check the server singleton around launch arbitration'
@@ -134,10 +197,11 @@ if ($until -notmatch '_ScheduleServerRecovery\(\)') {
   throw 'failed bounded reconnect must hand server startup to the background coordinator'
 }
 if (([regex]::Matches($until, 'NoteServerRecoveryHealthy\(\)')).Count -lt 2) {
-  throw 'successful cold reconnects must reset the previous launch failure epoch'
+  throw 'successful cold reconnects must report health to the recovery throttle'
 }
-if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)[\s\S]*?InterlockedIncrement\(&g_serverRecoveryHealthEpoch\)[\s\S]*?ResetServerRecoveryFailureStreak\(\)[\s\S]*?ResetServerUnavailableObservation\(\)[\s\S]*?InterlockedCompareExchange\([\s\S]*?ServerRecoveryState::Idle[\s\S]*?ServerRecoveryState::Backoff') {
-  throw 'successful cold reconnect must advance the health epoch and retract stale Backoff'
+if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)[\s\S]*?g_serverRecovery\.NoteHealthy\(\)' -or
+    $recoveryCoordinator -notmatch 'NoteHealthy\(\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)[\s\S]*?if\s*\(worker_inflight_\)[\s\S]*?return;[\s\S]*?failure_streak_\s*=\s*0[\s\S]*?unavailable_since_\s*=\s*0[\s\S]*?retry_after_\s*=\s*0') {
+  throw 'foreground health hints must clear idle recovery history without revoking an in-flight worker'
 }
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
   throw 'physical-key recovery must carry a shared deadline'
@@ -179,7 +243,7 @@ if ($keySink -notmatch 'process_key_bounded[\s\S]*?ProcessKeyEventEx\(keyEvent,[
 if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnectedUntil\(deadline\)[\s\S]*?process_key_bounded\(\)') {
   throw 'only definitely-unsent keys may recover and replay once with a bounded key IPC'
 }
-$recoveryStart = $keySink.IndexOf('bool WeaselTSF::_ProcessKeyEventWithRecovery')
+$recoveryStart = $keySink.IndexOf('WeaselTSF::KeyDispatchResult WeaselTSF::_ProcessKeyEventWithRecovery')
 $recoveryEnd = $keySink.IndexOf('void WeaselTSF::_ProcessKeyEvent(', $recoveryStart)
 if ($recoveryStart -lt 0 -or $recoveryEnd -le $recoveryStart) {
   throw 'unable to isolate WeaselTSF::_ProcessKeyEventWithRecovery'
@@ -191,9 +255,15 @@ if ($transportErrorMatches.Count -ne 1) {
   throw 'ambiguous TransportError must appear only in the final recovery-scheduling branch'
 }
 $transportErrorTail = $recoveryBody.Substring($transportErrorMatches[0].Index)
-if ($transportErrorTail -notmatch '_ScheduleServerRecovery\(\)' -or
+if ($transportErrorTail -notmatch '_ScheduleServerRecovery\(\)[\s\S]*?return\s+KeyDispatchResult::AmbiguousConsumed' -or
     $transportErrorTail -match 'process_key_bounded\(\)|StartSession\(|_EnsureServerConnectedUntil\(') {
-  throw 'ambiguous TransportError must schedule recovery without replay or synchronous session recovery'
+  throw 'ambiguous TransportError must be consumed locally after scheduling recovery without replay'
+}
+if ($tsfHeader -notmatch 'enum\s+class\s+KeyDispatchResult[\s\S]*?Handled[\s\S]*?Unhandled[\s\S]*?AmbiguousConsumed') {
+  throw 'TSF key dispatch must preserve ambiguous-consumed state separately from normal unhandled keys'
+}
+if ($keySink -notmatch 'dispatch\s*==\s*KeyDispatchResult::Unhandled\s*\?\s*FALSE\s*:\s*TRUE') {
+  throw 'only definitely unhandled keys may be released back to the host'
 }
 
 Write-Host 'First-key wakeup policy: PASS'

@@ -4,8 +4,9 @@
 #include <KeyEvent.h>
 #include "CandidateList.h"
 
-bool WeaselTSF::_ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent,
-                                             ULONGLONG recovery_deadline) {
+WeaselTSF::KeyDispatchResult WeaselTSF::_ProcessKeyEventWithRecovery(
+    const weasel::KeyEvent& keyEvent,
+    ULONGLONG recovery_deadline) {
   const auto ensure_recovery_deadline = [&]() {
     if (!recovery_deadline) {
       recovery_deadline = GetTickCount64() + kFastSessionRecoveryBudgetMs;
@@ -35,7 +36,7 @@ bool WeaselTSF::_ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent,
     // 15-20 ms recovery into a spurious ambiguous key timeout.
     const ULONGLONG deadline = ensure_recovery_deadline();
     if (!_EnsureServerConnectedUntil(deadline))
-      return false;
+      return KeyDispatchResult::Unhandled;
     result = process_key_bounded();
   }
 
@@ -47,29 +48,38 @@ bool WeaselTSF::_ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent,
     const DWORD remaining = remaining_recovery_time(deadline);
     if (!remaining) {
       _ScheduleServerRecovery();
-      return false;
+      return KeyDispatchResult::Unhandled;
     }
 
     m_client.StartSession(remaining);
     _ConsumeResponseIfFresh();
     if (!m_client.IsSessionActive()) {
       _ScheduleServerRecovery();
-      return false;
+      return KeyDispatchResult::Unhandled;
     }
 
     result = process_key_bounded();
   }
 
   // The request may have reached the server, so never replay an ambiguous
-  // transport failure. A replay that becomes definitely-undelivered is also
-  // handed back to the asynchronous coordinator instead of growing another
-  // synchronous recovery window.
-  if (result == weasel::KeyEventResult::TransportError ||
-      result == weasel::KeyEventResult::TransportNotDelivered) {
+  // transport failure. Since the same physical key must not then be processed
+  // by the host as well, report it as locally consumed while background
+  // recovery repairs the transport/session for the next key.
+  if (result == weasel::KeyEventResult::TransportError) {
     _ScheduleServerRecovery();
+    return KeyDispatchResult::AmbiguousConsumed;
   }
 
-  return result == weasel::KeyEventResult::Handled;
+  // A replay that is still definitely undelivered is safe to release to the
+  // host; no server-side input engine has observed it.
+  if (result == weasel::KeyEventResult::TransportNotDelivered) {
+    _ScheduleServerRecovery();
+    return KeyDispatchResult::Unhandled;
+  }
+
+  return result == weasel::KeyEventResult::Handled
+             ? KeyDispatchResult::Handled
+             : KeyDispatchResult::Unhandled;
 }
 
 void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
@@ -127,8 +137,9 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     // key follows the normal server path.
     *pfEaten = FALSE;
     if (!suppress_simulated_caps) {
-      *pfEaten =
-          _ProcessKeyEventWithRecovery(ke, recovery_deadline) ? TRUE : FALSE;
+      const KeyDispatchResult dispatch =
+          _ProcessKeyEventWithRecovery(ke, recovery_deadline);
+      *pfEaten = dispatch == KeyDispatchResult::Unhandled ? FALSE : TRUE;
     }
 
     if (ke.keycode == ibus::Caps_Lock) {

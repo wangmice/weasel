@@ -177,6 +177,11 @@ if ($restartFlow -match 'if\s*\(quit\s*&&\s*!OpenRunningServerProcess') {
 if ($restartFlow -match 'while\s*\(client\.Connect\(\)') {
   throw 'restart must not treat pipe disappearance as proof that the old server process exited'
 }
+if ($restartFlow -notmatch 'ServerLifecycleLock\s+restart_lifecycle' -or
+    $restartFlow -notmatch '\(connected\s*\|\|\s*running_server\)[\s\S]*?restart_lifecycle\.Acquire\(0\)' -or
+    $restartFlow -notmatch 'client\.ShutdownServer\(\)[\s\S]*?WaitForRunningServerExit\(running_server\)') {
+  throw 'normal restart must own the shared lifecycle lock while stopping an existing server'
+}
 
 # IPC must be scoped by Windows session while retaining the legacy endpoint for
 # already-loaded pre-upgrade TSF clients in the current session.
@@ -185,7 +190,7 @@ foreach ($required in @(
   'GetLegacyPipeName',
   'GetLegacyServerInstanceName',
   'GetServerInstanceName',
-  'GetServerLaunchMutexName'
+  'GetServerLifecycleMutexName'
 )) {
   if ($ipcHeader -notmatch ([regex]::Escape($required) + '\s*\(')) {
     throw "IPC session scoping is missing $required"
@@ -218,8 +223,9 @@ if ($tsf -notmatch 'GetServerInstanceName\(\)' -or
     $tsf -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*mutex_name\.c_str\(\)\)') {
   throw 'TSF recovery must observe both current and legacy server singleton mutexes'
 }
-if ($tsf -notmatch 'GetServerLaunchMutexName\(\)') {
-  throw 'TSF recovery launch serialization must remain scoped to the current Windows session'
+if ($ipcHeader -notmatch 'GetServerLifecycleMutexName\(\)[\s\S]*?session-' -or
+    $tsf -notmatch 'ServerLifecycleLock\s+lifecycle_lock') {
+  throw 'TSF recovery lifecycle serialization must remain scoped to the current Windows session'
 }
 
 Write-Host 'Runtime hardening policy: PASS'

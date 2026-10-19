@@ -244,11 +244,20 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   BOOL _InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr);
 
+  enum class KeyDispatchResult {
+    Handled,
+    Unhandled,
+    // The server may already have processed the physical key. Do not replay it
+    // and do not let the host process the same key a second time.
+    AmbiguousConsumed,
+  };
+
   BOOL _InitKeyEventSink();
   void _UninitKeyEventSink();
   void _ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten);
-  bool _ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent,
-                                    ULONGLONG recovery_deadline = 0);
+  KeyDispatchResult _ProcessKeyEventWithRecovery(
+      const weasel::KeyEvent& keyEvent,
+      ULONGLONG recovery_deadline = 0);
 
   BOOL _InitPreservedKey();
   void _UninitPreservedKey();

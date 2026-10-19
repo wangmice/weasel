@@ -70,6 +70,24 @@ struct IPCMetadata {
   WCHAR server_window_class[WINDOW_CLASS_LENGTH];
 };
 
+enum class ServerLifecycle : LONG {
+  Starting = 1,
+  Ready = 2,
+  Maintenance = 3,
+  Stopping = 4,
+};
+
+struct ServerRuntimeState {
+  UINT32 version;
+  UINT32 process_id;
+  LONG lifecycle;
+  UINT32 reserved;
+  UINT64 process_creation_time;
+};
+static_assert(sizeof(ServerRuntimeState) == 24,
+              "ServerRuntimeState must be cross-architecture stable");
+constexpr UINT32 kServerRuntimeStateVersion = 1;
+
 // 處理請求之物件
 struct RequestHandler {
   using EatLine = std::function<bool(std::wstring&)>;
@@ -261,7 +279,9 @@ inline std::wstring GetServerInstanceName() {
   return name;
 }
 
-inline std::wstring GetServerLaunchMutexName() {
+inline std::wstring GetServerLifecycleMutexName() {
+  // Preserve the historical launch-mutex object name so already-loaded older
+  // TSF processes still serialize launch against the new lifecycle protocol.
   std::wstring name = L"WeaselServerLaunch-";
   name += getUsername();
   DWORD session_id = 0;
@@ -271,4 +291,63 @@ inline std::wstring GetServerLaunchMutexName() {
   }
   return name;
 }
+
+inline std::wstring GetServerRuntimeStateName() {
+  std::wstring name = L"WeaselServerState-";
+  name += getUsername();
+  DWORD session_id = 0;
+  if (GetCurrentWindowsSessionId(session_id)) {
+    name += L"-session-";
+    name += std::to_wstring(session_id);
+  }
+  return name;
+}
+
+class ServerLifecycleLock {
+ public:
+  ServerLifecycleLock() = default;
+  ~ServerLifecycleLock() { Release(); }
+  ServerLifecycleLock(const ServerLifecycleLock&) = delete;
+  ServerLifecycleLock& operator=(const ServerLifecycleLock&) = delete;
+
+  bool Acquire(DWORD timeout_ms,
+               SECURITY_ATTRIBUTES* security_attributes = nullptr) noexcept {
+    if (owned_)
+      return true;
+    if (!handle_) {
+      handle_ = CreateMutexW(security_attributes, FALSE,
+                             GetServerLifecycleMutexName().c_str());
+      if (!handle_)
+        return false;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(handle_, timeout_ms);
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+      owned_ = true;
+      return true;
+    }
+    return false;
+  }
+
+  void Unlock() noexcept {
+    if (!handle_ || !owned_)
+      return;
+    ReleaseMutex(handle_);
+    owned_ = false;
+  }
+
+  void Release() noexcept {
+    if (!handle_)
+      return;
+    Unlock();
+    CloseHandle(handle_);
+    handle_ = nullptr;
+  }
+
+  bool owned() const noexcept { return owned_; }
+
+ private:
+  HANDLE handle_ = nullptr;
+  bool owned_ = false;
+};
 }  // namespace weasel

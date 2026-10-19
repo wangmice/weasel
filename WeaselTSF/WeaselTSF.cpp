@@ -7,6 +7,7 @@
 #include "LanguageBar.h"
 #include "Compartment.h"
 #include "Globals.h"
+#include "ServerRecoveryCoordinator.h"
 
 WeaselTSF::WeaselTSF() {
   _cRef = 1;
@@ -261,12 +262,10 @@ void WeaselTSF::_Reconnect() {
 }
 
 namespace {
-constexpr DWORD kServerExitObservationTimeoutMs = 250;
-constexpr DWORD kServerLaunchQuickObservationTimeoutMs = 500;
-constexpr DWORD kServerLaunchLeaseTimeoutMs = 2000;
+constexpr DWORD kServerLaunchObservationTimeoutMs = 2000;
 constexpr DWORD kServerRecoveryPollMs = 25;
 constexpr DWORD kServerPresentBackoffMs = 100;
-constexpr DWORD kServerLaunchBusyBackoffMs = 100;
+constexpr DWORD kServerLifecycleBusyBackoffMs = 100;
 constexpr DWORD kServerQueueFailureBackoffMs = 100;
 constexpr DWORD kServerLaunchFailureBaseBackoffMs = 250;
 constexpr DWORD kServerLaunchFailureMaxBackoffMs = 2000;
@@ -285,151 +284,37 @@ DWORD RemainingRecoveryTime(ULONGLONG deadline) {
 }
 
 #if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
-enum class ServerRecoveryState : LONG {
-  Idle = 0,
-  Busy = 1,
-  Backoff = 2,
-};
-
-volatile LONG g_serverRecoveryState =
-    static_cast<LONG>(ServerRecoveryState::Idle);
-alignas(8) volatile LONG64 g_serverRecoveryRetryAfter = 0;
-alignas(8) volatile LONG64 g_serverUnavailableSince = 0;
-volatile LONG g_serverRecoveryFailureStreak = 0;
-volatile LONG g_serverRecoveryHealthEpoch = 0;
-
-ServerRecoveryState LoadServerRecoveryState() noexcept {
-  return static_cast<ServerRecoveryState>(
-      InterlockedCompareExchange(&g_serverRecoveryState, 0, 0));
-}
-
-ULONGLONG LoadServerRecoveryRetryAfter() noexcept {
-  return static_cast<ULONGLONG>(
-      InterlockedCompareExchange64(&g_serverRecoveryRetryAfter, 0, 0));
-}
+weasel::tsf::ServerRecoveryCoordinator g_serverRecovery;
 
 void ResetServerUnavailableObservation() noexcept {
-  InterlockedExchange64(&g_serverUnavailableSince, 0);
+  g_serverRecovery.ResetUnavailableObservation();
 }
-
 ULONGLONG ServerUnavailableDurationMs() noexcept {
-  const ULONGLONG since = static_cast<ULONGLONG>(
-      InterlockedCompareExchange64(&g_serverUnavailableSince, 0, 0));
-  if (!since)
-    return 0;
-  const ULONGLONG now = GetTickCount64();
-  return now >= since ? now - since : 0;
+  return g_serverRecovery.UnavailableDuration(GetTickCount64());
 }
-
 bool ObserveServerUnavailableLongEnough() noexcept {
-  const ULONGLONG now = GetTickCount64();
-  LONG64 since = InterlockedCompareExchange64(&g_serverUnavailableSince,
-                                              static_cast<LONG64>(now), 0);
-  if (!since)
-    since = static_cast<LONG64>(now);
-  return now - static_cast<ULONGLONG>(since) >=
-         kServerUnavailableRestartThresholdMs;
+  return g_serverRecovery.ObserveUnavailableLongEnough(
+      GetTickCount64(), kServerUnavailableRestartThresholdMs);
 }
-
 void ResetServerRecoveryFailureStreak() noexcept {
-  InterlockedExchange(&g_serverRecoveryFailureStreak, 0);
+  g_serverRecovery.ResetFailureStreak();
 }
-
-LONG LoadServerRecoveryHealthEpoch() noexcept {
-  return InterlockedCompareExchange(&g_serverRecoveryHealthEpoch, 0, 0);
+void FinishServerRecoveryBackoff(DWORD delay_ms) noexcept {
+  g_serverRecovery.FinishBackoff(delay_ms, GetTickCount64());
 }
-
-void PublishServerRecoveryBackoff(DWORD delay_ms,
-                                  LONG recovery_epoch) noexcept {
-  const LONG busy = static_cast<LONG>(ServerRecoveryState::Busy);
-  const LONG backoff = static_cast<LONG>(ServerRecoveryState::Backoff);
-
-  // If recovery already succeeded after this worker acquired Busy, do not let
-  // an old worker publish any state into the new health epoch.
-  if (LoadServerRecoveryHealthEpoch() != recovery_epoch) {
-    ResetServerRecoveryFailureStreak();
-    InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
-    InterlockedCompareExchange(&g_serverRecoveryState,
-                               static_cast<LONG>(ServerRecoveryState::Idle),
-                               busy);
-    return;
-  }
-
-  InterlockedExchange64(&g_serverRecoveryRetryAfter,
-                        static_cast<LONG64>(GetTickCount64() + delay_ms));
-
-  if (InterlockedCompareExchange(&g_serverRecoveryState, backoff, busy) !=
-      busy) {
-    return;
-  }
-
-  // A successful reconnect can race between publishing the deadline and the
-  // Busy -> Backoff CAS. Retract the stale result before exposing Idle again,
-  // including its failure streak, so a new worker cannot inherit old history.
-  if (LoadServerRecoveryHealthEpoch() != recovery_epoch) {
-    ResetServerRecoveryFailureStreak();
-    InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
-    InterlockedCompareExchange(&g_serverRecoveryState,
-                               static_cast<LONG>(ServerRecoveryState::Idle),
-                               backoff);
-  }
+void FinishServerRecoveryHealthy() noexcept {
+  g_serverRecovery.FinishHealthy();
 }
-
 void NoteServerRecoveryHealthy() noexcept {
-  // Advance the health epoch before retracting Backoff. A Busy worker that
-  // started in the previous failure epoch will detect this after publication
-  // and withdraw its stale result.
-  InterlockedIncrement(&g_serverRecoveryHealthEpoch);
-  ResetServerRecoveryFailureStreak();
-  ResetServerUnavailableObservation();
-  InterlockedExchange64(&g_serverRecoveryRetryAfter, 0);
-  InterlockedCompareExchange(&g_serverRecoveryState,
-                             static_cast<LONG>(ServerRecoveryState::Idle),
-                             static_cast<LONG>(ServerRecoveryState::Backoff));
+  g_serverRecovery.NoteHealthy();
 }
-
-void PublishServerRecoveryFailureBackoff(LONG recovery_epoch) noexcept {
-  const LONG streak = InterlockedIncrement(&g_serverRecoveryFailureStreak);
-  const unsigned int shift =
-      streak <= 1 ? 0U
-                  : (streak >= 4 ? 3U : static_cast<unsigned int>(streak - 1));
-  DWORD delay_ms = kServerLaunchFailureBaseBackoffMs << shift;
-  if (delay_ms > kServerLaunchFailureMaxBackoffMs)
-    delay_ms = kServerLaunchFailureMaxBackoffMs;
-  PublishServerRecoveryBackoff(delay_ms, recovery_epoch);
+void FinishServerRecoveryFailure() noexcept {
+  g_serverRecovery.FinishFailure(
+      GetTickCount64(), kServerLaunchFailureBaseBackoffMs,
+      kServerLaunchFailureMaxBackoffMs);
 }
-
-bool TryBeginServerRecovery(LONG& recovery_epoch) noexcept {
-  for (;;) {
-    const ServerRecoveryState observed = LoadServerRecoveryState();
-    if (observed == ServerRecoveryState::Busy)
-      return false;
-
-    if (observed == ServerRecoveryState::Backoff &&
-        GetTickCount64() < LoadServerRecoveryRetryAfter()) {
-      return false;
-    }
-
-    const LONG observed_epoch = LoadServerRecoveryHealthEpoch();
-    const LONG expected = static_cast<LONG>(observed);
-    if (InterlockedCompareExchange(&g_serverRecoveryState,
-                                   static_cast<LONG>(ServerRecoveryState::Busy),
-                                   expected) != expected) {
-      continue;
-    }
-
-    // A successful reconnect may have raced the state acquisition. Do not
-    // queue recovery work from an epoch that was already superseded.
-    if (LoadServerRecoveryHealthEpoch() != observed_epoch) {
-      InterlockedCompareExchange(&g_serverRecoveryState,
-                                 static_cast<LONG>(ServerRecoveryState::Idle),
-                                 static_cast<LONG>(ServerRecoveryState::Busy));
-      return false;
-    }
-
-    recovery_epoch = observed_epoch;
-    return true;
-  }
+bool TryBeginServerRecovery() noexcept {
+  return g_serverRecovery.TryBegin(GetTickCount64());
 }
 
 bool IsNamedMutexPresent(const std::wstring& mutex_name) noexcept {
@@ -438,15 +323,41 @@ bool IsNamedMutexPresent(const std::wstring& mutex_name) noexcept {
     CloseHandle(mutex);
     return true;
   }
-
-  // Be conservative if the object exists but its DACL denies SYNCHRONIZE:
-  // treating it as absent could launch a duplicate server.
   return GetLastError() == ERROR_ACCESS_DENIED;
 }
 
-bool IsServerInstancePresent(
-    const std::wstring& instance_name,
-    const std::wstring& legacy_instance_name) noexcept {
+bool ReadServerRuntimeState(weasel::ServerRuntimeState& state) noexcept {
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE,
+                                    weasel::GetServerRuntimeStateName().c_str());
+  if (!mapping)
+    return false;
+  const auto* shared = static_cast<const weasel::ServerRuntimeState*>(
+      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
+                    sizeof(weasel::ServerRuntimeState)));
+  if (!shared) {
+    CloseHandle(mapping);
+    return false;
+  }
+  state.version = shared->version;
+  state.process_id = shared->process_id;
+  state.lifecycle =
+      *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
+  state.reserved = shared->reserved;
+  state.process_creation_time = shared->process_creation_time;
+  UnmapViewOfFile(shared);
+  CloseHandle(mapping);
+  return state.version == weasel::kServerRuntimeStateVersion &&
+         state.process_id != 0 && state.process_creation_time != 0;
+}
+
+bool SameServerGeneration(const weasel::ServerRuntimeState& lhs,
+                          const weasel::ServerRuntimeState& rhs) noexcept {
+  return lhs.version == rhs.version && lhs.process_id == rhs.process_id &&
+         lhs.process_creation_time == rhs.process_creation_time;
+}
+
+bool IsServerInstancePresent(const std::wstring& instance_name,
+                             const std::wstring& legacy_instance_name) noexcept {
   if (IsNamedMutexPresent(instance_name))
     return true;
   return legacy_instance_name != instance_name &&
@@ -460,16 +371,12 @@ bool WaitForServerInstanceState(const std::wstring& instance_name,
   const ULONGLONG deadline = GetTickCount64() + timeout_ms;
   for (;;) {
     if (IsServerInstancePresent(instance_name, legacy_instance_name) ==
-        expected_present) {
+        expected_present)
       return true;
-    }
-
     const DWORD remaining = RemainingRecoveryTime(deadline);
-    if (!remaining) {
+    if (!remaining)
       return IsServerInstancePresent(instance_name, legacy_instance_name) ==
              expected_present;
-    }
-
     Sleep(remaining < kServerRecoveryPollMs ? remaining
                                             : kServerRecoveryPollMs);
   }
@@ -478,49 +385,60 @@ bool WaitForServerInstanceState(const std::wstring& instance_name,
 struct RunningServerTarget {
   HWND window = nullptr;
   HANDLE process = nullptr;
-
   ~RunningServerTarget() {
     if (process)
       CloseHandle(process);
   }
 };
 
-bool OpenCurrentSessionServerTarget(RunningServerTarget& target) noexcept {
-  target.window = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
-  if (!target.window)
-    return false;
-
-  DWORD process_id = 0;
-  if (!GetWindowThreadProcessId(target.window, &process_id) || !process_id)
-    return false;
-
-  DWORD current_session_id = 0;
-  DWORD process_session_id = 0;
-  if (!weasel::GetCurrentWindowsSessionId(current_session_id) ||
-      !ProcessIdToSessionId(process_id, &process_session_id) ||
-      process_session_id != current_session_id) {
-    return false;
+HWND FindServerWindowForProcess(DWORD process_id) noexcept {
+  HWND window = nullptr;
+  while ((window = FindWindowExW(nullptr, window, nullptr, WEASEL_IPC_WINDOW)) !=
+         nullptr) {
+    DWORD window_process_id = 0;
+    if (GetWindowThreadProcessId(window, &window_process_id) &&
+        window_process_id == process_id)
+      return window;
   }
+  return nullptr;
+}
 
+bool OpenCurrentSessionServerTarget(const weasel::ServerRuntimeState& state,
+                                    RunningServerTarget& target) noexcept {
   target.process = OpenProcess(
       SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-      FALSE, process_id);
+      FALSE, state.process_id);
   if (!target.process)
+    return false;
+  DWORD current_session_id = 0, process_session_id = 0;
+  if (!weasel::GetCurrentWindowsSessionId(current_session_id) ||
+      !ProcessIdToSessionId(state.process_id, &process_session_id) ||
+      process_session_id != current_session_id)
+    return false;
+
+  FILETIME created{}, exited{}, kernel{}, user{};
+  if (!GetProcessTimes(target.process, &created, &exited, &kernel, &user))
+    return false;
+  ULARGE_INTEGER creation{};
+  creation.LowPart = created.dwLowDateTime;
+  creation.HighPart = created.dwHighDateTime;
+  if (creation.QuadPart != state.process_creation_time)
     return false;
 
   wchar_t image_path[32768] = {};
   DWORD image_path_length =
       static_cast<DWORD>(sizeof(image_path) / sizeof(image_path[0]));
   if (!QueryFullProcessImageNameW(target.process, 0, image_path,
-                                  &image_path_length)) {
+                                  &image_path_length))
     return false;
-  }
-
   const std::wstring path(image_path, image_path_length);
   const size_t separator = path.find_last_of(L"\\/");
   const std::wstring file_name =
       separator == std::wstring::npos ? path : path.substr(separator + 1);
-  return _wcsicmp(file_name.c_str(), L"WeaselServer.exe") == 0;
+  if (_wcsicmp(file_name.c_str(), L"WeaselServer.exe") != 0)
+    return false;
+  target.window = FindServerWindowForProcess(state.process_id);
+  return target.window != nullptr;
 }
 
 bool ProbeServerResponsive() noexcept {
@@ -529,7 +447,6 @@ bool ProbeServerResponsive() noexcept {
     const ULONGLONG deadline = GetTickCount64() + kServerLivenessProbeTimeoutMs;
     if (!probe.Connect(kServerLivenessProbeTimeoutMs))
       return false;
-
     const DWORD remaining = RemainingRecoveryTime(deadline);
     return remaining && probe.ProbeServer(remaining);
   } catch (...) {
@@ -537,14 +454,21 @@ bool ProbeServerResponsive() noexcept {
   }
 }
 
-bool StopPersistentlyUnavailableServer() noexcept {
+bool StopPersistentlyUnavailableServer(
+    const weasel::ServerRuntimeState& expected_state) noexcept {
   RunningServerTarget target;
-  if (!OpenCurrentSessionServerTarget(target))
+  if (!OpenCurrentSessionServerTarget(expected_state, target))
+    return false;
+
+  weasel::ServerRuntimeState current_state{};
+  if (!ReadServerRuntimeState(current_state) ||
+      !SameServerGeneration(current_state, expected_state) ||
+      current_state.lifecycle !=
+          static_cast<LONG>(weasel::ServerLifecycle::Ready))
     return false;
 
   if (!PostMessageW(target.window, WM_CLOSE, 0, 0))
     return false;
-
   DWORD wait_result =
       WaitForSingleObject(target.process, kServerGracefulShutdownTimeoutMs);
   if (wait_result == WAIT_OBJECT_0)
@@ -552,153 +476,107 @@ bool StopPersistentlyUnavailableServer() noexcept {
   if (wait_result == WAIT_FAILED)
     return false;
 
-  // A fully wedged UI thread cannot consume WM_CLOSE. Only force termination
-  // after the server has remained continuously unavailable for several
-  // seconds, and only after verifying the target is this session's
-  // WeaselServer.exe.
-  if (ServerUnavailableDurationMs() < kServerForceTerminateThresholdMs)
-    return false;
+  const ULONGLONG duration = ServerUnavailableDurationMs();
+  if (duration < kServerForceTerminateThresholdMs) {
+    const ULONGLONG remaining =
+        kServerForceTerminateThresholdMs - duration;
+    wait_result =
+        WaitForSingleObject(target.process, static_cast<DWORD>(remaining));
+    if (wait_result == WAIT_OBJECT_0)
+      return true;
+    if (wait_result == WAIT_FAILED)
+      return false;
+  }
+
+  // target.process is an already-open handle to the exact process object that
+  // passed PID/session/image/creation-time validation above. It cannot be
+  // redirected by PID reuse, and teardown may legitimately remove the shared
+  // runtime mapping before the process object itself exits.
   if (!TerminateProcess(target.process, ERROR_TIMEOUT))
     return false;
-
   return WaitForSingleObject(target.process, kServerForcedExitTimeoutMs) ==
          WAIT_OBJECT_0;
 }
 
-struct LaunchMutexGuard {
-  HANDLE handle = nullptr;
-  bool owned = false;
-
-  ~LaunchMutexGuard() {
-    if (!handle)
-      return;
-    if (owned)
-      ReleaseMutex(handle);
-    CloseHandle(handle);
-  }
-};
-
-void RunServerRecoveryOnce(LONG recovery_epoch) noexcept {
+void RunServerRecoveryOnce() noexcept {
   try {
-    std::wstring dir;
-    if (RegGetStringValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"WeaselRoot",
-                          dir) != ERROR_SUCCESS ||
-        dir.empty()) {
-      PublishServerRecoveryFailureBackoff(recovery_epoch);
+    weasel::ServerLifecycleLock lifecycle_lock;
+    if (!lifecycle_lock.Acquire(0)) {
+      ResetServerRecoveryFailureStreak();
+      ResetServerUnavailableObservation();
+      FinishServerRecoveryBackoff(kServerLifecycleBusyBackoffMs);
       return;
     }
 
     const std::wstring instance_name = weasel::GetServerInstanceName();
     const std::wstring legacy_instance_name =
         weasel::GetLegacyServerInstanceName();
-    const std::wstring launch_mutex_name = weasel::GetServerLaunchMutexName();
-
-    bool server_present =
+    const bool server_present =
         IsServerInstancePresent(instance_name, legacy_instance_name);
+
     if (server_present) {
-      // Give an already-exiting server a short background grace period before
-      // classifying it as persistently unavailable.
-      if (WaitForServerInstanceState(instance_name, legacy_instance_name, false,
-                                     kServerExitObservationTimeoutMs)) {
-        ResetServerUnavailableObservation();
-        server_present = false;
-      } else if (!ObserveServerUnavailableLongEnough()) {
+      weasel::ServerRuntimeState state{};
+      if (!ReadServerRuntimeState(state) ||
+          state.lifecycle !=
+              static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
         ResetServerRecoveryFailureStreak();
-        PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
+        ResetServerUnavailableObservation();
+        FinishServerRecoveryBackoff(kServerPresentBackoffMs);
         return;
       }
+      if (!ObserveServerUnavailableLongEnough()) {
+        ResetServerRecoveryFailureStreak();
+        FinishServerRecoveryBackoff(kServerPresentBackoffMs);
+        return;
+      }
+      if (ProbeServerResponsive()) {
+        FinishServerRecoveryHealthy();
+        return;
+      }
+
+      weasel::ServerRuntimeState latest_state{};
+      if (!ReadServerRuntimeState(latest_state) ||
+          !SameServerGeneration(latest_state, state) ||
+          latest_state.lifecycle !=
+              static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+        ResetServerRecoveryFailureStreak();
+        ResetServerUnavailableObservation();
+        FinishServerRecoveryBackoff(kServerPresentBackoffMs);
+        return;
+      }
+      if (!StopPersistentlyUnavailableServer(latest_state)) {
+        FinishServerRecoveryFailure();
+        return;
+      }
+      ResetServerUnavailableObservation();
     } else {
       ResetServerUnavailableObservation();
     }
 
-    LaunchMutexGuard launch_mutex;
-    launch_mutex.handle =
-        CreateMutexW(nullptr, FALSE, launch_mutex_name.c_str());
-    if (!launch_mutex.handle) {
-      PublishServerRecoveryFailureBackoff(recovery_epoch);
+    std::wstring dir;
+    if (RegGetStringValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"WeaselRoot",
+                          dir) != ERROR_SUCCESS ||
+        dir.empty()) {
+      FinishServerRecoveryFailure();
       return;
     }
-
-    const DWORD wait_result = WaitForSingleObject(launch_mutex.handle, 0);
-    if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
-      ResetServerRecoveryFailureStreak();
-      PublishServerRecoveryBackoff(kServerLaunchBusyBackoffMs, recovery_epoch);
-      return;
-    }
-    launch_mutex.owned = true;
-
-    // Cross-process double check: another TSF host may have launched or
-    // recovered the service while this worker was acquiring the launch mutex.
-    server_present =
-        IsServerInstancePresent(instance_name, legacy_instance_name);
-    if (server_present) {
-      if (!ObserveServerUnavailableLongEnough()) {
-        ResetServerRecoveryFailureStreak();
-        PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
-        return;
-      }
-
-      // Another host may have recovered the server while this worker was
-      // waiting for the launch mutex. Probe the real IPC/session path before
-      // treating an old local unavailability timer as evidence of a hang.
-      if (ProbeServerResponsive()) {
-        ResetServerRecoveryFailureStreak();
-        ResetServerUnavailableObservation();
-        PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
-        return;
-      }
-
-      // The instance has stayed unavailable across multiple recovery attempts
-      // and also failed a fresh liveness probe. Restart it only while holding
-      // the cross-process launch mutex, so other TSF hosts cannot concurrently
-      // stop or replace the same server.
-      if (!StopPersistentlyUnavailableServer() ||
-          !WaitForServerInstanceState(instance_name, legacy_instance_name,
-                                      false,
-                                      kServerGracefulShutdownTimeoutMs)) {
-        PublishServerRecoveryFailureBackoff(recovery_epoch);
-        return;
-      }
-      ResetServerUnavailableObservation();
-    }
-
     const HINSTANCE launched =
         ShellExecuteW(nullptr, L"open", (dir + L"\\start_service.bat").c_str(),
                       nullptr, dir.c_str(), SW_HIDE);
     if (reinterpret_cast<INT_PTR>(launched) <= 32) {
-      PublishServerRecoveryFailureBackoff(recovery_epoch);
+      FinishServerRecoveryFailure();
       return;
     }
-
-    // Keep the cross-process launch lease until the launched server has had a
-    // realistic chance to publish its singleton. The first 500 ms is the fast
-    // observation window; if startup is cold/slow, retain the same launch
-    // mutex for the rest of the 2 s lease so another TSF host cannot start a
-    // competing WeaselServer and trigger an avoidable restart cycle.
     if (WaitForServerInstanceState(instance_name, legacy_instance_name, true,
-                                   kServerLaunchQuickObservationTimeoutMs)) {
+                                   kServerLaunchObservationTimeoutMs)) {
       ResetServerRecoveryFailureStreak();
       ResetServerUnavailableObservation();
-      PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
+      FinishServerRecoveryBackoff(kServerPresentBackoffMs);
       return;
     }
-
-    static_assert(kServerLaunchLeaseTimeoutMs >=
-                  kServerLaunchQuickObservationTimeoutMs);
-    const DWORD remaining_launch_lease =
-        kServerLaunchLeaseTimeoutMs - kServerLaunchQuickObservationTimeoutMs;
-    if (remaining_launch_lease &&
-        WaitForServerInstanceState(instance_name, legacy_instance_name, true,
-                                   remaining_launch_lease)) {
-      ResetServerRecoveryFailureStreak();
-      ResetServerUnavailableObservation();
-      PublishServerRecoveryBackoff(kServerPresentBackoffMs, recovery_epoch);
-      return;
-    }
-
-    PublishServerRecoveryFailureBackoff(recovery_epoch);
+    FinishServerRecoveryFailure();
   } catch (...) {
-    PublishServerRecoveryFailureBackoff(recovery_epoch);
+    FinishServerRecoveryFailure();
   }
 }
 #endif
@@ -706,20 +584,18 @@ void RunServerRecoveryOnce(LONG recovery_epoch) noexcept {
 
 void WeaselTSF::_ScheduleServerRecovery() noexcept {
 #if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
-  LONG recovery_epoch = 0;
-  if (!TryBeginServerRecovery(recovery_epoch))
+  if (!TryBeginServerRecovery())
     return;
 
   bool queued = false;
   try {
-    queued = QueueDllBackgroundTask(
-        [recovery_epoch]() { RunServerRecoveryOnce(recovery_epoch); });
+    queued = QueueDllBackgroundTask([]() { RunServerRecoveryOnce(); });
   } catch (...) {
     // Scheduling is best-effort and must never escape through a TSF callback.
   }
 
   if (!queued)
-    PublishServerRecoveryBackoff(kServerQueueFailureBackoffMs, recovery_epoch);
+    FinishServerRecoveryBackoff(kServerQueueFailureBackoffMs);
 #endif
 }
 

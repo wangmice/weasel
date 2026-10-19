@@ -93,6 +93,10 @@ if ($tsf -notmatch '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
   throw 'transport/session retry must reuse the physical key recovery deadline'
 }
+if ($keySink -notmatch 'TransportError[\s\S]*?KeyDispatchResult::AmbiguousConsumed' -or
+    $keySink -notmatch 'dispatch\s*==\s*KeyDispatchResult::Unhandled\s*\?\s*FALSE\s*:\s*TRUE') {
+  throw 'ambiguous timed-out keys must stay consumed locally instead of falling through to the host'
+}
 if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnectedUntil\(deadline\)[\s\S]*?process_key_bounded\(\)') {
   throw 'definitely-undelivered keys may replay only after bounded recovery'
 }

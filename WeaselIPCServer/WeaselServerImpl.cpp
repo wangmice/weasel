@@ -22,6 +22,28 @@ static std::mutex g_api_mutex;
 // (interrupt + WakeListener) is never delayed by the backoff.
 static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
+static constexpr DWORD kPrimaryPipeReadyTimeoutMs = 2000;
+
+bool WaitForPrimaryPipeReady() noexcept {
+  const std::wstring pipe_name = GetPipeName();
+  const ULONGLONG deadline = GetTickCount64() + kPrimaryPipeReadyTimeoutMs;
+  for (;;) {
+    if (WaitNamedPipeW(pipe_name.c_str(), 50))
+      return true;
+
+    const DWORD error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PIPE_BUSY &&
+        error != ERROR_SEM_TIMEOUT) {
+      return false;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    if (now >= deadline)
+      return false;
+    Sleep(10);
+  }
+}
+
 ServerImpl::ServerImpl()
     : channel(std::make_unique<PipeServer>(GetPipeName(),
                                            sa.get_attr(),
@@ -29,6 +51,8 @@ ServerImpl::ServerImpl()
       process_tracker(
           [this](ClientProcessToken token) { _OnClientProcessExit(token); }),
       m_pRequestHandler(NULL),
+      m_runtimeStateMapping(NULL),
+      m_runtimeState(nullptr),
       m_darkMode(IsUserDarkMode()) {
   m_hUser32Module = GetModuleHandle(_T("user32.dll"));
   m_pPhysicalToLogicalPointForPerMonitorDPI =
@@ -42,16 +66,63 @@ ServerImpl::~ServerImpl() {
 }
 
 void ServerImpl::_Finailize() {
-  // Ordered, idempotent teardown: join the pipe threads before the window
-  // goes away, so no worker can touch a destroyed handler or UI.
+  _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+  m_startupLifecycleLock.Release();
   _StopPipeServer();
-  // No new Resolve() calls are possible after workers drain. Synchronously
-  // drain process-exit callbacks before RequestHandler/UI lifetime can end.
   process_tracker.Stop();
 
-  if (IsWindow()) {
+  if (IsWindow())
     DestroyWindow();
+  if (m_runtimeState) {
+    UnmapViewOfFile(m_runtimeState);
+    m_runtimeState = nullptr;
   }
+  if (m_runtimeStateMapping) {
+    CloseHandle(m_runtimeStateMapping);
+    m_runtimeStateMapping = NULL;
+  }
+}
+
+void ServerImpl::_SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept {
+  if (!m_runtimeState)
+    return;
+  InterlockedExchange(&m_runtimeState->lifecycle,
+                      static_cast<LONG>(lifecycle));
+}
+
+bool ServerImpl::_PublishRuntimeState() noexcept {
+  m_runtimeStateMapping = CreateFileMappingW(
+      INVALID_HANDLE_VALUE, sa.get_attr(), PAGE_READWRITE, 0,
+      sizeof(ServerRuntimeState), GetServerRuntimeStateName().c_str());
+  if (!m_runtimeStateMapping)
+    return false;
+
+  m_runtimeState = static_cast<ServerRuntimeState*>(MapViewOfFile(
+      m_runtimeStateMapping, FILE_MAP_WRITE, 0, 0,
+      sizeof(ServerRuntimeState)));
+  if (!m_runtimeState)
+    return false;
+
+  FILETIME created{}, exited{}, kernel{}, user{};
+  if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+    return false;
+
+  ULARGE_INTEGER creation{};
+  creation.LowPart = created.dwLowDateTime;
+  creation.HighPart = created.dwHighDateTime;
+
+  m_runtimeState->version = kServerRuntimeStateVersion;
+  m_runtimeState->process_id = GetCurrentProcessId();
+  m_runtimeState->reserved = 0;
+  m_runtimeState->process_creation_time = creation.QuadPart;
+  _SetRuntimeLifecycle(ServerLifecycle::Starting);
+  return true;
+}
+
+void ServerImpl::_UnlockStartupLifecycleLock() noexcept {
+  // Keep the handle open as the process-lifetime anchor for this named mutex;
+  // only release ownership once startup reaches Ready.
+  m_startupLifecycleLock.Unlock();
 }
 
 void ServerImpl::_OnClientProcessExit(ClientProcessToken token) {
@@ -113,6 +184,7 @@ LRESULT ServerImpl::OnEndSystemSession(UINT uMsg,
                                        WPARAM wParam,
                                        LPARAM lParam,
                                        BOOL& bHandled) {
+  _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   if (m_pRequestHandler) {
     std::lock_guard guard(g_api_mutex);
     m_pRequestHandler->Finalize();
@@ -195,19 +267,49 @@ HWND ServerImpl::Start() {
   if (mutexError == ERROR_ALREADY_EXISTS) {
     ::CloseHandle(hMutexOneInstance);
     LOG(ERROR) << "another WeaselServer instance is already running";
-    return 0;  // assure single instance
+    return 0;
   }
 
-  // Keep the newly-created mutex handle open for the process lifetime. Closing
-  // it here would drop the single-instance guard while the server is running.
-  HWND hwnd = Create(NULL);
-  if (!hwnd)
-    LOG(ERROR) << "ServerImpl::Create failed, error: " << GetLastError();
+  // Publish the singleton before waiting for lifecycle ownership. Recovery can
+  // observe the launched child without letting initialization overlap deploy.
+  if (!m_startupLifecycleLock.Acquire(INFINITE, sa.get_attr())) {
+    LOG(ERROR) << "Failed to acquire WeaselServer lifecycle ownership.";
+    CloseHandle(hMutexOneInstance);
+    return 0;
+  }
 
+  if (!_PublishRuntimeState()) {
+    LOG(ERROR) << "Failed to publish WeaselServer runtime state, error: "
+               << GetLastError();
+    if (m_runtimeState) {
+      UnmapViewOfFile(m_runtimeState);
+      m_runtimeState = nullptr;
+    }
+    if (m_runtimeStateMapping) {
+      CloseHandle(m_runtimeStateMapping);
+      m_runtimeStateMapping = NULL;
+    }
+    m_startupLifecycleLock.Release();
+    CloseHandle(hMutexOneInstance);
+    return 0;
+  }
+
+  HWND hwnd = Create(NULL);
+  if (!hwnd) {
+    LOG(ERROR) << "ServerImpl::Create failed, error: " << GetLastError();
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    UnmapViewOfFile(m_runtimeState);
+    m_runtimeState = nullptr;
+    CloseHandle(m_runtimeStateMapping);
+    m_runtimeStateMapping = NULL;
+    m_startupLifecycleLock.Release();
+    CloseHandle(hMutexOneInstance);
+  }
   return hwnd;
 }
 
 int ServerImpl::Stop() {
+  _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   // DO NOT exit process or finalize here
   // Let WeaselServer handle this
   PostMessage(WM_QUIT);
@@ -268,10 +370,27 @@ int ServerImpl::Run() {
   pipeThread = std::make_unique<boost::thread>(
       [this, listener]() { channel->Listen(listener); });
 
+  // WeaselServerApp calls Run() only after Rime initialization has completed.
+  // Do not expose Ready until the primary pipe instance actually exists:
+  // deployers interpret a failed Connect while owning the lifecycle lock as
+  // "no live server" and may otherwise start local Rime maintenance beside us.
+  if (!WaitForPrimaryPipeReady()) {
+    LOG(ERROR) << "primary IPC pipe did not become ready during server startup";
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    // Startup lifecycle ownership stays held through WeaselServerApp cleanup;
+    // ServerImpl destruction releases it after Rime/UI teardown.
+    _StopPipeServer();
+    return -1;
+  }
+
+  _SetRuntimeLifecycle(ServerLifecycle::Ready);
+  _UnlockStartupLifecycleLock();
+
   CMessageLoop theLoop;
   _Module.AddMessageLoop(&theLoop);
   int nRet = theLoop.Run();
   _Module.RemoveMessageLoop();
+  _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   // Stop the pipe server before the caller (WeaselServerApp::Run) starts
   // destroying the handler and UI: late requests would touch freed objects.
   _StopPipeServer();
@@ -400,6 +519,7 @@ DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
                                      DWORD lParam) {
   if (!m_pRequestHandler)
     return 0;
+  _SetRuntimeLifecycle(ServerLifecycle::Maintenance);
   m_pRequestHandler->StartMaintenance();
   // Run() holds g_api_mutex around this call, so the acknowledgement is sent
   // only after every earlier handler call has finished and maintenance entry
@@ -410,8 +530,10 @@ DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
                                    DWORD lParam) {
-  if (m_pRequestHandler)
+  if (m_pRequestHandler) {
     m_pRequestHandler->EndMaintenance();
+    _SetRuntimeLifecycle(ServerLifecycle::Ready);
+  }
   return 0;
 }
 

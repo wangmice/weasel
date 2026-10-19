@@ -39,7 +39,7 @@ if ($recoveryLaunch -match '\.detach\s*\(' -or
     $recoveryLaunch -notmatch 'QueueDllBackgroundTask\s*\(') {
   throw 'first-key server recovery must use the DLL-lifetime-aware background helper'
 }
-if ($recoveryLaunch -match 'RegGetStringValue|GetServerInstanceName|GetServerLaunchMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
+if ($recoveryLaunch -match 'RegGetStringValue|GetServerInstanceName|GetServerLifecycleMutexName|OpenMutex|CreateMutex|ShellExecute|Sleep') {
   throw 'callback-side recovery scheduling must not perform blocking discovery or launch work'
 }
 
@@ -88,6 +88,22 @@ if ($switcher -notmatch 'KillTimer\s*\(' -or
 }
 if ($switcher -match 'TerminateProcess\s*\(') {
   throw 'schema retrieval timeout must not terminate an installer that may be writing files'
+}
+
+if ($configurator -match 'WeaselDeployerMutex') {
+  throw 'deployer correctness must use the shared server lifecycle lock'
+}
+if (([regex]::Matches($configurator, 'ServerLifecycleLock\s+lifecycle_lock')).Count -ne 3 -or
+    ([regex]::Matches($configurator, 'lifecycle_lock\.Acquire\(0\)')).Count -ne 3) {
+  throw 'workspace deploy dictionary management and sync must each own the shared lifecycle lock'
+}
+if ($configurator -match 'CloseHandle\(hMutex\)') {
+  throw 'deployer lifecycle ownership must be RAII and extend through EndMaintenance'
+}
+
+if ($configurator -notmatch 'ServerSingletonPresent\(\)[\s\S]*?GetServerInstanceName\(\)[\s\S]*?GetLegacyServerInstanceName\(\)' -or
+    $configurator -notmatch 'if\s*\(!client\.Connect\(\)\)[\s\S]*?ServerSingletonPresent\(\)[\s\S]*?return false;[\s\S]*?return true;') {
+  throw 'deployer must distinguish an absent server from a singleton that is starting stopping or IPC-unavailable'
 }
 
 if ($configurator -notmatch 'enum class ConfigureResult \{ Cancelled, Unchanged, Saved, Failed \};') {

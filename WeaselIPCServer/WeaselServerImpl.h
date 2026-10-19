@@ -119,6 +119,9 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   LRESULT _HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled);
   /* Interrupt and join the pipe listener and its workers; idempotent */
   void _StopPipeServer();
+  void _SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept;
+  bool _PublishRuntimeState() noexcept;
+  void _UnlockStartupLifecycleLock() noexcept;
   template <typename _Resp>
   void HandlePipeMessage(PipeMessage pipe_msg, _Resp resp);
 
@@ -132,6 +135,9 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   // it explicitly after pipe workers drain and before the handler/UI may die.
   ClientProcessTracker process_tracker;
   RequestHandler* m_pRequestHandler;  // points at session_router while active
+  ServerLifecycleLock m_startupLifecycleLock;
+  HANDLE m_runtimeStateMapping;
+  ServerRuntimeState* m_runtimeState;
   std::map<UINT, CommandHandler> m_MenuHandlers;
   std::function<void()> m_trayRefreshCallback;
   HMODULE m_hUser32Module;

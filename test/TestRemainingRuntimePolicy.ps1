@@ -2,24 +2,23 @@ $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
+$serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
+$ipc = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
+$recoveryCoordinator = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\ServerRecoveryCoordinator.h') -Raw
+$serverCommands = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\TestServerCommands.cpp') -Raw
 $imeSetup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\imesetup.cpp') -Raw
 $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
 
 # Recovery launch arbitration belongs entirely to a DLL-safe background task.
-if ($tsf -notmatch 'void\s+RunServerRecoveryOnce\(LONG\s+recovery_epoch\)\s+noexcept') {
-  throw 'TSF recovery must have a single epoch-aware background recovery worker'
+if ($tsf -notmatch 'void\s+RunServerRecoveryOnce\(\)\s+noexcept') {
+  throw 'TSF recovery must have one background worker implementation'
 }
-if ($tsf -notmatch 'QueueDllBackgroundTask\([\s\S]*?\[recovery_epoch\]\(\)\s*\{\s*RunServerRecoveryOnce\(recovery_epoch\);\s*\}\)') {
-  throw 'TSF recovery worker must receive the epoch captured before queueing'
+if ($tsf -notmatch 'QueueDllBackgroundTask\(\[\]\(\)\s*\{\s*RunServerRecoveryOnce\(\);\s*\}\)') {
+  throw 'TSF recovery must queue the worker without carrying stale health epochs'
 }
-if ($tsf -notmatch 'CreateMutexW\(nullptr,\s*FALSE,\s*launch_mutex_name\.c_str\(\)\)') {
-  throw 'background recovery must create the launch mutex unowned'
-}
-if ($tsf -notmatch 'WaitForSingleObject\(launch_mutex\.handle,\s*0\)') {
-  throw 'cross-process launch arbitration must be nonblocking'
-}
-if ($tsf -notmatch 'ReleaseMutex\(handle\)') {
-  throw 'launch mutex guard must release ownership after the launch window'
+if ($ipc -notmatch 'class\s+ServerLifecycleLock' -or
+    $tsf -notmatch 'ServerLifecycleLock\s+lifecycle_lock[\s\S]*?lifecycle_lock\.Acquire\(0\)') {
+  throw 'background recovery must acquire the shared lifecycle lock nonblocking'
 }
 if ($tsf -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*mutex_name\.c_str\(\)\)' -or
     $tsf -notmatch 'GetLegacyServerInstanceName\(\)') {
@@ -28,35 +27,50 @@ if ($tsf -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*mutex_name\.c_str\(\)\)'
 if ($tsf -match 'CreateToolhelp32Snapshot|Process32First|Process32Next') {
   throw 'recovery must not poll the process table'
 }
-if ($tsf -notmatch 'kServerExitObservationTimeoutMs\s*=\s*250' -or
-    $tsf -notmatch 'kServerLaunchQuickObservationTimeoutMs\s*=\s*500' -or
-    $tsf -notmatch 'kServerLaunchLeaseTimeoutMs\s*=\s*2000') {
-  throw 'background transition observation and cross-process launch lease must stay bounded'
+if ($tsf -notmatch 'kServerLaunchObservationTimeoutMs\s*=\s*2000') {
+  throw 'background server launch observation must stay bounded'
 }
-if ($tsf -notmatch 'remaining_launch_lease\s*=\s*kServerLaunchLeaseTimeoutMs\s*-\s*kServerLaunchQuickObservationTimeoutMs') {
-  throw 'slow startup must retain the original launch mutex for the remainder of the lease'
+if ($recoveryCoordinator -notmatch 'worker_inflight_' -or
+    $recoveryCoordinator -notmatch 'FinishBackoff\(' -or
+    $recoveryCoordinator -notmatch 'FinishFailure\(' -or
+    $recoveryCoordinator -notmatch 'FinishHealthy\(' -or
+    $recoveryCoordinator -match 'health_epoch_') {
+  throw 'recovery coordinator must remain a small process-local throttle without health epochs'
 }
-if ($tsf -notmatch 'PublishServerRecoveryBackoff\([\s\S]*?InterlockedCompareExchange\(&g_serverRecoveryState,\s*backoff,\s*busy\)') {
-  throw 'recovery Backoff must be published only by the Busy owner'
+if ($serverCommands -notmatch 'test_server_recovery_coordinator_state_machine' -or
+    $serverCommands -notmatch 'winners\s*==\s*1' -or
+    $serverCommands -notmatch 'Backoff rejects early workers' -or
+    $serverCommands -notmatch 'new recovery cannot bypass a published Backoff' -or
+    $serverCommands -notmatch 'foreground health hints do not revoke an in-flight recovery owner') {
+  throw 'TestServerCommands must dynamically exercise coordinator ownership and backoff semantics'
 }
-if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)[\s\S]*?InterlockedIncrement\(&g_serverRecoveryHealthEpoch\)[\s\S]*?ResetServerUnavailableObservation\(\)') {
-  throw 'successful cold recovery must invalidate stale failure and unavailability epochs'
+if ($ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
+    $ipc -notmatch 'GetServerRuntimeStateName\(\)' -or
+    $ipc -notmatch 'enum\s+class\s+ServerLifecycle' -or
+    $serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE' -or
+    $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
+    $tsf -notmatch 'ReadServerRuntimeState\(') {
+  throw 'server lifecycle correctness must use one mutex and one runtime state mapping'
+}
+if ($ipc -match 'GetServerReadyEventName|ServerRuntimeIdentity|GetServerRuntimeIdentityName') {
+  throw 'recovery must not retain duplicated ready-event or seqlock identity state'
 }
 if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
     $tsf -notmatch 'kServerForceTerminateThresholdMs\s*=\s*5000' -or
-    $tsf -notmatch 'StopPersistentlyUnavailableServer\(\)') {
+    $tsf -notmatch 'bool\s+StopPersistentlyUnavailableServer\(') {
   throw 'persistent live-server failure must escalate through bounded restart thresholds'
 }
 if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs[\s\S]*?ProbeServer\(remaining\)' -or
-    $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?ResetServerUnavailableObservation\(\)') {
-  throw 'restart escalation must re-probe server IPC health after acquiring launch ownership'
+    $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?FinishServerRecoveryHealthy\(\)') {
+  throw 'restart escalation must re-probe server IPC health after acquiring lifecycle ownership'
 }
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
-  throw 'launcher must double-check server presence across launch mutex acquisition'
+  throw 'recovery launch must preserve singleton observation around lifecycle ownership'
 }
-if ($tsf -notmatch 'g_serverRecoveryRetryAfter' -or
+if ($recoveryCoordinator -notmatch 'retry_after_' -or
+    $recoveryCoordinator -notmatch 'RetryAfter\(\)' -or
     $tsf -match 'kServerRecoveryRetryCooldownMs') {
-  throw 'recovery backoff must use a deadline instead of sleeping a cooldown worker'
+  throw 'recovery backoff must use a coordinator deadline instead of sleeping a cooldown worker'
 }
 
 # Uninstall must surface profile/layout/file/registry cleanup failures.
