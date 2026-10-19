@@ -104,12 +104,21 @@ if ($tsf -notmatch 'kServerLivenessProbeTimeoutMs\s*=\s*100' -or
     $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?Connect\(kServerLivenessProbeTimeoutMs\)[\s\S]*?RemainingRecoveryTime\(deadline\)[\s\S]*?ProbeServer\(remaining\)') {
   throw 'persistent restart must perform a fresh bounded side-effect-free IPC liveness probe'
 }
-if ($ipc -notmatch 'ProbeServer\(DWORD\s+timeout_ms\)' -or
-    $client -notmatch 'ClientImpl::ProbeServer\(DWORD\s+timeout_ms\)[\s\S]*?PipeMessage\s+req\{WEASEL_IPC_ECHO,\s*0,\s*0\}[\s\S]*?channel\.Transact\(req,\s*timeout_ms\)') {
+if ($ipc -notmatch 'ProbeServer\(DWORD\s+timeout_ms\)') {
+  throw 'liveness probe API must expose a bounded timeout'
+}
+$probeStart = $client.IndexOf('bool ClientImpl::ProbeServer(DWORD timeout_ms)')
+$probeEnd = $client.IndexOf('bool ClientImpl::GetResponseData', $probeStart)
+if ($probeStart -lt 0 -or $probeEnd -le $probeStart) {
+  throw 'unable to isolate ClientImpl::ProbeServer'
+}
+$probeBody = $client.Substring($probeStart, $probeEnd - $probeStart)
+if ($probeBody -notmatch 'PipeMessage\s+req\{WEASEL_IPC_ECHO,\s*0,\s*0\}' -or
+    $probeBody -notmatch 'channel\.Transact\(req,\s*timeout_ms\)') {
   throw 'liveness probe must use ECHO session 0 without creating a logical session'
 }
-if ($client -match 'ClientImpl::ProbeServer\(DWORD\s+timeout_ms\)[\s\S]*?StartSession') {
-  throw 'liveness probe must not create or activate a Rime session'
+if ($probeBody -match 'StartSession|EndSession|_SetSessionId|_InvalidateLogicalSession') {
+  throw 'liveness probe must not create, destroy, or activate a Rime session'
 }
 if ($tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?ResetServerUnavailableObservation\(\)[\s\S]*?PublishServerRecoveryBackoff') {
   throw 'a recovered server must cancel stale local unavailability before restart'
@@ -170,11 +179,21 @@ if ($keySink -notmatch 'process_key_bounded[\s\S]*?ProcessKeyEventEx\(keyEvent,[
 if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnectedUntil\(deadline\)[\s\S]*?process_key_bounded\(\)') {
   throw 'only definitely-unsent keys may recover and replay once with a bounded key IPC'
 }
-if ($keySink -match 'TransportError\s*\|\||\|\|\s*[^\r\n]*TransportError') {
-  throw 'ambiguous TransportError must never be grouped into the replay path'
+$recoveryStart = $keySink.IndexOf('bool WeaselTSF::_ProcessKeyEventWithRecovery')
+$recoveryEnd = $keySink.IndexOf('void WeaselTSF::_ProcessKeyEvent(', $recoveryStart)
+if ($recoveryStart -lt 0 -or $recoveryEnd -le $recoveryStart) {
+  throw 'unable to isolate WeaselTSF::_ProcessKeyEventWithRecovery'
 }
-if ($keySink -notmatch 'TransportError[\s\S]*?_ScheduleServerRecovery\(\)') {
-  throw 'ambiguous transport failure must schedule recovery without replay'
+$recoveryBody = $keySink.Substring($recoveryStart, $recoveryEnd - $recoveryStart)
+$transportErrorPattern = 'result\s*==\s*weasel::KeyEventResult::TransportError'
+$transportErrorMatches = [regex]::Matches($recoveryBody, $transportErrorPattern)
+if ($transportErrorMatches.Count -ne 1) {
+  throw 'ambiguous TransportError must appear only in the final recovery-scheduling branch'
+}
+$transportErrorTail = $recoveryBody.Substring($transportErrorMatches[0].Index)
+if ($transportErrorTail -notmatch '_ScheduleServerRecovery\(\)' -or
+    $transportErrorTail -match 'process_key_bounded\(\)|StartSession\(|_EnsureServerConnectedUntil\(') {
+  throw 'ambiguous TransportError must schedule recovery without replay or synchronous session recovery'
 }
 
 Write-Host 'First-key wakeup policy: PASS'

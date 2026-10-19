@@ -6,8 +6,11 @@ $imeSetup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\imesetup.cpp'
 $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
 
 # Recovery launch arbitration belongs entirely to a DLL-safe background task.
-if ($tsf -notmatch 'void\s+RunServerRecoveryOnce\(\)\s+noexcept') {
-  throw 'TSF recovery must have a single background recovery worker'
+if ($tsf -notmatch 'void\s+RunServerRecoveryOnce\(LONG\s+recovery_epoch\)\s+noexcept') {
+  throw 'TSF recovery must have a single epoch-aware background recovery worker'
+}
+if ($tsf -notmatch 'QueueDllBackgroundTask\([\s\S]*?\[recovery_epoch\]\(\)\s*\{\s*RunServerRecoveryOnce\(recovery_epoch\);\s*\}\)') {
+  throw 'TSF recovery worker must receive the epoch captured before queueing'
 }
 if ($tsf -notmatch 'CreateMutexW\(nullptr,\s*FALSE,\s*launch_mutex_name\.c_str\(\)\)') {
   throw 'background recovery must create the launch mutex unowned'

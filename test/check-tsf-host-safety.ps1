@@ -31,7 +31,7 @@ if ($compositionSource -notmatch $directCommitPattern) {
 }
 
 $keyEventSinkSource = Get-Content -LiteralPath $KeyEventSinkPath -Raw
-if ($keyEventSinkSource -notmatch '_keyCountToSimulate\s*&&\s*ke\.keycode\s*!=\s*ibus::Caps_Lock[\s\S]*?_keyCountToSimulate\s*=\s*0') {
+if ($keyEventSinkSource -notmatch 'const\s+bool\s+suppress_simulated_caps\s*=[\s\S]*?_keyCountToSimulate\s*>\s*0[\s\S]*?ke\.keycode\s*==\s*ibus::Caps_Lock[\s\S]*?if\s*\(_keyCountToSimulate\s*&&\s*!suppress_simulated_caps\)[\s\S]*?_keyCountToSimulate\s*=\s*0') {
   throw 'TSF host-safety regression: stale CapsLock simulation must self-clear before a real non-CapsLock key'
 }
 if ($keyEventSinkSource -notmatch 'const\s+bool\s+suppress_simulated_caps\s*=[\s\S]*?_keyCountToSimulate\s*>\s*0[\s\S]*?ke\.keycode\s*==\s*ibus::Caps_Lock') {
