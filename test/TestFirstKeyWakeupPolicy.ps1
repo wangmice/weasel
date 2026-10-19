@@ -90,6 +90,10 @@ if ($tsf -match 'CreateToolhelp32Snapshot') {
 if ($tsf -notmatch 'kServerLaunchObservationTimeoutMs\s*=\s*2000') {
   throw 'server launch observation must stay bounded'
 }
+if ($serverImpl -notmatch 'kServerStartupLifecycleWaitMs\s*=\s*2000' -or
+    $serverImpl -match 'm_startupLifecycleLock\.Acquire\(INFINITE') {
+  throw 'server startup must not wait indefinitely for lifecycle ownership'
+}
 if ($ipc -notmatch 'class\s+ServerLifecycleLock' -or
     $ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
     $ipc -notmatch 'struct\s+ServerRuntimeState[\s\S]*?process_id[\s\S]*?lifecycle[\s\S]*?process_creation_time' -or
@@ -115,7 +119,7 @@ $apiAcquire = $listenerBody.IndexOf('std::lock_guard guard(g_api_mutex)')
 if ($lifecycleAcquire -lt 0 -or $apiAcquire -lt 0 -or $lifecycleAcquire -gt $apiAcquire) {
   throw 'START_SESSION must acquire lifecycle ownership before g_api_mutex to preserve global lock order'
 }
-if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE,\s*sa\.get_attr\(\)\)' -or
+if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(kServerStartupLifecycleWaitMs,\s*sa\.get_attr\(\)\)' -or
     $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
     $serverImpl -notmatch 'ServerLifecycle::Starting' -or
     $serverImpl -notmatch 'WaitForPrimaryPipeReady\(\)[\s\S]*?ServerLifecycle::Ready[\s\S]*?_UnlockStartupLifecycleLock\(\)' -or

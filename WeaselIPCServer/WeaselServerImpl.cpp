@@ -23,6 +23,7 @@ static std::mutex g_api_mutex;
 static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
 static constexpr DWORD kPrimaryPipeReadyTimeoutMs = 2000;
+static constexpr DWORD kServerStartupLifecycleWaitMs = 2000;
 
 bool WaitForPrimaryPipeReady() noexcept {
   const std::wstring pipe_name = GetPipeName();
@@ -291,8 +292,10 @@ HWND ServerImpl::Start() {
 
   // Publish the singleton before waiting for lifecycle ownership. Recovery can
   // observe the launched child without letting initialization overlap deploy.
-  if (!m_startupLifecycleLock.Acquire(INFINITE, sa.get_attr())) {
-    LOG(ERROR) << "Failed to acquire WeaselServer lifecycle ownership.";
+  if (!m_startupLifecycleLock.Acquire(kServerStartupLifecycleWaitMs,
+                                      sa.get_attr())) {
+    LOG(WARNING) << "Timed out waiting for WeaselServer lifecycle ownership; "
+                    "another deploy/recovery operation is still active.";
     CloseHandle(hMutexOneInstance);
     return 0;
   }

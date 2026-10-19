@@ -32,6 +32,10 @@ if ($tsf -match 'CreateToolhelp32Snapshot|Process32First|Process32Next') {
 if ($tsf -notmatch 'kServerLaunchObservationTimeoutMs\s*=\s*2000') {
   throw 'background server launch observation must stay bounded'
 }
+if ($serverImpl -notmatch 'kServerStartupLifecycleWaitMs\s*=\s*2000' -or
+    $serverImpl -match 'm_startupLifecycleLock\.Acquire\(INFINITE') {
+  throw 'server startup lifecycle wait must remain bounded'
+}
 if ($recoveryCoordinator -notmatch 'worker_inflight_' -or
     $recoveryCoordinator -notmatch 'FinishBackoff\(' -or
     $recoveryCoordinator -notmatch 'FinishFailure\(' -or
@@ -77,7 +81,7 @@ if ($listenerBody -notmatch 'ServerLifecycleLock\s+session_lifecycle' -or
 if ($ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
     $ipc -notmatch 'GetServerRuntimeStateName\(\)' -or
     $ipc -notmatch 'enum\s+class\s+ServerLifecycle' -or
-    $serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE' -or
+    $serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(kServerStartupLifecycleWaitMs' -or
     $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
     $tsf -notmatch 'ReadServerRuntimeState\(') {
   throw 'server lifecycle correctness must use one mutex and one runtime state mapping'
