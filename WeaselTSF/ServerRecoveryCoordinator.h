@@ -29,6 +29,20 @@ class ServerRecoveryCoordinator {
     return failure_streak_;
   }
 
+  ULONGLONG HealthRevision() const noexcept {
+    SharedGuard guard(gate_);
+    return health_revision_;
+  }
+
+  template <typename Action>
+  bool RunIfHealthUnchanged(ULONGLONG expected_revision,
+                            Action&& action) noexcept {
+    ExclusiveGuard guard(gate_);
+    if (health_revision_ != expected_revision)
+      return false;
+    return action();
+  }
+
   bool TryBegin(ULONGLONG now) noexcept {
     ExclusiveGuard guard(gate_);
     if (worker_inflight_ || now < retry_after_)
@@ -64,6 +78,7 @@ class ServerRecoveryCoordinator {
 
   void NoteHealthy() noexcept {
     ExclusiveGuard guard(gate_);
+    ++health_revision_;
     if (worker_inflight_)
       return;
     failure_streak_ = 0;
@@ -131,6 +146,7 @@ class ServerRecoveryCoordinator {
   ULONGLONG retry_after_ = 0;
   ULONGLONG unavailable_since_ = 0;
   LONG failure_streak_ = 0;
+  ULONGLONG health_revision_ = 0;
 };
 
 }  // namespace weasel::tsf

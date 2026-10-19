@@ -141,14 +141,22 @@ static void test_server_recovery_coordinator_state_machine() {
     coordinator.ObserveUnavailableLongEnough(1000, 1500);
     check(coordinator.TryBegin(2500),
           "in-flight health ownership test starts a worker");
+    const ULONGLONG revision = coordinator.HealthRevision();
+    bool destructive_action_ran = false;
     coordinator.NoteHealthy();
     check(coordinator.WorkerInflight() &&
-              coordinator.UnavailableSince() == 1000,
-          "foreground health hints do not revoke an in-flight recovery owner");
+              coordinator.HealthRevision() != revision,
+          "foreground health advances revision without admitting another worker");
+    check(!coordinator.RunIfHealthUnchanged(revision, [&]() noexcept {
+            destructive_action_ran = true;
+            return true;
+          }) &&
+              !destructive_action_ran,
+          "stale recovery cannot authorize destructive work after foreground health");
     coordinator.FinishHealthy();
     check(!coordinator.WorkerInflight() &&
               coordinator.UnavailableSince() == 0,
-          "the recovery owner clears state after a healthy fresh probe");
+          "the recovery owner clears state after cancellation");
   }
 }
 
@@ -345,11 +353,27 @@ static void test_server_runtime_state_tracks_maintenance() {
                 static_cast<LONG>(weasel::ServerLifecycle::Maintenance),
         "maintenance is published before backend teardown");
 
+  const int sessions_before = handler.sessions_created;
+  check(server.OnStartSession(WEASEL_IPC_START_SESSION, 0, 0) == 0 &&
+            handler.sessions_created == sessions_before,
+        "START_SESSION is rejected while maintenance owns the server");
+
   server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
   check(!handler.maintaining &&
             runtime.lifecycle ==
                 static_cast<LONG>(weasel::ServerLifecycle::Ready),
         "maintenance completion republishes Ready");
+
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Stopping);
+  server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0);
+  check(!handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+        "Stopping rejects stale START_MAINTENANCE without lifecycle rollback");
+  server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
+  check(runtime.lifecycle ==
+            static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+        "Stopping rejects stale END_MAINTENANCE without returning to Ready");
 
   weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }

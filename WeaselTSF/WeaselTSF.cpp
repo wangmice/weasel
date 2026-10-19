@@ -454,27 +454,44 @@ bool ProbeServerResponsive() noexcept {
   }
 }
 
-bool StopPersistentlyUnavailableServer(
-    const weasel::ServerRuntimeState& expected_state) noexcept {
+enum class StopServerResult {
+  Stopped,
+  SupersededByHealth,
+  Failed,
+};
+
+StopServerResult StopPersistentlyUnavailableServer(
+    const weasel::ServerRuntimeState& expected_state,
+    ULONGLONG health_revision) noexcept {
   RunningServerTarget target;
   if (!OpenCurrentSessionServerTarget(expected_state, target))
-    return false;
+    return StopServerResult::Failed;
 
-  weasel::ServerRuntimeState current_state{};
-  if (!ReadServerRuntimeState(current_state) ||
-      !SameServerGeneration(current_state, expected_state) ||
-      current_state.lifecycle !=
-          static_cast<LONG>(weasel::ServerLifecycle::Ready))
-    return false;
-
-  if (!PostMessageW(target.window, WM_CLOSE, 0, 0))
-    return false;
+  // Linearize the final generation/lifecycle check and WM_CLOSE against
+  // foreground reconnects. A successful reconnect that happens first advances
+  // health_revision_ and prevents this stale worker from closing the server.
+  const bool close_posted = g_serverRecovery.RunIfHealthUnchanged(
+      health_revision, [&]() noexcept {
+        weasel::ServerRuntimeState current_state{};
+        if (!ReadServerRuntimeState(current_state) ||
+            !SameServerGeneration(current_state, expected_state) ||
+            current_state.lifecycle !=
+                static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+          return false;
+        }
+        return !!PostMessageW(target.window, WM_CLOSE, 0, 0);
+      });
+  if (!close_posted) {
+    return g_serverRecovery.HealthRevision() != health_revision
+               ? StopServerResult::SupersededByHealth
+               : StopServerResult::Failed;
+  }
   DWORD wait_result =
       WaitForSingleObject(target.process, kServerGracefulShutdownTimeoutMs);
   if (wait_result == WAIT_OBJECT_0)
-    return true;
+    return StopServerResult::Stopped;
   if (wait_result == WAIT_FAILED)
-    return false;
+    return StopServerResult::Failed;
 
   const ULONGLONG duration = ServerUnavailableDurationMs();
   if (duration < kServerForceTerminateThresholdMs) {
@@ -483,19 +500,27 @@ bool StopPersistentlyUnavailableServer(
     wait_result =
         WaitForSingleObject(target.process, static_cast<DWORD>(remaining));
     if (wait_result == WAIT_OBJECT_0)
-      return true;
+      return StopServerResult::Stopped;
     if (wait_result == WAIT_FAILED)
-      return false;
+      return StopServerResult::Failed;
   }
 
-  // target.process is an already-open handle to the exact process object that
-  // passed PID/session/image/creation-time validation above. It cannot be
-  // redirected by PID reuse, and teardown may legitimately remove the shared
-  // runtime mapping before the process object itself exits.
-  if (!TerminateProcess(target.process, ERROR_TIMEOUT))
-    return false;
+  // target.process pins the exact process object, but a successful reconnect
+  // while graceful shutdown was pending must still veto the irreversible
+  // fallback.
+  const bool terminated = g_serverRecovery.RunIfHealthUnchanged(
+      health_revision, [&]() noexcept {
+        return !!TerminateProcess(target.process, ERROR_TIMEOUT);
+      });
+  if (!terminated) {
+    return g_serverRecovery.HealthRevision() != health_revision
+               ? StopServerResult::SupersededByHealth
+               : StopServerResult::Failed;
+  }
   return WaitForSingleObject(target.process, kServerForcedExitTimeoutMs) ==
-         WAIT_OBJECT_0;
+                 WAIT_OBJECT_0
+             ? StopServerResult::Stopped
+             : StopServerResult::Failed;
 }
 
 void RunServerRecoveryOnce() noexcept {
@@ -513,6 +538,8 @@ void RunServerRecoveryOnce() noexcept {
         weasel::GetLegacyServerInstanceName();
     const bool server_present =
         IsServerInstancePresent(instance_name, legacy_instance_name);
+
+    const ULONGLONG health_revision = g_serverRecovery.HealthRevision();
 
     if (server_present) {
       weasel::ServerRuntimeState state{};
@@ -544,7 +571,13 @@ void RunServerRecoveryOnce() noexcept {
         FinishServerRecoveryBackoff(kServerPresentBackoffMs);
         return;
       }
-      if (!StopPersistentlyUnavailableServer(latest_state)) {
+      const StopServerResult stop_result =
+          StopPersistentlyUnavailableServer(latest_state, health_revision);
+      if (stop_result == StopServerResult::SupersededByHealth) {
+        FinishServerRecoveryHealthy();
+        return;
+      }
+      if (stop_result != StopServerResult::Stopped) {
         FinishServerRecoveryFailure();
         return;
       }

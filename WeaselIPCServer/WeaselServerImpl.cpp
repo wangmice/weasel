@@ -90,6 +90,25 @@ void ServerImpl::_SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept {
                       static_cast<LONG>(lifecycle));
 }
 
+ServerLifecycle ServerImpl::_RuntimeLifecycle() const noexcept {
+  if (!m_runtimeState)
+    return ServerLifecycle::Stopping;
+  const LONG lifecycle = InterlockedCompareExchange(
+      const_cast<volatile LONG*>(&m_runtimeState->lifecycle), 0, 0);
+  return static_cast<ServerLifecycle>(lifecycle);
+}
+
+bool ServerImpl::_TryTransitionRuntimeLifecycle(
+    ServerLifecycle expected,
+    ServerLifecycle desired) noexcept {
+  if (!m_runtimeState)
+    return false;
+  return InterlockedCompareExchange(&m_runtimeState->lifecycle,
+                                    static_cast<LONG>(desired),
+                                    static_cast<LONG>(expected)) ==
+         static_cast<LONG>(expected);
+}
+
 bool ServerImpl::_PublishRuntimeState() noexcept {
   m_runtimeStateMapping = CreateFileMappingW(
       INVALID_HANDLE_VALUE, sa.get_attr(), PAGE_READWRITE, 0,
@@ -383,7 +402,11 @@ int ServerImpl::Run() {
     return -1;
   }
 
-  _SetRuntimeLifecycle(ServerLifecycle::Ready);
+  if (!_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,
+                                      ServerLifecycle::Ready)) {
+    _StopPipeServer();
+    return -1;
+  }
   _UnlockStartupLifecycleLock();
 
   CMessageLoop theLoop;
@@ -417,7 +440,7 @@ DWORD ServerImpl::OnEcho(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
 DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
                                  DWORD wParam,
                                  DWORD lParam) {
-  if (!m_pRequestHandler)
+  if (!m_pRequestHandler || _RuntimeLifecycle() != ServerLifecycle::Ready)
     return 0;
   return m_pRequestHandler->AddSession(
       reinterpret_cast<LPWSTR>(channel->ReceiveBuffer()),
@@ -517,9 +540,11 @@ DWORD ServerImpl::OnUpdateInputPosition(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
                                      DWORD wParam,
                                      DWORD lParam) {
-  if (!m_pRequestHandler)
+  if (!m_pRequestHandler ||
+      !_TryTransitionRuntimeLifecycle(ServerLifecycle::Ready,
+                                      ServerLifecycle::Maintenance)) {
     return 0;
-  _SetRuntimeLifecycle(ServerLifecycle::Maintenance);
+  }
   m_pRequestHandler->StartMaintenance();
   // Run() holds g_api_mutex around this call, so the acknowledgement is sent
   // only after every earlier handler call has finished and maintenance entry
@@ -530,10 +555,16 @@ DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
                                    DWORD lParam) {
-  if (m_pRequestHandler) {
-    m_pRequestHandler->EndMaintenance();
-    _SetRuntimeLifecycle(ServerLifecycle::Ready);
+  if (!m_pRequestHandler ||
+      _RuntimeLifecycle() != ServerLifecycle::Maintenance) {
+    return 0;
   }
+
+  m_pRequestHandler->EndMaintenance();
+  // Stop() may have published Stopping while EndMaintenance was running.
+  // Never let a late maintenance reply move the lifecycle backwards to Ready.
+  _TryTransitionRuntimeLifecycle(ServerLifecycle::Maintenance,
+                                 ServerLifecycle::Ready);
   return 0;
 }
 

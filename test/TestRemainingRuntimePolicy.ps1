@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
+$rimeHandler = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\RimeWithWeasel.cpp') -Raw
 $ipc = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
 $recoveryCoordinator = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\ServerRecoveryCoordinator.h') -Raw
 $serverCommands = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\TestServerCommands.cpp') -Raw
@@ -35,15 +36,29 @@ if ($recoveryCoordinator -notmatch 'worker_inflight_' -or
     $recoveryCoordinator -notmatch 'FinishFailure\(' -or
     $recoveryCoordinator -notmatch 'FinishHealthy\(' -or
     $recoveryCoordinator -match 'health_epoch_') {
-  throw 'recovery coordinator must remain a small process-local throttle without health epochs'
+  throw 'recovery coordinator must remain a small process-local throttle without recovery epochs'
+}
+if ($recoveryCoordinator -notmatch 'health_revision_' -or
+    $recoveryCoordinator -notmatch 'RunIfHealthUnchanged\(') {
+  throw 'recovery coordinator must retain a monotonic foreground-health revision for destructive cancellation'
 }
 if ($serverCommands -notmatch 'test_server_recovery_coordinator_state_machine' -or
     $serverCommands -notmatch 'winners\s*==\s*1' -or
     $serverCommands -notmatch 'Backoff rejects early workers' -or
     $serverCommands -notmatch 'new recovery cannot bypass a published Backoff' -or
-    $serverCommands -notmatch 'foreground health hints do not revoke an in-flight recovery owner') {
+    $serverCommands -notmatch 'stale recovery cannot authorize destructive work after foreground health') {
   throw 'TestServerCommands must dynamically exercise coordinator ownership and backoff semantics'
 }
+if ($rimeHandler -notmatch 'RimeWithWeaselHandler::AddSession[\s\S]*?if\s*\(m_disabled\)\s*return\s+0;' -or
+    $rimeHandler -match 'RimeWithWeaselHandler::AddSession[\s\S]{0,300}?EndMaintenance\(\)') {
+  throw 'START_SESSION must never end maintenance or reinitialize disabled librime'
+}
+if ($serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
+    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)' -or
+    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
+  throw 'server command admission must enforce monotonic Ready/Maintenance/Stopping lifecycle transitions'
+}
+
 if ($ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
     $ipc -notmatch 'GetServerRuntimeStateName\(\)' -or
     $ipc -notmatch 'enum\s+class\s+ServerLifecycle' -or

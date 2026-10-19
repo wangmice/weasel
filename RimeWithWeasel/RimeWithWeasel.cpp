@@ -183,12 +183,11 @@ DWORD RimeWithWeaselHandler::FindSession(WeaselSessionId ipc_id) {
 }
 
 DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
-  if (m_disabled) {
-    DLOG(INFO) << "Trying to resume service.";
-    EndMaintenance();
-    if (m_disabled)
-      return 0;
-  }
+  // Maintenance is an explicit server lifecycle. A stale START_SESSION must
+  // never reinitialize librime behind the deployer's START/END_MAINTENANCE
+  // ownership.
+  if (m_disabled)
+    return 0;
   RimeSessionId session_id = (RimeSessionId)rime_api->create_session();
   if (!session_id) {
     // rime 初始化失败/维护中：建会话失败。返回 0 让客户端感知失败

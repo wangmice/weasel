@@ -55,7 +55,7 @@ if ($tsf -notmatch 'RegGetStringValue\(HKEY_LOCAL_MACHINE,\s*WEASEL_REG_KEY,\s*L
 if ($recoveryCoordinator -notmatch 'class\s+ServerRecoveryCoordinator' -or
     $recoveryCoordinator -notmatch 'SRWLOCK\s+gate_' -or
     $recoveryCoordinator -notmatch 'TryBegin\(ULONGLONG\s+now\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)[\s\S]*?worker_inflight_[\s\S]*?retry_after_' -or
-    $recoveryCoordinator -notmatch 'NoteHealthy\(\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)' -or
+    $recoveryCoordinator -notmatch 'NoteHealthy\(\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)[\s\S]*?health_revision_' -or
     $recoveryCoordinator -notmatch 'FinishBackoff\(' -or
     $recoveryCoordinator -notmatch 'FinishFailure\(' -or
     $recoveryCoordinator -notmatch 'FinishHealthy\(') {
@@ -63,6 +63,12 @@ if ($recoveryCoordinator -notmatch 'class\s+ServerRecoveryCoordinator' -or
 }
 if ($recoveryCoordinator -match 'health_epoch_|enum\s+class\s+State|InterlockedCompareExchange\(&worker_inflight_') {
   throw 'recovery throttling must not grow a second lifecycle or hand-rolled atomic state machine'
+}
+if ($recoveryCoordinator -notmatch 'HealthRevision\(\)' -or
+    $recoveryCoordinator -notmatch 'RunIfHealthUnchanged\(' -or
+    $tsf -notmatch 'RunIfHealthUnchanged\([\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE' -or
+    $tsf -notmatch 'RunIfHealthUnchanged\([\s\S]*?TerminateProcess\(target\.process') {
+  throw 'foreground health must revoke stale destructive recovery before graceful or forced shutdown'
 }
 if ($tsf -notmatch 'ServerRecoveryCoordinator\s+g_serverRecovery' -or
     $tsf -notmatch 'g_serverRecovery\.TryBegin\(GetTickCount64\(\)\)' -or
@@ -97,8 +103,9 @@ if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(INFINITE,\s*sa\.get_
     $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
     $serverImpl -notmatch 'ServerLifecycle::Starting' -or
     $serverImpl -notmatch 'WaitForPrimaryPipeReady\(\)[\s\S]*?ServerLifecycle::Ready[\s\S]*?_UnlockStartupLifecycleLock\(\)' -or
-    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?ServerLifecycle::Maintenance[\s\S]*?StartMaintenance\(\)' -or
-    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?EndMaintenance\(\)[\s\S]*?ServerLifecycle::Ready') {
+    $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
+    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)[\s\S]*?StartMaintenance\(\)' -or
+    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Maintenance[\s\S]*?EndMaintenance\(\)[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
   throw 'server must own lifecycle from singleton publication through Ready and publish maintenance transitions'
 }
 $workerStart = $tsf.IndexOf('void RunServerRecoveryOnce()')
@@ -200,8 +207,8 @@ if (([regex]::Matches($until, 'NoteServerRecoveryHealthy\(\)')).Count -lt 2) {
   throw 'successful cold reconnects must report health to the recovery throttle'
 }
 if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)[\s\S]*?g_serverRecovery\.NoteHealthy\(\)' -or
-    $recoveryCoordinator -notmatch 'NoteHealthy\(\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)[\s\S]*?if\s*\(worker_inflight_\)[\s\S]*?return;[\s\S]*?failure_streak_\s*=\s*0[\s\S]*?unavailable_since_\s*=\s*0[\s\S]*?retry_after_\s*=\s*0') {
-  throw 'foreground health hints must clear idle recovery history without revoking an in-flight worker'
+    $recoveryCoordinator -notmatch 'NoteHealthy\(\)[\s\S]*?ExclusiveGuard\s+guard\(gate_\)[\s\S]*?\+\+health_revision_[\s\S]*?if\s*\(worker_inflight_\)[\s\S]*?return;[\s\S]*?failure_streak_\s*=\s*0[\s\S]*?unavailable_since_\s*=\s*0[\s\S]*?retry_after_\s*=\s*0') {
+  throw 'foreground health must advance revision even while a recovery worker owns admission'
 }
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
   throw 'physical-key recovery must carry a shared deadline'
