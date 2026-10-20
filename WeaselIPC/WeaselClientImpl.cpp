@@ -40,24 +40,26 @@ DWORD RemainingTransactionTime(ULONGLONG deadline) {
 }
 
 bool ServerRuntimeIsReady() noexcept {
-  HANDLE mapping = OpenFileMappingW(
-      FILE_MAP_READ, FALSE, GetServerRuntimeStateName().c_str());
+  const std::wstring state_name = GetServerRuntimeStateName();
+  HANDLE mapping =
+      OpenFileMappingW(FILE_MAP_READ, FALSE, state_name.c_str());
   if (!mapping)
     return false;
 
-  const auto* shared = static_cast<const ServerRuntimeState*>(MapViewOfFile(
-      mapping, FILE_MAP_READ, 0, 0, sizeof(ServerRuntimeState)));
-  if (!shared) {
+  void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
+                             sizeof(ServerRuntimeState));
+  if (!view) {
     CloseHandle(mapping);
     return false;
   }
 
+  const auto* shared = static_cast<const ServerRuntimeState*>(view);
   const UINT32 version = shared->version;
   const UINT32 process_id = shared->process_id;
   const UINT64 creation_time = shared->process_creation_time;
   const LONG lifecycle =
       *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
-  UnmapViewOfFile(shared);
+  UnmapViewOfFile(view);
   CloseHandle(mapping);
   return version == kServerRuntimeStateVersion && process_id != 0 &&
          creation_time != 0 &&
