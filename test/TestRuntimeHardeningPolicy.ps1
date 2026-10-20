@@ -110,8 +110,8 @@ if ($updateBody -notmatch 'if\s*\(!rime->deploy\(\)\)') {
 if ($updateBody -notmatch 'if\s*\(!rime->deploy_config_file\("weasel\.yaml",\s*"config_version"\)\)') {
   throw 'UpdateWorkspace must treat weasel.yaml deployment failure as an operation failure'
 }
-if ($updateBody -notmatch 'rime->join_maintenance_thread\(\)') {
-  throw 'UpdateWorkspace must still join librime maintenance work before resuming the server'
+if ($updateBody -match 'rime->join_maintenance_thread\(\)') {
+  throw 'UpdateWorkspace uses synchronous librime deployment tasks and must not retain an unbounded maintenance join'
 }
 if ($updateBody -notmatch 'return\s+retval\s*;') {
   throw 'UpdateWorkspace must return its accumulated deployment result'
