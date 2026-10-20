@@ -1,6 +1,7 @@
 #pragma once
 #include <WeaselIPC.h>
 #include <PipeChannel.h>
+#include <atomic>
 #include <cstdint>
 #include <condition_variable>
 #include <functional>
@@ -103,6 +104,7 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   struct WorkerEntry {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     std::shared_ptr<boost::thread> thread;
+    std::shared_ptr<std::atomic_bool> pipe_io_pending;
     bool finished = false;
     std::optional<ConnectionContext> context;
   };
@@ -115,9 +117,11 @@ class PipeServer : public PipeChannel<DWORD, PipeMessage> {
   void _WakeListener(const std::wstring& pipe_name);
   void _StopListenerThread(boost::thread& listener,
                            const std::wstring& pipe_name);
-  void _ProcessPipeThread(WorkerId worker_id,
-                          HANDLE pipe,
-                          ServerHandler const& handler);
+  void _ProcessPipeThread(
+      WorkerId worker_id,
+      HANDLE pipe,
+      const std::shared_ptr<std::atomic_bool>& pipe_io_pending,
+      ServerHandler const& handler);
   /* Create the worker thread and register it under one lock so a worker
    * that finishes instantly can never overtake its own registration. */
   void _LaunchWorker(HANDLE pipe, ServerHandler const& handler);
