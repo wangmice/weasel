@@ -2,6 +2,7 @@
 #include <WeaselIPC.h>
 #include <WeaselInteractionPolicy.h>
 #include <map>
+#include <optional>
 #include <Winnt.h>   // for security attributes constants
 #include <aclapi.h>  // for ACL
 #include <boost/thread.hpp>
@@ -138,6 +139,11 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   // Declared after the router so it is destroyed first; _Finailize also stops
   // it explicitly after pipe workers drain and before the handler/UI may die.
   ClientProcessTracker process_tracker;
+  // Resolved from the actual named-pipe peer. The tracker token identifies a
+  // process generation rather than a numeric PID, so PID reuse cannot inherit
+  // maintenance ownership.
+  std::optional<ClientProcessToken> m_dispatchProcessOwner;
+  std::optional<ClientProcessToken> m_maintenanceOwner;
   RequestHandler* m_pRequestHandler;  // points at session_router while active
   ServerLifecycleLock m_startupLifecycleLock;
   HANDLE m_runtimeStateMapping;

@@ -349,24 +349,57 @@ static void test_server_runtime_state_tracks_maintenance() {
   server.SetRequestHandler(&handler);
   weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
 
-  server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0);
-  check(handler.maintaining &&
+  const weasel::ClientProcessToken owner{101};
+  const weasel::ClientProcessToken intruder{202};
+
+  check(server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0) == 0 &&
+            !handler.maintaining,
+        "unowned START_MAINTENANCE is rejected");
+
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
+  check(server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0) == 1 &&
+            handler.maintaining &&
             runtime.lifecycle ==
-                static_cast<LONG>(weasel::ServerLifecycle::Maintenance),
-        "maintenance is published before backend teardown");
+                static_cast<LONG>(weasel::ServerLifecycle::Maintenance) &&
+            weasel::ServerImplTestAccess::MaintenanceOwner(server) == owner,
+        "maintenance is published with the calling process generation");
 
   const int sessions_before = handler.sessions_created;
   check(server.OnStartSession(WEASEL_IPC_START_SESSION, 0, 0) == 0 &&
             handler.sessions_created == sessions_before,
         "START_SESSION is rejected while maintenance owns the server");
 
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, intruder);
+  check(server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0) == 0 &&
+            handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Maintenance),
+        "foreign process generation cannot release maintenance");
+
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
   server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
   check(!handler.maintaining &&
             runtime.lifecycle ==
-                static_cast<LONG>(weasel::ServerLifecycle::Ready),
-        "maintenance completion republishes Ready");
+                static_cast<LONG>(weasel::ServerLifecycle::Ready) &&
+            !weasel::ServerImplTestAccess::MaintenanceOwner(server),
+        "maintenance owner can resume the server");
+
+  // Re-enter maintenance and simulate abrupt owner termination. The process
+  // tracker callback must recover Rime without a timeout or TSF intervention.
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
+  check(server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0) == 1 &&
+            handler.maintaining,
+        "maintenance owner can enter a second maintenance generation");
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, std::nullopt);
+  weasel::ServerImplTestAccess::NotifyClientProcessExit(server, owner);
+  check(!handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Ready) &&
+            !weasel::ServerImplTestAccess::MaintenanceOwner(server),
+        "owner death recovers orphaned maintenance immediately");
 
   runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Stopping);
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
   server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0);
   check(!handler.maintaining &&
             runtime.lifecycle ==
@@ -377,6 +410,7 @@ static void test_server_runtime_state_tracks_maintenance() {
       runtime.lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Stopping),
       "Stopping rejects stale END_MAINTENANCE without returning to Ready");
 
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, std::nullopt);
   weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
@@ -505,8 +539,14 @@ static void test_client_lifecycle_timeout_budgets() {
 
 static void test_maintenance_session_recovery() {
   SessionHandler handler;
+  weasel::ServerRuntimeState runtime{};
+  runtime.version = weasel::kServerRuntimeStateVersion;
+  runtime.process_id = GetCurrentProcessId();
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Ready);
+  runtime.process_creation_time = 1;
   weasel::ServerImpl server;
   server.SetRequestHandler(&handler);
+  weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
   std::wstring pipe_name = weasel::GetPipeName() + L"_SessionRecoveryTest_" +
                            std::to_wstring(GetCurrentProcessId());
   auto& server_channel = weasel::ServerImplTestAccess::Channel(server);
@@ -527,8 +567,15 @@ static void test_maintenance_session_recovery() {
               DWORD result = 0;
               {
                 std::lock_guard guard(g_api_mutex);
+                if (msg.Msg == WEASEL_IPC_START_MAINTENANCE ||
+                    msg.Msg == WEASEL_IPC_END_MAINTENANCE) {
+                  weasel::ServerImplTestAccess::SetDispatchProcessOwner(
+                      server, weasel::ClientProcessToken{303});
+                }
                 weasel::ServerImplTestAccess::HandlePipeMessage(
                     server, msg, [&](DWORD reply) { result = reply; });
+                weasel::ServerImplTestAccess::SetDispatchProcessOwner(
+                    server, std::nullopt);
               }
               respond(result);
             });
@@ -619,6 +666,8 @@ static void test_maintenance_session_recovery() {
         "response timeout does not rebuild the session");
   check(handler.accepted_keys == accepted_before + 1,
         "response timeout delivers the physical key at most once");
+
+  weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
 int main() {

@@ -54,6 +54,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   virtual ~RimeWithWeaselHandler();
   virtual void Initialize();
   virtual void Finalize();
+  bool IsReadyForSessions() const override { return !m_disabled; }
   virtual DWORD FindSession(WeaselSessionId ipc_id);
   virtual DWORD AddSession(LPWSTR buffer, EatLine eat = 0);
   virtual bool RespondSession(WeaselSessionId ipc_id, EatLine eat) {
@@ -93,6 +94,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
 
  private:
   void _Setup();
+  void _Initialize(bool detect_deployer);
   bool _IsDeployerRunning();
 
   // 单次请求内 _Respond → _UpdateUI 的流水数据（B11）：

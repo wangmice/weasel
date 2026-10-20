@@ -45,6 +45,10 @@ class SessionRoutingHandler : public RequestHandler {
     current_owner_ = {};
   }
 
+  bool IsReadyForSessions() const override {
+    return backend_ && backend_->IsReadyForSessions();
+  }
+
   DWORD FindSession(DWORD session_id) override {
     return backend_ ? backend_->FindSession(session_id) : 0;
   }

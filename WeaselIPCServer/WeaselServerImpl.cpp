@@ -149,6 +149,34 @@ void ServerImpl::_OnClientProcessExit(ClientProcessToken token) {
   std::lock_guard guard(g_api_mutex);
   if (m_pRequestHandler)
     session_router.RemoveClient(token);
+
+  if (!m_pRequestHandler || !m_maintenanceOwner ||
+      *m_maintenanceOwner != token ||
+      _RuntimeLifecycle() != ServerLifecycle::Maintenance) {
+    return;
+  }
+
+  // The exact process generation that owned START_MAINTENANCE is gone. No
+  // legitimate local librime operation can still be running there, so recover
+  // immediately instead of leaving the server finalized indefinitely.
+  LOG(WARNING) << "maintenance owner exited; recovering WeaselServer";
+  m_maintenanceOwner.reset();
+  try {
+    m_pRequestHandler->EndMaintenance();
+  } catch (...) {
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    PostMessage(WM_QUIT);
+    return;
+  }
+
+  if (!m_pRequestHandler->IsReadyForSessions() ||
+      !_TryTransitionRuntimeLifecycle(ServerLifecycle::Maintenance,
+                                      ServerLifecycle::Ready)) {
+    // Never publish a false Ready state. Process replacement is safer than
+    // keeping a live IPC endpoint whose Rime backend cannot create sessions.
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    PostMessage(WM_QUIT);
+  }
 }
 
 LRESULT ServerImpl::OnColorChange(UINT uMsg,
@@ -343,6 +371,12 @@ int ServerImpl::Stop() {
 }
 
 int ServerImpl::Run() {
+  if (!m_pRequestHandler || !m_pRequestHandler->IsReadyForSessions()) {
+    LOG(ERROR) << "Rime backend is not ready for input sessions";
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    return -1;
+  }
+
   // This workaround causes a VC internal error:
   // void PipeServer::Listen(ServerHandler handler);
   //
@@ -352,12 +386,18 @@ int ServerImpl::Run() {
   auto listener = [this](const PipeServer::ConnectionContext& context,
                          PipeMessage msg, PipeServer::Respond resp) -> void {
     const bool starting = msg.Msg == WEASEL_IPC_START_SESSION;
+    const bool maintenance_command =
+        msg.Msg == WEASEL_IPC_START_MAINTENANCE ||
+        msg.Msg == WEASEL_IPC_END_MAINTENANCE;
+    const bool needs_process_owner = starting || maintenance_command;
 
     // Resolve the peer process generation before taking either lifecycle or
     // API ownership. Resolve() may open a process handle or synchronously
-    // drain an old PID generation.
+    // drain an old PID generation. START_SESSION stays compatible with legacy
+    // peers whose PID cannot be resolved; maintenance never does, because an
+    // untracked owner could leave the server permanently finalized.
     std::optional<ClientProcessToken> owner;
-    if (starting && context.client_pid)
+    if (needs_process_owner && context.client_pid)
       owner = process_tracker.Resolve(*context.client_pid);
 
     // All paths that need both locks use the same order:
@@ -384,17 +424,27 @@ int ServerImpl::Run() {
         }
       }
 
+      if (maintenance_command && dispatch) {
+        if (!owner || !process_tracker.IsAlive(*owner)) {
+          dispatch = false;
+        } else {
+          m_dispatchProcessOwner = owner;
+        }
+      }
+
       if (dispatch) {
         try {
           HandlePipeMessage(msg, [&result](PipeServer::Msg r) { result = r; });
         } catch (...) {
           if (starting)
             session_router.ClearCurrentOwner();
+          m_dispatchProcessOwner.reset();
           throw;
         }
       }
       if (starting)
         session_router.ClearCurrentOwner();
+      m_dispatchProcessOwner.reset();
     }
     resp(result);
   };
@@ -564,12 +614,26 @@ DWORD ServerImpl::OnUpdateInputPosition(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
                                      DWORD wParam,
                                      DWORD lParam) {
-  if (!m_pRequestHandler ||
+  if (!m_pRequestHandler || !m_pRequestHandler->IsReadyForSessions() ||
+      !m_dispatchProcessOwner ||
       !_TryTransitionRuntimeLifecycle(ServerLifecycle::Ready,
                                       ServerLifecycle::Maintenance)) {
     return 0;
   }
-  m_pRequestHandler->StartMaintenance();
+
+  // Publish the owner before finalizing Rime. If it exits immediately, the
+  // process tracker callback queues behind g_api_mutex and recovers this exact
+  // maintenance generation after the acknowledgement path releases the lock.
+  m_maintenanceOwner = m_dispatchProcessOwner;
+  try {
+    m_pRequestHandler->StartMaintenance();
+  } catch (...) {
+    m_maintenanceOwner.reset();
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    PostMessage(WM_QUIT);
+    throw;
+  }
+
   // Run() holds g_api_mutex around this call, so the acknowledgement is sent
   // only after every earlier handler call has finished and maintenance entry
   // has completed.
@@ -579,16 +643,36 @@ DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
                                    DWORD lParam) {
-  if (!m_pRequestHandler ||
+  if (!m_pRequestHandler || !m_dispatchProcessOwner || !m_maintenanceOwner ||
+      *m_dispatchProcessOwner != *m_maintenanceOwner ||
       _RuntimeLifecycle() != ServerLifecycle::Maintenance) {
     return 0;
   }
 
-  m_pRequestHandler->EndMaintenance();
+  // Only the process generation that successfully entered Maintenance may
+  // resume it. A second deployer cannot release another process's operation.
+  try {
+    m_pRequestHandler->EndMaintenance();
+  } catch (...) {
+    m_maintenanceOwner.reset();
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    PostMessage(WM_QUIT);
+    throw;
+  }
+  m_maintenanceOwner.reset();
+
+  if (!m_pRequestHandler->IsReadyForSessions()) {
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    PostMessage(WM_QUIT);
+    return 0;
+  }
+
   // Stop() may have published Stopping while EndMaintenance was running.
   // Never let a late maintenance reply move the lifecycle backwards to Ready.
   _TryTransitionRuntimeLifecycle(ServerLifecycle::Maintenance,
                                  ServerLifecycle::Ready);
+  // Preserve the historical END_MAINTENANCE scalar response; Client treats
+  // this command as completion-only and does not use an acknowledgement bit.
   return 0;
 }
 

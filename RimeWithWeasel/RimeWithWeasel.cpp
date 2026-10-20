@@ -93,8 +93,16 @@ void RimeWithWeaselHandler::_Setup() {
 }
 
 void RimeWithWeaselHandler::Initialize() {
-  m_disabled = _IsDeployerRunning();
-  if (m_disabled) {
+  _Initialize(true);
+}
+
+void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
+  // Initialization is unavailable until a real Rime session can be created.
+  // Startup may still refuse to initialize while a deployer owns local Rime,
+  // whereas END_MAINTENANCE already carries explicit lifecycle ownership and
+  // must bypass that startup-only probe.
+  m_disabled = true;
+  if (detect_deployer && _IsDeployerRunning()) {
     return;
   }
 
@@ -103,7 +111,6 @@ void RimeWithWeaselHandler::Initialize() {
   rime_api->initialize(NULL);
   LOG(INFO) << "starting Rime maintenance";
   if (rime_api->start_maintenance(/*full_check = */ False)) {
-    m_disabled = true;
     LOG(INFO) << "waiting for Rime maintenance";
     rime_api->join_maintenance_thread();
   }
@@ -142,6 +149,17 @@ void RimeWithWeaselHandler::Initialize() {
     rime_api->config_close(&config);
   }
   m_last_schema_id.clear();
+
+  // Do not let IPC liveness masquerade as input readiness. A throwaway Rime
+  // session proves that startup/internal maintenance has really completed.
+  const RimeSessionId readiness_session =
+      static_cast<RimeSessionId>(rime_api->create_session());
+  if (!readiness_session) {
+    LOG(ERROR) << "Rime initialization completed but session creation failed.";
+    return;
+  }
+  rime_api->destroy_session(readiness_session);
+  m_disabled = false;
 }
 
 void RimeWithWeaselHandler::Finalize() {
@@ -567,7 +585,10 @@ void RimeWithWeaselHandler::StartMaintenance() {
 
 void RimeWithWeaselHandler::EndMaintenance() {
   if (m_disabled) {
-    Initialize();
+    // START/END_MAINTENANCE is already the authority for this transition.
+    // The owning deployer is normally still alive here, so the startup-only
+    // deployer probe must not suppress Rime reinitialization.
+    _Initialize(false);
     _UpdateUI(0);
   }
   m_session_status_map.clear();

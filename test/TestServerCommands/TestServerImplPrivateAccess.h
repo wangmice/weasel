@@ -19,6 +19,22 @@ class ServerImplTestAccess {
     server.m_runtimeState = state;
   }
 
+  static void SetDispatchProcessOwner(
+      ServerImpl& server,
+      std::optional<ClientProcessToken> owner) {
+    server.m_dispatchProcessOwner = owner;
+  }
+
+  static std::optional<ClientProcessToken> MaintenanceOwner(
+      const ServerImpl& server) {
+    return server.m_maintenanceOwner;
+  }
+
+  static void NotifyClientProcessExit(ServerImpl& server,
+                                      ClientProcessToken token) {
+    server._OnClientProcessExit(token);
+  }
+
   template <typename Resp>
   static void HandlePipeMessage(ServerImpl& server,
                                 PipeMessage message,
