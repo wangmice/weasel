@@ -357,6 +357,33 @@ if ($serverImpl -notmatch 'PipeServer>\(GetPipeName\(\),\s*sa\.get_attr\(\),\s*G
 if ($pipeServerHeader -notmatch 'compatibility_alias|m_alias_listener') {
   throw 'PipeServer must retain the compatibility alias while the scoped listener is active'
 }
+
+$drainStart = $serverImpl.IndexOf('void PipeServer::DrainWorkers()')
+$drainEnd = $serverImpl.IndexOf('void PipeServer::_LaunchWorker', $drainStart)
+if ($drainStart -lt 0 -or $drainEnd -le $drainStart) {
+  throw 'unable to isolate PipeServer::DrainWorkers'
+}
+$drainWorkers = $serverImpl.Substring($drainStart, $drainEnd - $drainStart)
+$cancelSync = $drainWorkers.IndexOf('::CancelSynchronousIo')
+$cancelAsync = $drainWorkers.IndexOf('::CancelIoEx')
+$disconnect = $drainWorkers.IndexOf('::DisconnectNamedPipe')
+$join = $drainWorkers.IndexOf('worker->join()')
+if ($cancelSync -lt 0 -or $cancelAsync -lt 0 -or $disconnect -lt 0 -or $join -lt 0 -or
+    -not ($cancelSync -lt $cancelAsync -and $cancelAsync -lt $disconnect -and $disconnect -lt $join)) {
+  throw 'worker drain must cancel synchronous I/O, cancel overlapped I/O, disconnect, then join'
+}
+if ($drainWorkers -notmatch 'entry\.pipe_io_pending[\s\S]*?load\(std::memory_order_acquire\)[\s\S]*?entry\.thread[\s\S]*?native_handle\(\)[\s\S]*?::CancelSynchronousIo') {
+  throw 'worker drain must cancel synchronous I/O only while the owning worker is marked inside pipe I/O'
+}
+$workerStart = $serverImpl.IndexOf('void PipeServer::_ProcessPipeThread')
+if ($workerStart -lt 0) {
+  throw 'unable to isolate PipeServer::_ProcessPipeThread'
+}
+$workerBody = $serverImpl.Substring($workerStart)
+if ($pipeServerHeader -notmatch 'shared_ptr<std::atomic_bool>\s+pipe_io_pending' -or
+    ([regex]::Matches($workerBody, 'SynchronousPipeIoScope\s+io_scope\(\*pipe_io_pending\)')).Count -ne 2) {
+  throw 'worker receive and response send must explicitly mark only their synchronous pipe I/O windows'
+}
 if ($serverImpl -notmatch 'ERROR_ACCESS_DENIED[\s\S]*?return') {
   throw 'legacy alias listener must stop after a permanent cross-session access denial'
 }
