@@ -214,7 +214,7 @@ if ($feedSetup -lt 0 -or $initSparkle -le $feedSetup -or
 # A restart must wait for the old process, not merely for its pipe to vanish:
 # ServerImpl keeps the singleton mutex until process teardown completes.
 $restartStart = $serverMain.IndexOf('// Retain the existing process for both /quit and a normal restart.')
-$restartEnd = $serverMain.IndexOf('  bool check_updates =', $restartStart)
+$restartEnd = $serverMain.IndexOf('  const bool check_updates =', $restartStart)
 if ($restartStart -lt 0 -or $restartEnd -le $restartStart) {
   throw 'unable to isolate WeaselServer restart flow'
 }
