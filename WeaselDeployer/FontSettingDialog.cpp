@@ -295,17 +295,22 @@ INT_PTR FontSettingDialog::OnInitDialog() {
 }
 
 wstring FontSettingDialog::GetComboBoxSelectStr(HWND target) {
-  int selectedIndex = (int)SendMessage(target, CB_GETCURSEL, 0, 0);
-  if (selectedIndex != CB_ERR) {
-    int textLength =
-        (int)SendMessage(target, CB_GETLBTEXTLEN, selectedIndex, 0);
-    if (textLength != CB_ERR) {
-      wchar_t buffer[4096] = {0};
-      SendMessage(target, CB_GETLBTEXT, selectedIndex, (LPARAM)buffer);
-      return wstring(buffer);
-    }
+  const int selectedIndex =
+      static_cast<int>(SendMessage(target, CB_GETCURSEL, 0, 0));
+  if (selectedIndex == CB_ERR)
+    return L"";
+
+  const int textLength =
+      static_cast<int>(SendMessage(target, CB_GETLBTEXTLEN, selectedIndex, 0));
+  if (textLength == CB_ERR || textLength < 0)
+    return L"";
+
+  std::vector<wchar_t> buffer(static_cast<size_t>(textLength) + 1, L'\0');
+  if (SendMessage(target, CB_GETLBTEXT, selectedIndex,
+                  reinterpret_cast<LPARAM>(buffer.data())) == CB_ERR) {
+    return L"";
   }
-  return L"";
+  return std::wstring(buffer.data(), static_cast<size_t>(textLength));
 }
 
 wstring FontSettingDialog::GetTextOfEdit(HWND& hwndEdit) {

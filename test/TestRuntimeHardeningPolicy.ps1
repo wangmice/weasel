@@ -14,6 +14,7 @@ $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselS
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
+$fontSettingsDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\FontSettingDialog.cpp') -Raw
 $serverCommandsTest = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\TestServerCommands.cpp') -Raw
 $serverCommandsXmake = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\xmake.lua') -Raw
 $weaselTsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
@@ -196,6 +197,18 @@ if ($systemTray -notmatch 'm_hInstance\s*=\s*NULL' -or
     $systemTray -notmatch 'm_StartTime\s*=\s*0' -or
     $systemTray -notmatch 'm_nAnimationPeriod\s*=\s*0') {
   throw 'CSystemTray must initialize every handle and animation field before Create() can fail'
+}
+
+$comboRead = [regex]::Match(
+  $fontSettingsDialog,
+  'wstring\s+FontSettingDialog::GetComboBoxSelectStr\(HWND\s+target\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $comboRead.Success -or
+    $comboRead.Groups['body'].Value -match 'wchar_t\s+buffer\s*\[4096\]' -or
+    $comboRead.Groups['body'].Value -notmatch 'CB_GETLBTEXTLEN' -or
+    $comboRead.Groups['body'].Value -notmatch 'std::vector<wchar_t>\s+buffer' -or
+    $comboRead.Groups['body'].Value -notmatch 'buffer\.data\(\)') {
+  throw 'FontSettingDialog combo-box reads must size storage from CB_GETLBTEXTLEN'
 }
 
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.
