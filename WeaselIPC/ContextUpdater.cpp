@@ -52,16 +52,18 @@ void ContextUpdater::_StoreText(Text& target,
     if (k[2] == L"cursor") {
       std::vector<std::wstring> vec;
       split(vec, value, L",");
-      // 值格式为 start,end,cursor 三段，服务端固定发全（见 _Respond）；
-      // 不足三段视为截断响应，整体丢弃，避免越界读
-      if (vec.size() < 3)
+      // start/end are required; upstream may omit the optional cursor field.
+      // Reject genuinely truncated data while preserving TextRange's default
+      // cursor=-1 when only start/end are present.
+      if (vec.size() < 2)
         return;
 
       weasel::TextAttribute attr;
       attr.type = HIGHLIGHTED;
       attr.range.start = _wtoi(vec[0].c_str());
       attr.range.end = _wtoi(vec[1].c_str());
-      attr.range.cursor = _wtoi(vec[2].c_str());
+      if (vec.size() > 2)
+        attr.range.cursor = _wtoi(vec[2].c_str());
 
       target.attributes.push_back(attr);
       return;

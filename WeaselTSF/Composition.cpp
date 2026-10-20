@@ -946,6 +946,10 @@ void WeaselTSF::_AbortComposition(bool clear) {
     com_ptr<ITfContext> compositionContext =
         _pCompositionContext ? _pCompositionContext : _pEditSessionContext;
     _EndComposition(compositionContext, clear);
+  } else {
+    // The host may terminate the TSF composition before focus-loss cleanup.
+    // End the candidate UI even when the composition pointer is already gone.
+    _cand->EndUI();
   }
   _committed = TRUE;
   _cand->Destroy();
