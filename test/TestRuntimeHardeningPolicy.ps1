@@ -268,7 +268,8 @@ if ($registerCpp -notmatch 'std::wstring\s+GetModulePath\(HMODULE\s+module\)' -o
     $registerCpp -match 'WCHAR\s+achIconFile\s*\[MAX_PATH\]' -or
     $registerCpp -match 'char\s+achFileName\s*\[MAX_PATH\]' -or
     $registerCpp -match 'GetModuleFileNameA\(' -or
-    $registerCpp -notmatch 'RegSetValueExW\([\s\S]*?module_path\.c_str\(\)') {
+    $registerCpp -notmatch 'module_path_data\s*=\s*[\s\S]*?module_path\.c_str\(\)' -or
+    $registerCpp -notmatch 'RegSetValueExW\([\s\S]*?module_path_data[\s\S]*?module_path_bytes') {
   throw 'TSF profile/COM registration must keep module paths dynamically sized and Unicode'
 }
 
