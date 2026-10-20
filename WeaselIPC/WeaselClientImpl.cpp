@@ -41,13 +41,13 @@ DWORD RemainingTransactionTime(ULONGLONG deadline) {
 
 bool ServerRuntimeIsReady() noexcept {
   const std::wstring state_name = GetServerRuntimeStateName();
-  HANDLE mapping =
-      OpenFileMappingW(FILE_MAP_READ, FALSE, state_name.c_str());
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, state_name.c_str());
   if (!mapping)
     return false;
 
-  void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
-                             sizeof(ServerRuntimeState));
+  void* view =
+      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
+                    sizeof(ServerRuntimeState));
   if (!view) {
     CloseHandle(mapping);
     return false;
