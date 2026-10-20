@@ -46,8 +46,7 @@ bool ServerRuntimeIsReady() noexcept {
     return false;
 
   void* view =
-      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
-                    sizeof(ServerRuntimeState));
+      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(ServerRuntimeState));
   if (!view) {
     CloseHandle(mapping);
     return false;
