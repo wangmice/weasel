@@ -12,6 +12,7 @@ $serverApp = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServe
 $systemTray = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\SystemTraySDK.cpp') -Raw
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
+$textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
 $fontSettingsDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\FontSettingDialog.cpp') -Raw
@@ -221,6 +222,21 @@ if (-not $threadFocusUninit.Success -or
     $threadFocusUninit.Groups['body'].Value -notmatch '_dwThreadFocusSinkCookie\s*=\s*TF_INVALID_COOKIE' -or
     $threadFocusUninit.Groups['body'].Value -notmatch 'UnadviseSink\(cookie\)') {
   throw 'thread-focus sink cleanup must invalidate the stored cookie before touching a new source'
+}
+
+$textSinkInit = [regex]::Match(
+  $textEditSink,
+  'BOOL\s+WeaselTSF::_InitTextEditSink\(com_ptr<ITfDocumentMgr>\s+pDocMgr\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $textSinkInit.Success -or
+    $textSinkInit.Groups['body'].Value -notmatch 'AdviseSink\(IID_ITfTextEditSink' -or
+    $textSinkInit.Groups['body'].Value -notmatch '_dwTextEditSinkCookie\s*=\s*TF_INVALID_COOKIE[\s\S]*?_pTextEditSinkContext\s*=\s*nullptr[\s\S]*?return\s+FALSE' -or
+    $textSinkInit.Groups['body'].Value -notmatch 'AdviseSink\(IID_ITfTextLayoutSink' -or
+    $textSinkInit.Groups['body'].Value -notmatch '_dwTextLayoutSinkCookie\s*=\s*TF_INVALID_COOKIE[\s\S]*?return\s+TRUE') {
+  throw 'text-edit sink must be mandatory while layout notifications remain optional'
+}
+if ($tsf -notmatch 'GetFocus\(&pDocMgrFocus\)[\s\S]*?!_InitTextEditSink\(pDocMgrFocus\)[\s\S]*?goto\s+ExitError') {
+  throw 'activation must fail when the focused document cannot establish its text-edit sink'
 }
 
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.

@@ -141,8 +141,8 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
     goto ExitError;
 
   if ((_pThreadMgr->GetFocus(&pDocMgrFocus) == S_OK) &&
-      (pDocMgrFocus != NULL)) {
-    _InitTextEditSink(pDocMgrFocus);
+      (pDocMgrFocus != NULL) && !_InitTextEditSink(pDocMgrFocus)) {
+    goto ExitError;
   }
 
   if (!_InitKeyEventSink())

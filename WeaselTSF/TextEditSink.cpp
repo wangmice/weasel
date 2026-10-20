@@ -79,11 +79,11 @@ STDMETHODIMP WeaselTSF::OnLayoutChange(ITfContext* pContext,
 
 BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
   com_ptr<ITfSource> pSource;
-  BOOL fRet;
 
   if (_dwTextEditSinkCookie != TF_INVALID_COOKIE ||
       _dwTextLayoutSinkCookie != TF_INVALID_COOKIE) {
-    _pTextEditSinkContext->QueryInterface(&pSource);
+    if (_pTextEditSinkContext)
+      _pTextEditSinkContext->QueryInterface(&pSource);
     if (pSource != nullptr) {
       if (_dwTextEditSinkCookie != TF_INVALID_COOKIE)
         pSource->UnadviseSink(_dwTextEditSinkCookie);
@@ -103,24 +103,28 @@ BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
   if (_pTextEditSinkContext == NULL)
     return TRUE;
 
-  fRet = FALSE;
   pSource.Release();
-
-  if (_pTextEditSinkContext->QueryInterface(IID_ITfSource, (void**)&pSource) ==
+  if (_pTextEditSinkContext->QueryInterface(IID_ITfSource, (void**)&pSource) !=
       S_OK) {
-    if (pSource->AdviseSink(IID_ITfTextEditSink, (ITfTextEditSink*)this,
-                            &_dwTextEditSinkCookie) == S_OK)
-      fRet = TRUE;
-    else
-      _dwTextEditSinkCookie = TF_INVALID_COOKIE;
-    if (pSource->AdviseSink(IID_ITfTextLayoutSink, (ITfTextLayoutSink*)this,
-                            &_dwTextLayoutSinkCookie) == S_OK) {
-      fRet = TRUE;
-    } else
-      _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
-  }
-  if (fRet == FALSE)
     _pTextEditSinkContext = nullptr;
+    return FALSE;
+  }
 
-  return fRet;
+  // OnEndEdit is the retry trigger after TF_E_LOCKED. Without the text-edit
+  // sink the response FIFO can stall indefinitely, so it is required.
+  if (pSource->AdviseSink(IID_ITfTextEditSink, (ITfTextEditSink*)this,
+                          &_dwTextEditSinkCookie) != S_OK) {
+    _dwTextEditSinkCookie = TF_INVALID_COOKIE;
+    _pTextEditSinkContext = nullptr;
+    return FALSE;
+  }
+
+  // Layout notifications only improve candidate positioning. Keep text input
+  // functional when a host does not expose ITfTextLayoutSink.
+  if (pSource->AdviseSink(IID_ITfTextLayoutSink, (ITfTextLayoutSink*)this,
+                          &_dwTextLayoutSinkCookie) != S_OK) {
+    _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
+  }
+
+  return TRUE;
 }
