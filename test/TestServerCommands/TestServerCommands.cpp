@@ -145,8 +145,11 @@ static void test_server_recovery_coordinator_state_machine() {
     bool destructive_action_ran = false;
     coordinator.NoteHealthy();
     check(coordinator.WorkerInflight() &&
-              coordinator.HealthRevision() != revision,
-          "foreground health advances revision without admitting another worker");
+              coordinator.HealthRevision() != revision &&
+              coordinator.FailureStreak() == 0 &&
+              coordinator.RetryAfter() == 0 &&
+              coordinator.UnavailableSince() == 0,
+          "foreground health resets stale failure history without admitting another worker");
     check(!coordinator.RunIfHealthUnchanged(revision, [&]() noexcept {
             destructive_action_ran = true;
             return true;

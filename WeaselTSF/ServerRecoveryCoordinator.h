@@ -79,8 +79,10 @@ class ServerRecoveryCoordinator {
   void NoteHealthy() noexcept {
     ExclusiveGuard guard(gate_);
     ++health_revision_;
-    if (worker_inflight_)
-      return;
+    // A successful foreground reconnect breaks the continuous-unavailability
+    // interval even when the existing recovery worker keeps admission
+    // ownership. The worker is not cancelled here; its revision check/fresh
+    // probe decides whether it may still perform destructive recovery.
     failure_streak_ = 0;
     unavailable_since_ = 0;
     retry_after_ = 0;
