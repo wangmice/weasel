@@ -86,8 +86,11 @@ if ($serverHeader -match 'ManualUpdateFeedURL|TestingManualUpdateFeedURL') {
 }
 
 $serverCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServerApp.cpp') -Raw
-if ($serverCpp -notmatch 'win_sparkle_set_appcast_url\(kStableUpdateFeedUrl\)') {
-  throw 'WinSparkle must be initialized with the fork stable feed'
+if ($serverCpp -notmatch 'win_sparkle_set_appcast_url\(update_feed_url\(\)\)') {
+  throw 'WinSparkle must select the fork update feed before initialization'
+}
+if ($serverHeader -notmatch 'static\s+const\s+char\*\s+update_feed_url\(\)[\s\S]*?kTestingUpdateFeedUrl[\s\S]*?kStableUpdateFeedUrl') {
+  throw 'WinSparkle feed selection must stay restricted to the fork stable/testing feeds'
 }
 
 $ci = Get-Content -LiteralPath (Join-Path $repo '.github\workflows\ci.yml') -Raw
