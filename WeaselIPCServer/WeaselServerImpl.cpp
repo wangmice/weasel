@@ -386,9 +386,8 @@ int ServerImpl::Run() {
   auto listener = [this](const PipeServer::ConnectionContext& context,
                          PipeMessage msg, PipeServer::Respond resp) -> void {
     const bool starting = msg.Msg == WEASEL_IPC_START_SESSION;
-    const bool maintenance_command =
-        msg.Msg == WEASEL_IPC_START_MAINTENANCE ||
-        msg.Msg == WEASEL_IPC_END_MAINTENANCE;
+    const bool maintenance_command = msg.Msg == WEASEL_IPC_START_MAINTENANCE ||
+                                     msg.Msg == WEASEL_IPC_END_MAINTENANCE;
     const bool needs_process_owner = starting || maintenance_command;
 
     // Resolve the peer process generation before taking either lifecycle or
