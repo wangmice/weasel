@@ -13,6 +13,7 @@ $systemTray = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\SystemTray
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
+$registerCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Register.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
 $deployerMain = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\WeaselDeployer.cpp') -Raw
@@ -260,6 +261,15 @@ if ($deployerMain -notmatch 'struct\s+RuntimeCleanup' -or
     $deployerMain -notmatch 'cleanup\.module_initialized\s*=\s*true' -or
     $deployerMain -match 'ATLASSERT\(SUCCEEDED\(hRes\)\)') {
   throw 'WeaselDeployer must handle COM/ATL initialization failures at runtime with scoped cleanup'
+}
+
+if ($registerCpp -notmatch 'std::wstring\s+GetModulePath\(HMODULE\s+module\)' -or
+    $registerCpp -notmatch 'std::vector<wchar_t>\s+buffer\(capacity\)' -or
+    $registerCpp -match 'WCHAR\s+achIconFile\s*\[MAX_PATH\]' -or
+    $registerCpp -match 'char\s+achFileName\s*\[MAX_PATH\]' -or
+    $registerCpp -match 'GetModuleFileNameA\(' -or
+    $registerCpp -notmatch 'RegSetValueExW\([\s\S]*?module_path\.c_str\(\)') {
+  throw 'TSF profile/COM registration must keep module paths dynamically sized and Unicode'
 }
 
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.
