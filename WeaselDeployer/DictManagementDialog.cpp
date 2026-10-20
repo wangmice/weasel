@@ -227,8 +227,7 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
     std::string dict_name_str = wtou8(dict_name);
-    int result =
-        api_->export_user_dict(dict_name_str.c_str(), path.c_str());
+    int result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else if (_waccess(selected_path.c_str(), 0) != 0) {

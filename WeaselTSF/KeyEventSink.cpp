@@ -231,8 +231,8 @@ STDMETHODIMP WeaselTSF::OnKeyDown(ITfContext* pContext,
                                   BOOL* pfEaten) {
   _testKeyUpPending.Clear();
   const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
-  if (_testKeyDownPending.ConsumePairedKey(
-          static_cast<std::uint32_t>(wParam), messageTime)) {
+  const auto vkey = static_cast<std::uint32_t>(wParam);
+  if (_testKeyDownPending.ConsumePairedKey(vkey, messageTime)) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);
@@ -267,8 +267,8 @@ STDMETHODIMP WeaselTSF::OnKeyUp(ITfContext* pContext,
                                 BOOL* pfEaten) {
   _testKeyDownPending.Clear();
   const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
-  if (_testKeyUpPending.ConsumePairedKey(static_cast<std::uint32_t>(wParam),
-                                         messageTime)) {
+  const auto vkey = static_cast<std::uint32_t>(wParam);
+  if (_testKeyUpPending.ConsumePairedKey(vkey, messageTime)) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);

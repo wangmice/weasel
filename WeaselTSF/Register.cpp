@@ -47,8 +47,8 @@ std::wstring GetModulePath(HMODULE module) {
   DWORD capacity = 260;
   for (;;) {
     std::vector<wchar_t> buffer(capacity);
-    const DWORD copied =
-        GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+    const DWORD copied = GetModuleFileNameW(
+        module, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (copied == 0)
       return {};
     if (copied < buffer.size())
@@ -86,7 +86,8 @@ BOOL RegisterProfiles() {
 
   const std::wstring icon_file = GetModulePath(g_hInst);
   if (icon_file.empty() ||
-      icon_file.size() > static_cast<size_t>((std::numeric_limits<ULONG>::max)()))
+      icon_file.size() >
+          static_cast<size_t>((std::numeric_limits<ULONG>::max)()))
     return FALSE;
   const ULONG icon_file_len = static_cast<ULONG>(icon_file.size());
 
@@ -243,11 +244,12 @@ BOOL RegisterServer() {
     if (fRet &=
         RegCreateKeyExA(hKey, c_szInProcSvr32, 0, NULL, REG_OPTION_NON_VOLATILE,
                         KEY_WRITE, NULL, &hSubKey, &dw) == ERROR_SUCCESS) {
-      fRet &= RegSetValueExW(
-                  hSubKey, NULL, 0, REG_SZ,
-                  reinterpret_cast<const BYTE*>(module_path.c_str()),
-                  static_cast<DWORD>((module_path.size() + 1) *
-                                     sizeof(wchar_t))) == ERROR_SUCCESS;
+      fRet &=
+          RegSetValueExW(
+              hSubKey, NULL, 0, REG_SZ,
+              reinterpret_cast<const BYTE*>(module_path.c_str()),
+              static_cast<DWORD>((module_path.size() + 1) * sizeof(wchar_t))) ==
+          ERROR_SUCCESS;
       fRet &= RegSetValueExA(hSubKey, c_szModelName, 0, REG_SZ,
                              (BYTE*)TEXTSERVICE_MODEL,
                              sizeof TEXTSERVICE_MODEL) == ERROR_SUCCESS;
