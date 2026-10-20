@@ -87,8 +87,7 @@ void ServerImpl::_Finailize() {
 void ServerImpl::_SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept {
   if (!m_runtimeState)
     return;
-  InterlockedExchange(&m_runtimeState->lifecycle,
-                      static_cast<LONG>(lifecycle));
+  InterlockedExchange(&m_runtimeState->lifecycle, static_cast<LONG>(lifecycle));
 }
 
 ServerLifecycle ServerImpl::_RuntimeLifecycle() const noexcept {
@@ -104,10 +103,9 @@ bool ServerImpl::_TryTransitionRuntimeLifecycle(
     ServerLifecycle desired) noexcept {
   if (!m_runtimeState)
     return false;
-  return InterlockedCompareExchange(&m_runtimeState->lifecycle,
-                                    static_cast<LONG>(desired),
-                                    static_cast<LONG>(expected)) ==
-         static_cast<LONG>(expected);
+  return InterlockedCompareExchange(
+             &m_runtimeState->lifecycle, static_cast<LONG>(desired),
+             static_cast<LONG>(expected)) == static_cast<LONG>(expected);
 }
 
 bool ServerImpl::_PublishRuntimeState() noexcept {
@@ -118,8 +116,7 @@ bool ServerImpl::_PublishRuntimeState() noexcept {
     return false;
 
   m_runtimeState = static_cast<ServerRuntimeState*>(MapViewOfFile(
-      m_runtimeStateMapping, FILE_MAP_WRITE, 0, 0,
-      sizeof(ServerRuntimeState)));
+      m_runtimeStateMapping, FILE_MAP_WRITE, 0, 0, sizeof(ServerRuntimeState)));
   if (!m_runtimeState)
     return false;
 
@@ -368,8 +365,7 @@ int ServerImpl::Run() {
     // lifecycle lock before probing or sending maintenance IPC, so taking the
     // locks in the opposite order here would create an AB/BA deadlock.
     ServerLifecycleLock session_lifecycle;
-    const bool lifecycle_admitted =
-        !starting || session_lifecycle.Acquire(0);
+    const bool lifecycle_admitted = !starting || session_lifecycle.Acquire(0);
 
     // Defer the response write until the api lock is released: a slow or
     // hung client must not extend the global critical section.
@@ -464,7 +460,8 @@ DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
                                  DWORD wParam,
                                  DWORD lParam) {
   // START_SESSION lifecycle admission is acquired by the pipe listener before
-  // g_api_mutex. Keep this handler side-effect-free when lifecycle is not Ready.
+  // g_api_mutex. Keep this handler side-effect-free when lifecycle is not
+  // Ready.
   if (!m_pRequestHandler || _RuntimeLifecycle() != ServerLifecycle::Ready)
     return 0;
 

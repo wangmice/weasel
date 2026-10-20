@@ -310,9 +310,9 @@ void NoteServerRecoveryHealthy() noexcept {
   g_serverRecovery.NoteHealthy();
 }
 void FinishServerRecoveryFailure() noexcept {
-  g_serverRecovery.FinishFailure(
-      GetTickCount64(), kServerLaunchFailureBaseBackoffMs,
-      kServerLaunchFailureMaxBackoffMs);
+  g_serverRecovery.FinishFailure(GetTickCount64(),
+                                 kServerLaunchFailureBaseBackoffMs,
+                                 kServerLaunchFailureMaxBackoffMs);
 }
 bool TryBeginServerRecovery() noexcept {
   return g_serverRecovery.TryBegin(GetTickCount64());
@@ -328,21 +328,20 @@ bool IsNamedMutexPresent(const std::wstring& mutex_name) noexcept {
 }
 
 bool ReadServerRuntimeState(weasel::ServerRuntimeState& state) noexcept {
-  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE,
-                                    weasel::GetServerRuntimeStateName().c_str());
+  HANDLE mapping = OpenFileMappingW(
+      FILE_MAP_READ, FALSE, weasel::GetServerRuntimeStateName().c_str());
   if (!mapping)
     return false;
-  const auto* shared = static_cast<const weasel::ServerRuntimeState*>(
-      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
-                    sizeof(weasel::ServerRuntimeState)));
+  const auto* shared =
+      static_cast<const weasel::ServerRuntimeState*>(MapViewOfFile(
+          mapping, FILE_MAP_READ, 0, 0, sizeof(weasel::ServerRuntimeState)));
   if (!shared) {
     CloseHandle(mapping);
     return false;
   }
   state.version = shared->version;
   state.process_id = shared->process_id;
-  state.lifecycle =
-      *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
+  state.lifecycle = *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
   state.reserved = shared->reserved;
   state.process_creation_time = shared->process_creation_time;
   UnmapViewOfFile(shared);
@@ -357,8 +356,9 @@ bool SameServerGeneration(const weasel::ServerRuntimeState& lhs,
          lhs.process_creation_time == rhs.process_creation_time;
 }
 
-bool IsServerInstancePresent(const std::wstring& instance_name,
-                             const std::wstring& legacy_instance_name) noexcept {
+bool IsServerInstancePresent(
+    const std::wstring& instance_name,
+    const std::wstring& legacy_instance_name) noexcept {
   if (IsNamedMutexPresent(instance_name))
     return true;
   return legacy_instance_name != instance_name &&
@@ -394,8 +394,8 @@ struct RunningServerTarget {
 
 HWND FindServerWindowForProcess(DWORD process_id) noexcept {
   HWND window = nullptr;
-  while ((window = FindWindowExW(nullptr, window, nullptr, WEASEL_IPC_WINDOW)) !=
-         nullptr) {
+  while ((window = FindWindowExW(nullptr, window, nullptr,
+                                 WEASEL_IPC_WINDOW)) != nullptr) {
     DWORD window_process_id = 0;
     if (GetWindowThreadProcessId(window, &window_process_id) &&
         window_process_id == process_id)
@@ -486,8 +486,8 @@ StopServerResult StopPersistentlyUnavailableServer(
   // same-process foreground reconnect that completed before lifecycle
   // ownership was acquired. Cross-process START_SESSION is excluded by the
   // lifecycle lock above.
-  const bool close_posted = g_serverRecovery.RunIfHealthUnchanged(
-      health_revision, [&]() noexcept {
+  const bool close_posted =
+      g_serverRecovery.RunIfHealthUnchanged(health_revision, [&]() noexcept {
         weasel::ServerRuntimeState latest_state{};
         if (!ReadServerRuntimeState(latest_state) ||
             !SameServerGeneration(latest_state, expected_state) ||
@@ -512,8 +512,7 @@ StopServerResult StopPersistentlyUnavailableServer(
 
   const ULONGLONG duration = ServerUnavailableDurationMs();
   if (duration < kServerForceTerminateThresholdMs) {
-    const ULONGLONG remaining =
-        kServerForceTerminateThresholdMs - duration;
+    const ULONGLONG remaining = kServerForceTerminateThresholdMs - duration;
     wait_result =
         WaitForSingleObject(target.process, static_cast<DWORD>(remaining));
     if (wait_result == WAIT_OBJECT_0)

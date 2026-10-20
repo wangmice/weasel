@@ -86,8 +86,8 @@ static void test_server_recovery_coordinator_state_machine() {
     check(coordinator.TryBegin(1000),
           "recovery coordinator starts an initial worker");
     coordinator.FinishBackoff(100, 1000);
-    check(coordinator.RetryAfter() == 1100 &&
-              !coordinator.TryBegin(1099) && coordinator.TryBegin(1100),
+    check(coordinator.RetryAfter() == 1100 && !coordinator.TryBegin(1099) &&
+              coordinator.TryBegin(1100),
           "Backoff rejects early workers and admits one at the deadline");
     coordinator.FinishHealthy();
   }
@@ -120,18 +120,15 @@ static void test_server_recovery_coordinator_state_machine() {
     check(coordinator.TryBegin(1000),
           "failure backoff test acquires the first worker");
     coordinator.FinishFailure(1000, 250, 2000);
-    check(coordinator.FailureStreak() == 1 &&
-              coordinator.RetryAfter() == 1250,
+    check(coordinator.FailureStreak() == 1 && coordinator.RetryAfter() == 1250,
           "first recovery failure uses the base backoff");
     check(coordinator.TryBegin(1250),
           "failure backoff expires at its deadline");
     coordinator.FinishFailure(1250, 250, 2000);
-    check(coordinator.FailureStreak() == 2 &&
-              coordinator.RetryAfter() == 1750,
+    check(coordinator.FailureStreak() == 2 && coordinator.RetryAfter() == 1750,
           "consecutive recovery failures back off exponentially");
     coordinator.NoteHealthy();
-    check(coordinator.FailureStreak() == 0 &&
-              coordinator.RetryAfter() == 0 &&
+    check(coordinator.FailureStreak() == 0 && coordinator.RetryAfter() == 0 &&
               coordinator.UnavailableSince() == 0,
           "healthy idle recovery resets failure and unavailable state");
   }
@@ -149,16 +146,18 @@ static void test_server_recovery_coordinator_state_machine() {
               coordinator.FailureStreak() == 0 &&
               coordinator.RetryAfter() == 0 &&
               coordinator.UnavailableSince() == 0,
-          "foreground health resets stale failure history without admitting another worker");
-    check(!coordinator.RunIfHealthUnchanged(revision, [&]() noexcept {
-            destructive_action_ran = true;
-            return true;
-          }) &&
+          "foreground health resets stale failure history without admitting "
+          "another worker");
+    check(!coordinator.RunIfHealthUnchanged(revision,
+                                            [&]() noexcept {
+                                              destructive_action_ran = true;
+                                              return true;
+                                            }) &&
               !destructive_action_ran,
-          "stale recovery cannot authorize destructive work after foreground health");
+          "stale recovery cannot authorize destructive work after foreground "
+          "health");
     coordinator.FinishHealthy();
-    check(!coordinator.WorkerInflight() &&
-              coordinator.UnavailableSince() == 0,
+    check(!coordinator.WorkerInflight() && coordinator.UnavailableSince() == 0,
           "the recovery owner clears state after cancellation");
   }
 }
@@ -374,9 +373,9 @@ static void test_server_runtime_state_tracks_maintenance() {
                 static_cast<LONG>(weasel::ServerLifecycle::Stopping),
         "Stopping rejects stale START_MAINTENANCE without lifecycle rollback");
   server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
-  check(runtime.lifecycle ==
-            static_cast<LONG>(weasel::ServerLifecycle::Stopping),
-        "Stopping rejects stale END_MAINTENANCE without returning to Ready");
+  check(
+      runtime.lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+      "Stopping rejects stale END_MAINTENANCE without returning to Ready");
 
   weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
@@ -611,8 +610,8 @@ static void test_maintenance_session_recovery() {
   accepted_before = handler.accepted_keys;
   handler.delay_key_reply = true;
   const ULONGLONG started = GetTickCount64();
-  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
-            tsf, weasel::KeyEvent('c')),
+  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(tsf,
+                                                         weasel::KeyEvent('c')),
         "ambiguous response timeout is consumed locally without replay");
   check(GetTickCount64() - started < 400,
         "TSF bounds a wedged healthy key transaction well below one second");

@@ -234,7 +234,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     }
     // restart_lifecycle is released before constructing the replacement.
     // ServerImpl immediately publishes its singleton before reacquiring the
-    // same lifecycle mutex, so deploy/recovery cannot overlap its initialization.
+    // same lifecycle mutex, so deploy/recovery cannot overlap its
+    // initialization.
   }
 
   bool check_updates = !wcscmp(L"/update", lpstrCmdLine);
