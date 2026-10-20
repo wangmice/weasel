@@ -459,6 +459,15 @@ int ServerImpl::Run() {
         session_router.ClearCurrentOwner();
       m_dispatchProcessOwner.reset();
     }
+
+    // START_SESSION lifecycle ownership protects admission and shared session
+    // mutation, not transport delivery. Release it only after g_api_mutex has
+    // been dropped, but before the synchronous response write, so a client
+    // that stops reading cannot pin deployment or recovery behind the global
+    // lifecycle mutex.
+    if (starting)
+      session_lifecycle.Unlock();
+
     resp(result);
   };
   // Capture the listener by value: a stack reference would dangle as soon

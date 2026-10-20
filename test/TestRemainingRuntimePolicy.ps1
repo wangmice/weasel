@@ -79,6 +79,27 @@ if ($listenerBody -notmatch 'ServerLifecycleLock\s+session_lifecycle' -or
   throw 'server command admission must enforce lifecycle-before-api lock order and monotonic lifecycle transitions'
 }
 
+$sessionUnlock = $listenerBody.IndexOf('session_lifecycle.Unlock()')
+$responseWrite = $listenerBody.IndexOf('resp(result)')
+$finalDispatchReset =
+    if ($sessionUnlock -ge 0) {
+      $listenerBody.LastIndexOf('m_dispatchProcessOwner.reset();', $sessionUnlock)
+    } else {
+      -1
+    }
+$resetToUnlock =
+    if ($finalDispatchReset -ge 0 -and $sessionUnlock -gt $finalDispatchReset) {
+      $listenerBody.Substring(
+          $finalDispatchReset, $sessionUnlock - $finalDispatchReset)
+    } else {
+      ''
+    }
+if ($sessionUnlock -lt 0 -or $responseWrite -lt 0 -or
+    $sessionUnlock -gt $responseWrite -or $finalDispatchReset -lt 0 -or
+    $resetToUnlock -notmatch '\}') {
+  throw 'START_SESSION must release lifecycle ownership after API serialization but before the synchronous response write'
+}
+
 if ($ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
     $ipc -notmatch 'GetServerRuntimeStateName\(\)' -or
     $ipc -notmatch 'enum\s+class\s+ServerLifecycle' -or
