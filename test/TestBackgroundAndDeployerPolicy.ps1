@@ -128,6 +128,11 @@ if ($deployer -notmatch 'if\s*\(internal_sync_worker\)[\s\S]*?return\s+Run\(argc
   throw 'only the exact internal sync worker may bypass the deployer process singleton'
 }
 
+if ($deployer -notmatch 'IsBoundedWorkspaceDeploy\(int\s+argc,\s*wchar_t\*\s*argv\[\]\)' -or
+    $deployer -notmatch 'internal_sync_worker\s*\|\|\s*bounded_workspace_deploy[\s\S]*?ArmSyncWorkerWatchdog\(\)') {
+  throw '/deploy and the isolated sync worker must both have a process-local hard watchdog'
+}
+
 if ($configurator -notmatch 'ServerSingletonPresent\(\)[\s\S]*?GetServerInstanceName\(\)[\s\S]*?GetLegacyServerInstanceName\(\)' -or
     $configurator -notmatch 'if\s*\(!client\.Connect\(\)\)[\s\S]*?ServerSingletonPresent\(\)[\s\S]*?return false;[\s\S]*?return true;') {
   throw 'deployer must distinguish an absent server from a singleton that is starting stopping or IPC-unavailable'
