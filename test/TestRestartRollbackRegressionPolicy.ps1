@@ -7,7 +7,7 @@ $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Ra
 # If the old server window already exists while its pipe listener is not ready,
 # restart/quit must still request shutdown before waiting on the process handle.
 $restartStart = $serverMain.IndexOf('// Retain the existing process for both /quit and a normal restart.')
-$restartEnd = $serverMain.IndexOf('  bool check_updates =', $restartStart)
+$restartEnd = $serverMain.IndexOf('  const bool check_updates =', $restartStart)
 if ($restartStart -lt 0 -or $restartEnd -le $restartStart) {
   throw 'unable to isolate WeaselServer restart flow'
 }
