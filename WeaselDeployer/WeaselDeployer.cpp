@@ -76,6 +76,10 @@ bool IsInternalSyncWorker(int argc, wchar_t* argv[]) {
   return argc == 2 && _wcsicmp(argv[1], kInternalSyncWorkerOption) == 0;
 }
 
+bool IsBoundedWorkspaceDeploy(int argc, wchar_t* argv[]) {
+  return argc == 2 && _wcsicmp(argv[1], L"/deploy") == 0;
+}
+
 std::wstring CurrentExecutablePath() {
   constexpr DWORD kPathChars = 32768;
   std::vector<wchar_t> buffer(kPathChars);
@@ -205,11 +209,12 @@ static void DetachGuiConsole() {
 
 int wmain(int argc, wchar_t* argv[]) {
   const bool internal_sync_worker = IsInternalSyncWorker(argc, argv);
+  const bool bounded_workspace_deploy = IsBoundedWorkspaceDeploy(argc, argv);
   RuntimeCleanup cleanup;
-  if (internal_sync_worker) {
+  if (internal_sync_worker || bounded_workspace_deploy) {
     cleanup.watchdog_cancel = ArmSyncWorkerWatchdog();
     if (!cleanup.watchdog_cancel) {
-      LOG(ERROR) << "Could not arm isolated Rime sync watchdog.";
+      LOG(ERROR) << "Could not arm Rime maintenance watchdog.";
       return 1;
     }
   }
