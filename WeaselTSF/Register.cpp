@@ -47,8 +47,8 @@ std::wstring GetModulePath(HMODULE module) {
   DWORD capacity = 260;
   for (;;) {
     std::vector<wchar_t> buffer(capacity);
-    const DWORD copied = GetModuleFileNameW(
-        module, buffer.data(), static_cast<DWORD>(buffer.size()));
+    const DWORD buffer_size = static_cast<DWORD>(buffer.size());
+    const DWORD copied = GetModuleFileNameW(module, buffer.data(), buffer_size);
     if (copied == 0)
       return {};
     if (copied < buffer.size())
@@ -231,6 +231,11 @@ BOOL RegisterServer() {
   module_path += L"weasel.dll";
 #endif
 
+  const auto* module_path_data =
+      reinterpret_cast<const BYTE*>(module_path.c_str());
+  const DWORD module_path_bytes =
+      static_cast<DWORD>((module_path.size() + 1) * sizeof(wchar_t));
+
   if (!CLSIDToStringA(c_clsidTextService,
                       achIMEKey + ARRAYSIZE(c_szInfoKeyPrefix) - 1))
     return FALSE;
@@ -244,12 +249,8 @@ BOOL RegisterServer() {
     if (fRet &=
         RegCreateKeyExA(hKey, c_szInProcSvr32, 0, NULL, REG_OPTION_NON_VOLATILE,
                         KEY_WRITE, NULL, &hSubKey, &dw) == ERROR_SUCCESS) {
-      fRet &=
-          RegSetValueExW(
-              hSubKey, NULL, 0, REG_SZ,
-              reinterpret_cast<const BYTE*>(module_path.c_str()),
-              static_cast<DWORD>((module_path.size() + 1) * sizeof(wchar_t))) ==
-          ERROR_SUCCESS;
+      fRet &= RegSetValueExW(hSubKey, NULL, 0, REG_SZ, module_path_data,
+                             module_path_bytes) == ERROR_SUCCESS;
       fRet &= RegSetValueExA(hSubKey, c_szModelName, 0, REG_SZ,
                              (BYTE*)TEXTSERVICE_MODEL,
                              sizeof TEXTSERVICE_MODEL) == ERROR_SUCCESS;
