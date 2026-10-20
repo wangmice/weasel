@@ -105,10 +105,16 @@ void CSystemTray::Initialise() {
 
   m_bShowIconPending = FALSE;
 
+  m_hInstance = NULL;
+  m_hWnd = NULL;
+  m_hTargetWnd = NULL;
+
   m_uIDTimer = 0;
+  m_nCurrentIcon = 0;
+  m_StartTime = 0;
+  m_nAnimationPeriod = 0;
   m_hSavedIcon = NULL;
 
-  m_hTargetWnd = NULL;
   m_uCreationFlags = 0;
 
 #ifdef SYSTEMTRAY_USEW2K

@@ -9,6 +9,7 @@ $ipcHeader = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -R
 $clientImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
 $serverMain = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServer.cpp') -Raw
 $serverApp = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServerApp.cpp') -Raw
+$systemTray = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\SystemTraySDK.cpp') -Raw
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
@@ -186,6 +187,15 @@ if ($runBody -notmatch 'ConfigureResult::Failed[\s\S]*?config_failed\s*=\s*true'
 }
 if ($runBody -notmatch 'return\s+\(config_failed\s*\|\|\s*deploy_result\s*!=\s*0\)\s*\?\s*1\s*:\s*0\s*;') {
   throw 'Configurator::Run must return failure when either configuration or deployment failed'
+}
+
+if ($systemTray -notmatch 'm_hInstance\s*=\s*NULL' -or
+    $systemTray -notmatch 'm_hWnd\s*=\s*NULL' -or
+    $systemTray -notmatch 'm_hTargetWnd\s*=\s*NULL' -or
+    $systemTray -notmatch 'm_nCurrentIcon\s*=\s*0' -or
+    $systemTray -notmatch 'm_StartTime\s*=\s*0' -or
+    $systemTray -notmatch 'm_nAnimationPeriod\s*=\s*0') {
+  throw 'CSystemTray must initialize every handle and animation field before Create() can fail'
 }
 
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.
