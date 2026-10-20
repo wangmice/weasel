@@ -185,10 +185,8 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
   std::wstring selected_path = DoFileDialog<IFileOpenDialog, FileOpenDialog>(
       m_hWnd, open_str, ARRAYSIZE(filter), filter, NULL, L"snapshot");
   if (!selected_path.empty()) {
-    char path[MAX_PATH] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, selected_path.c_str(), -1, path,
-                        _countof(path), NULL, NULL);
-    if (!api_->restore_user_dict(path)) {
+    const std::string path = wtou8(selected_path);
+    if (!api_->restore_user_dict(path.c_str())) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
       Populate();  // 词典内容已变，重载列表反映恢复结果
@@ -227,11 +225,10 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, save_as_str, ARRAYSIZE(filter), filter, file_name.c_str(),
       L"txt");
   if (!selected_path.empty()) {
-    char path[MAX_PATH] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, selected_path.c_str(), -1, path,
-                        _countof(path), NULL, NULL);
+    const std::string path = wtou8(selected_path);
     std::string dict_name_str = wtou8(dict_name);
-    int result = api_->export_user_dict(dict_name_str.c_str(), path);
+    int result =
+        api_->export_user_dict(dict_name_str.c_str(), path.c_str());
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else if (_waccess(selected_path.c_str(), 0) != 0) {
@@ -275,10 +272,9 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
   std::wstring selected_path = DoFileDialog<IFileOpenDialog, FileOpenDialog>(
       m_hWnd, open_str, ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
   if (!selected_path.empty()) {
-    char path[MAX_PATH] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, selected_path.c_str(), -1, path,
-                        _countof(path), NULL, NULL);
-    int result = api_->import_user_dict(wtou8(dict_name).c_str(), path);
+    const std::string path = wtou8(selected_path);
+    int result =
+        api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {

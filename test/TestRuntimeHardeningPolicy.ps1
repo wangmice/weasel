@@ -16,6 +16,8 @@ $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSin
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
 $fontSettingsDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\FontSettingDialog.cpp') -Raw
+$dictManagementDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\DictManagementDialog.cpp') -Raw
+$switcherDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\SwitcherSettingsDialog.cpp') -Raw
 $serverCommandsTest = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\TestServerCommands.cpp') -Raw
 $serverCommandsXmake = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\xmake.lua') -Raw
 $weaselTsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
@@ -237,6 +239,17 @@ if (-not $textSinkInit.Success -or
 }
 if ($tsf -notmatch 'GetFocus\(&pDocMgrFocus\)[\s\S]*?!_InitTextEditSink\(pDocMgrFocus\)[\s\S]*?goto\s+ExitError') {
   throw 'activation must fail when the focused document cannot establish its text-edit sink'
+}
+
+if ($dictManagementDialog -match 'WideCharToMultiByte\(CP_UTF8[\s\S]{0,160}selected_path' -or
+    $dictManagementDialog -match 'char\s+path\s*\[MAX_PATH\]' -or
+    $dictManagementDialog -notmatch 'const\s+std::string\s+path\s*=\s*wtou8\(selected_path\)') {
+  throw 'dictionary file-dialog paths must remain dynamically sized UTF-8 strings'
+}
+if ($switcherDialog -match 'WCHAR\s+parameters\s*\[MAX_PATH' -or
+    $switcherDialog -notmatch 'const\s+std::wstring\s+parameters' -or
+    $switcherDialog -notmatch 'parameters\.c_str\(\)') {
+  throw 'schema-installer command lines must not fall back to MAX_PATH storage'
 }
 
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.
