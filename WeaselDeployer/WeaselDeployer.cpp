@@ -11,17 +11,143 @@
 CAppModule _Module;
 
 namespace {
+constexpr wchar_t kInternalSyncWorkerOption[] = L"/internal-sync-worker";
+constexpr DWORD kSyncWorkerHardTimeoutMs = 15 * 60 * 1000;
+constexpr DWORD kSyncSupervisorGraceMs = 10 * 1000;
+constexpr DWORD kSyncTerminationWaitMs = 5 * 1000;
+
+DWORD WINAPI SyncWorkerWatchdogProc(LPVOID param) noexcept {
+  HANDLE cancel_event = static_cast<HANDLE>(param);
+  const DWORD wait_result =
+      WaitForSingleObject(cancel_event, kSyncWorkerHardTimeoutMs);
+  CloseHandle(cancel_event);
+
+  if (wait_result != WAIT_OBJECT_0) {
+    // The librime maintenance worker is not cancellable. Killing only this
+    // isolated helper makes the server's maintenance-owner exit callback the
+    // single authority that may resume service after the process is gone.
+    TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+  }
+  return 0;
+}
+
+HANDLE ArmSyncWorkerWatchdog() noexcept {
+  HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!cancel_event)
+    return nullptr;
+
+  HANDLE watchdog_event = nullptr;
+  if (!DuplicateHandle(GetCurrentProcess(), cancel_event, GetCurrentProcess(),
+                       &watchdog_event, SYNCHRONIZE, FALSE, 0)) {
+    CloseHandle(cancel_event);
+    return nullptr;
+  }
+
+  HANDLE thread = CreateThread(nullptr, 0, SyncWorkerWatchdogProc,
+                               watchdog_event, 0, nullptr);
+  if (!thread) {
+    CloseHandle(watchdog_event);
+    CloseHandle(cancel_event);
+    return nullptr;
+  }
+
+  CloseHandle(thread);
+  return cancel_event;
+}
+
 struct RuntimeCleanup {
   bool com_initialized = false;
   bool module_initialized = false;
+  HANDLE watchdog_cancel = nullptr;
 
   ~RuntimeCleanup() {
+    if (watchdog_cancel) {
+      SetEvent(watchdog_cancel);
+      CloseHandle(watchdog_cancel);
+    }
     if (module_initialized)
       _Module.Term();
     if (com_initialized)
       ::CoUninitialize();
   }
 };
+
+bool IsInternalSyncWorker(int argc, wchar_t* argv[]) {
+  return argc == 2 && _wcsicmp(argv[1], kInternalSyncWorkerOption) == 0;
+}
+
+std::wstring CurrentExecutablePath() {
+  constexpr DWORD kPathChars = 32768;
+  std::vector<wchar_t> buffer(kPathChars);
+  const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), kPathChars);
+  if (!length || length >= buffer.size())
+    return {};
+  return std::wstring(buffer.data(), length);
+}
+
+int RunIsolatedSyncWorker() {
+  const std::wstring executable = CurrentExecutablePath();
+  if (executable.empty()) {
+    LOG(ERROR) << "Could not resolve WeaselDeployer executable path.";
+    return 1;
+  }
+
+  std::wstring command_line =
+      L"\"" + executable + L"\" " + kInternalSyncWorkerOption;
+  std::vector<wchar_t> mutable_command(command_line.begin(),
+                                       command_line.end());
+  mutable_command.push_back(L'\0');
+
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(executable.c_str(), mutable_command.data(), nullptr,
+                      nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
+                      &startup, &process)) {
+    LOG(ERROR) << "Could not start isolated Rime sync worker, error: "
+               << GetLastError();
+    return 1;
+  }
+
+  CloseHandle(process.hThread);
+  const DWORD wait_result = WaitForSingleObject(
+      process.hProcess, kSyncWorkerHardTimeoutMs + kSyncSupervisorGraceMs);
+  if (wait_result == WAIT_OBJECT_0) {
+    DWORD exit_code = ERROR_GEN_FAILURE;
+    const bool got_exit_code =
+        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
+    CloseHandle(process.hProcess);
+    if (!got_exit_code) {
+      LOG(ERROR) << "Could not read isolated Rime sync worker exit code.";
+      return 1;
+    }
+    return exit_code == 0 ? 0 : 1;
+  }
+
+  if (wait_result == WAIT_TIMEOUT) {
+    LOG(ERROR) << "Isolated Rime sync worker exceeded the hard timeout.";
+  } else {
+    const DWORD wait_error = GetLastError();
+    LOG(ERROR) << "Waiting for isolated Rime sync worker failed, error: "
+               << wait_error;
+  }
+
+  // Fail closed on any supervisor wait anomaly. Do not resume maintenance
+  // here; only confirmed worker exit lets WeaselServer's owner-exit recovery
+  // decide whether it is safe to reinitialize Rime.
+  if (!TerminateProcess(process.hProcess, ERROR_TIMEOUT)) {
+    LOG(ERROR) << "Could not terminate failed Rime sync worker, error: "
+               << GetLastError();
+  }
+  const DWORD terminated =
+      WaitForSingleObject(process.hProcess, kSyncTerminationWaitMs);
+  if (terminated != WAIT_OBJECT_0) {
+    LOG(ERROR) << "Failed Rime sync worker did not exit promptly.";
+  }
+
+  CloseHandle(process.hProcess);
+  return 1;
+}
 }  // namespace
 
 static int Run(int argc, wchar_t* argv[]);
@@ -78,6 +204,16 @@ static void DetachGuiConsole() {
 }
 
 int wmain(int argc, wchar_t* argv[]) {
+  const bool internal_sync_worker = IsInternalSyncWorker(argc, argv);
+  RuntimeCleanup cleanup;
+  if (internal_sync_worker) {
+    cleanup.watchdog_cancel = ArmSyncWorkerWatchdog();
+    if (!cleanup.watchdog_cancel) {
+      LOG(ERROR) << "Could not arm isolated Rime sync watchdog.";
+      return 1;
+    }
+  }
+
   if (!IsDictionaryCli(argc, argv)) {
     // GUI entry points are launched from the tray or Explorer. Keep those
     // paths silent even though the executable now uses the console subsystem
@@ -92,7 +228,6 @@ int wmain(int argc, wchar_t* argv[]) {
   SetThreadUILanguage(langId);
   SetThreadLocale(langId);
 
-  RuntimeCleanup cleanup;
   HRESULT hRes = ::CoInitialize(NULL);
   if (FAILED(hRes)) {
     LOG(ERROR) << "CoInitialize failed: " << hRes;
@@ -115,6 +250,13 @@ int wmain(int argc, wchar_t* argv[]) {
   cleanup.module_initialized = true;
 
   CreateDirectory(WeaselUserDataPath().c_str(), NULL);
+
+  if (internal_sync_worker) {
+    // The supervising /sync process owns the deployer-wide singleton. The
+    // isolated worker intentionally skips that mutex but still owns the shared
+    // ServerLifecycleLock before touching local Rime data.
+    return Run(argc, argv);
+  }
 
   int ret = 0;
   HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
@@ -146,6 +288,13 @@ static int Run(int argc, wchar_t* argv[]) {
     return ShowHelp();
   }
 
+  if (args.size() == 1 && IsOption(args.front(), L"/sync")) {
+    // Do not initialize librime in the supervising process. All Rime work is
+    // isolated so a stuck std::async maintenance future cannot pin this
+    // process, the deployer singleton, or WeaselServer maintenance forever.
+    return RunIsolatedSyncWorker();
+  }
+
   Configurator configurator;
   configurator.Initialize();
 
@@ -162,7 +311,7 @@ static int Run(int argc, wchar_t* argv[]) {
         std::vector<std::wstring>(args.begin() + 1, args.end()));
   }
 
-  if (IsOption(args.front(), L"/sync") && args.size() == 1) {
+  if (args.size() == 1 && IsOption(args.front(), kInternalSyncWorkerOption)) {
     return configurator.SyncUserData();
   }
 

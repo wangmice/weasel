@@ -287,9 +287,8 @@ int Configurator::UpdateWorkspace(bool report_errors) {
       LOG(ERROR) << "Error deploying weasel.yaml.";
       retval = 1;
     }
-    // Even on failure, wait for maintenance work before the scoped releaser
-    // resumes WeaselServer while lifecycle ownership is still held.
-    rime->join_maintenance_thread();
+    // deploy() and deploy_config_file() are synchronous librime RunTask()
+    // calls; there is no asynchronous maintenance future to join here.
   }
   if (!releaser.Finish())
     retval = 1;
@@ -322,7 +321,6 @@ int Configurator::DictManagement() {
     }
     DictManagementDialog dlg;
     dlg.DoModal();
-    rime->join_maintenance_thread();
   }
   return releaser.Finish() ? 0 : 1;
 }
@@ -427,10 +425,8 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
     }
   }
 
-  // installation_update may schedule maintenance work. Preserve the local
-  // lifecycle rule: do not resume the server until all local librime work is
-  // complete.
-  rime->join_maintenance_thread();
+  // run_task() and the levers dictionary operations above are synchronous;
+  // do not add an unrelated unbounded maintenance join to this CLI path.
   if (!releaser.Finish())
     result = 1;
   return result;
@@ -464,8 +460,10 @@ int Configurator::SyncUserData() {
       LOG(ERROR) << "Error synching user data.";
       retval = 1;
     }
-    // 无论同步成败，等待可能仍在运行的维护任务结束后再唤醒服务；
-    // lifecycle ownership remains held through EndMaintenance.
+    // sync_user_data() is the one deployer operation here that intentionally
+    // starts librime's asynchronous maintenance worker. This method is invoked
+    // only by the isolated internal worker, whose process-level watchdog is
+    // the hard failure boundary for an unresponsive librime future.
     rime->join_maintenance_thread();
   }
   if (!releaser.Finish())
