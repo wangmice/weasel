@@ -459,6 +459,14 @@ int ServerImpl::Run() {
         session_router.ClearCurrentOwner();
       m_dispatchProcessOwner.reset();
     }
+
+    if (starting && lifecycle_admitted) {
+      // Lifecycle ownership only linearizes START_SESSION admission and the
+      // committed session state under g_api_mutex. The synchronous response
+      // write is transport work and may block on a client that is not reading;
+      // never extend the cross-process lifecycle critical section across it.
+      session_lifecycle.Unlock();
+    }
     resp(result);
   };
   // Capture the listener by value: a stack reference would dangle as soon

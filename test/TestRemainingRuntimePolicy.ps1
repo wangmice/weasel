@@ -79,6 +79,14 @@ if ($listenerBody -notmatch 'ServerLifecycleLock\s+session_lifecycle' -or
   throw 'server command admission must enforce lifecycle-before-api lock order and monotonic lifecycle transitions'
 }
 
+$lifecycleUnlock = $listenerBody.IndexOf('session_lifecycle.Unlock()')
+$responseWrite = $listenerBody.IndexOf('resp(result)')
+if ($lifecycleUnlock -lt 0 -or $responseWrite -lt 0 -or
+    $lifecycleUnlock -gt $responseWrite -or
+    $listenerBody -notmatch 'starting\s*&&\s*lifecycle_admitted[\s\S]*?session_lifecycle\.Unlock\(\)') {
+  throw 'START_SESSION lifecycle ownership must end after admission commit and before the synchronous response write'
+}
+
 if ($ipc -notmatch 'GetServerLifecycleMutexName\(\)' -or
     $ipc -notmatch 'GetServerRuntimeStateName\(\)' -or
     $ipc -notmatch 'enum\s+class\s+ServerLifecycle' -or
