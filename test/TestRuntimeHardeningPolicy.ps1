@@ -211,6 +211,18 @@ if (-not $comboRead.Success -or
   throw 'FontSettingDialog combo-box reads must size storage from CB_GETLBTEXTLEN'
 }
 
+$threadFocusUninit = [regex]::Match(
+  $tsf,
+  'void\s+WeaselTSF::_UninitThreadFocusSink\(\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $threadFocusUninit.Success -or
+    $threadFocusUninit.Groups['body'].Value -notmatch '_dwThreadFocusSinkCookie\s*==\s*TF_INVALID_COOKIE' -or
+    $threadFocusUninit.Groups['body'].Value -notmatch 'const\s+DWORD\s+cookie\s*=\s*_dwThreadFocusSinkCookie' -or
+    $threadFocusUninit.Groups['body'].Value -notmatch '_dwThreadFocusSinkCookie\s*=\s*TF_INVALID_COOKIE' -or
+    $threadFocusUninit.Groups['body'].Value -notmatch 'UnadviseSink\(cookie\)') {
+  throw 'thread-focus sink cleanup must invalidate the stored cookie before touching a new source'
+}
+
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.
 if ($serverMain -match 'WeaselServerApp::check_update\(\)' -or
     $serverMain -notmatch 'app\.Run\(check_updates\)') {

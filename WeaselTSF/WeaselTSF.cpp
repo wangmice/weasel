@@ -217,21 +217,30 @@ STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
   return S_OK;
 }
 BOOL WeaselTSF::_InitThreadFocusSink() {
+  _dwThreadFocusSinkCookie = TF_INVALID_COOKIE;
+
   com_ptr<ITfSource> pSource;
   if (FAILED(_pThreadMgr->QueryInterface(&pSource)))
     return FALSE;
   if (FAILED(pSource->AdviseSink(IID_ITfThreadFocusSink,
                                  (ITfThreadFocusSink*)this,
-                                 &_dwThreadFocusSinkCookie)))
+                                 &_dwThreadFocusSinkCookie))) {
+    _dwThreadFocusSinkCookie = TF_INVALID_COOKIE;
     return FALSE;
+  }
   return TRUE;
 }
 void WeaselTSF::_UninitThreadFocusSink() {
+  if (_dwThreadFocusSinkCookie == TF_INVALID_COOKIE)
+    return;
+
+  const DWORD cookie = _dwThreadFocusSinkCookie;
+  _dwThreadFocusSinkCookie = TF_INVALID_COOKIE;
+
   com_ptr<ITfSource> pSource;
-  if (FAILED(_pThreadMgr->QueryInterface(&pSource)))
+  if (!_pThreadMgr || FAILED(_pThreadMgr->QueryInterface(&pSource)))
     return;
-  if (FAILED(pSource->UnadviseSink(_dwThreadFocusSinkCookie)))
-    return;
+  pSource->UnadviseSink(cookie);
 }
 
 STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
