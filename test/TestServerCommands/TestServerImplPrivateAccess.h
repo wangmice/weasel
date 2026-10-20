@@ -19,8 +19,8 @@ class ServerImplTestAccess {
     server.m_runtimeState = state;
   }
 
-  static void SetDispatchProcessOwner(
-      ServerImpl& server, std::optional<ClientProcessToken> owner) {
+  static void SetDispatchProcessOwner(ServerImpl& server,
+                                      std::optional<ClientProcessToken> owner) {
     server.m_dispatchProcessOwner = owner;
   }
 
