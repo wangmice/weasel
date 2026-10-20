@@ -51,7 +51,8 @@ if ($serverCommands -notmatch 'test_server_recovery_coordinator_state_machine' -
     $serverCommands -notmatch 'winners\s*==\s*1' -or
     $serverCommands -notmatch 'Backoff rejects early workers' -or
     $serverCommands -notmatch 'new recovery cannot bypass a published Backoff' -or
-    $serverCommands -notmatch 'stale recovery cannot authorize destructive work after foreground health') {
+    $serverCommands -notmatch 'check\(!coordinator\.RunIfHealthUnchanged\(revision,' -or
+    $serverCommands -notmatch '!destructive_action_ran') {
   throw 'TestServerCommands must dynamically exercise coordinator ownership and backoff semantics'
 }
 if ($rimeHandler -notmatch 'RimeWithWeaselHandler::AddSession[\s\S]*?if\s*\(m_disabled\)\s*return\s+0;' -or
