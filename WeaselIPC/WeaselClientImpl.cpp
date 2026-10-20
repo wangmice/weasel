@@ -40,15 +40,13 @@ DWORD RemainingTransactionTime(ULONGLONG deadline) {
 }
 
 bool ServerRuntimeIsReady() noexcept {
-  HANDLE mapping =
-      OpenFileMappingW(FILE_MAP_READ, FALSE,
-                       GetServerRuntimeStateName().c_str());
+  HANDLE mapping = OpenFileMappingW(
+      FILE_MAP_READ, FALSE, GetServerRuntimeStateName().c_str());
   if (!mapping)
     return false;
 
-  const auto* shared =
-      static_cast<const ServerRuntimeState*>(MapViewOfFile(
-          mapping, FILE_MAP_READ, 0, 0, sizeof(ServerRuntimeState)));
+  const auto* shared = static_cast<const ServerRuntimeState*>(MapViewOfFile(
+      mapping, FILE_MAP_READ, 0, 0, sizeof(ServerRuntimeState)));
   if (!shared) {
     CloseHandle(mapping);
     return false;
