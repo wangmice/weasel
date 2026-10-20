@@ -173,8 +173,8 @@ class Client {
   void EndSession();
   // 進入維護模式；仅当服务端已完成状态切换并返回确认时为 true
   bool StartMaintenance();
-  // 退出維護模式
-  void EndMaintenance();
+  // 退出維護模式；仅当服务端完成恢复并重新发布 Ready 时为 true
+  bool EndMaintenance();
   // 测试当前逻辑会话
   bool Echo();
   // 仅测试服务端 IPC 往返，不创建/销毁 Rime 会话，也不改变活动会话

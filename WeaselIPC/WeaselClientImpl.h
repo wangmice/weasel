@@ -24,7 +24,7 @@ class ClientImpl {
   void StartSession(DWORD timeout_ms);
   void EndSession();
   bool StartMaintenance();
-  void EndMaintenance();
+  bool EndMaintenance();
   bool Echo();
   bool ProbeServer(DWORD timeout_ms);
   KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);

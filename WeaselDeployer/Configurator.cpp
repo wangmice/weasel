@@ -37,10 +37,29 @@ class MaintenanceReleaser {
   MaintenanceReleaser(const MaintenanceReleaser&) = delete;
   MaintenanceReleaser& operator=(const MaintenanceReleaser&) = delete;
   ~MaintenanceReleaser() {
-    if (active_ && client_.Connect()) {
-      LOG(INFO) << "Resuming service.";
-      client_.EndMaintenance();
+    if (active_)
+      Finish();
+  }
+
+  bool Finish() {
+    if (!active_)
+      return true;
+
+    // Consume the local obligation before the IPC attempt. If the request is
+    // delivered but its reply is lost, blindly retrying from the destructor
+    // would turn a successful resume into a second stale END_MAINTENANCE.
+    active_ = false;
+    if (!client_.Connect()) {
+      LOG(ERROR) << "Could not reconnect to WeaselServer to resume service.";
+      return false;
     }
+
+    LOG(INFO) << "Resuming service.";
+    if (!client_.EndMaintenance()) {
+      LOG(ERROR) << "WeaselServer did not confirm maintenance completion.";
+      return false;
+    }
+    return true;
   }
 
  private:
@@ -221,8 +240,8 @@ int Configurator::UpdateWorkspace(bool report_errors) {
   }
 
   int retval = 0;
+  MaintenanceReleaser releaser(client, maintenance_started);
   {
-    MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     // initialize default config, preset schemas
     if (!rime->deploy()) {
@@ -238,6 +257,8 @@ int Configurator::UpdateWorkspace(bool report_errors) {
     // resumes WeaselServer while lifecycle ownership is still held.
     rime->join_maintenance_thread();
   }
+  if (!releaser.Finish())
+    retval = 1;
   return retval;
 }
 
@@ -259,8 +280,8 @@ int Configurator::DictManagement() {
     return 1;
   }
 
+  MaintenanceReleaser releaser(client, maintenance_started);
   {
-    MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     if (RIME_API_AVAILABLE(rime, run_task)) {
       rime->run_task("installation_update");  // setup user data sync dir
@@ -269,7 +290,7 @@ int Configurator::DictManagement() {
     dlg.DoModal();
     rime->join_maintenance_thread();
   }
-  return 0;
+  return releaser.Finish() ? 0 : 1;
 }
 
 int Configurator::SyncUserData() {
@@ -291,10 +312,10 @@ int Configurator::SyncUserData() {
   }
 
   int retval = 0;
+  MaintenanceReleaser releaser(client, maintenance_started);
   {
-    // 失败或异常退出本作用域时同样恢复服务端；EndMaintenance 由析构执行，
+    // 异常退出本作用域时析构仍负责兜底；正常路径显式 Finish 并检查 ACK。
     // lifecycle_lock stays owned until that resume completes.
-    MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     if (!rime->sync_user_data()) {
       LOG(ERROR) << "Error synching user data.";
@@ -304,5 +325,7 @@ int Configurator::SyncUserData() {
     // lifecycle ownership remains held through EndMaintenance.
     rime->join_maintenance_thread();
   }
+  if (!releaser.Finish())
+    retval = 1;
   return retval;
 }

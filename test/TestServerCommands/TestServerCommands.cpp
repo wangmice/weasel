@@ -377,8 +377,8 @@ static void test_server_runtime_state_tracks_maintenance() {
         "foreign process generation cannot release maintenance");
 
   weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
-  server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
-  check(!handler.maintaining &&
+  check(server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0) == 1 &&
+            !handler.maintaining &&
             runtime.lifecycle ==
                 static_cast<LONG>(weasel::ServerLifecycle::Ready) &&
             !weasel::ServerImplTestAccess::MaintenanceOwner(server),
@@ -522,7 +522,8 @@ static void test_client_lifecycle_timeout_budgets() {
   check(client.StartMaintenance(),
         "lifecycle: maintenance may take longer than the input timeout");
   ULONGLONG started = GetTickCount64();
-  client.EndMaintenance();
+  check(client.EndMaintenance(),
+        "lifecycle: maintenance resume returns an acknowledgement");
   check(GetTickCount64() - started >= 1000 &&
             weasel::ClientTestAccess::Channel(client).Connected(),
         "lifecycle: resume also uses the longer maintenance budget");
@@ -625,7 +626,8 @@ static void test_maintenance_session_recovery() {
         "deployer receives maintenance acknowledgement after transition");
   check(handler.maintaining,
         "maintenance acknowledgement is sent only after handler transition");
-  deployer.EndMaintenance();
+  check(deployer.EndMaintenance(),
+        "deployer receives end-maintenance acknowledgement");
   check(!handler.maintaining, "end-maintenance leaves the handler active");
   check(tsf_client.IsSessionActive(),
         "TSF keeps the stale cached session after maintenance");

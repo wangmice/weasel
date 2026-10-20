@@ -8,6 +8,7 @@ $pipeServerHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeServe
 $ipcHeader = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
 $clientImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
 $serverMain = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServer.cpp') -Raw
+$serverApp = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServerApp.cpp') -Raw
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
@@ -112,6 +113,14 @@ if ($updateBody -notmatch 'return\s+retval\s*;') {
 if ($configurator -notmatch 'enum\s+class\s+ConfigureResult\s*\{\s*Cancelled\s*,\s*Unchanged\s*,\s*Saved\s*,\s*Failed\s*\}') {
   throw 'deployer settings steps must distinguish cancelled, unchanged, saved, and failed outcomes'
 }
+if ($configurator -notmatch 'bool\s+Finish\(\)' -or
+    $configurator -notmatch 'client_\.EndMaintenance\(\)' -or
+    $configurator -notmatch '!releaser\.Finish\(\)' -or
+    $clientImpl -notmatch 'bool\s+ClientImpl::EndMaintenance\(\)' -or
+    $clientImpl -notmatch 'ServerRuntimeIsReady\(\)' -or
+    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle[\s\S]*?\?\s*1\s*:\s*0') {
+  throw 'deployer maintenance completion must be acknowledged, compatibility-checked, and propagated'
+}
 
 if ($rimeWithWeasel -notmatch 'void\s+RimeWithWeaselHandler::_Initialize\(bool\s+detect_deployer\)' -or
     $rimeWithWeasel -notmatch 'm_disabled\s*=\s*true[\s\S]*?detect_deployer\s*&&\s*_IsDeployerRunning\(\)') {
@@ -179,6 +188,29 @@ if ($runBody -notmatch 'return\s+\(config_failed\s*\|\|\s*deploy_result\s*!=\s*0
   throw 'Configurator::Run must return failure when either configuration or deployment failed'
 }
 
+# WinSparkle setup, manual update checks, and cleanup must share one lifetime.
+if ($serverMain -match 'WeaselServerApp::check_update\(\)' -or
+    $serverMain -notmatch 'app\.Run\(check_updates\)') {
+  throw '/update must be dispatched through the initialized WeaselServerApp lifetime'
+}
+$serverRun = [regex]::Match(
+  $serverApp,
+  'int\s+WeaselServerApp::Run\(bool\s+check_updates\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $serverRun.Success) {
+  throw 'unable to locate WeaselServerApp::Run(bool)'
+}
+$serverRunBody = $serverRun.Groups['body'].Value
+$feedSetup = $serverRunBody.IndexOf('win_sparkle_set_appcast_url(update_feed_url())')
+$initSparkle = $serverRunBody.IndexOf('win_sparkle_init()')
+$manualCheck = $serverRunBody.IndexOf('check_update()', $initSparkle)
+if ($feedSetup -lt 0 -or $initSparkle -le $feedSetup -or
+    $manualCheck -le $initSparkle -or
+    $serverApp -notmatch 'class\s+WinSparkleScope' -or
+    $serverApp -notmatch '~WinSparkleScope\(\)[\s\S]*?win_sparkle_cleanup\(\)') {
+  throw 'WinSparkle feed/setup must precede init, manual checks must follow init, and cleanup must be scoped'
+}
+
 # A restart must wait for the old process, not merely for its pipe to vanish:
 # ServerImpl keeps the singleton mutex until process teardown completes.
 $restartStart = $serverMain.IndexOf('// Retain the existing process for both /quit and a normal restart.')
@@ -187,7 +219,7 @@ if ($restartStart -lt 0 -or $restartEnd -le $restartStart) {
   throw 'unable to isolate WeaselServer restart flow'
 }
 $restartFlow = $serverMain.Substring($restartStart, $restartEnd - $restartStart)
-$openProcess = $restartFlow.IndexOf('OpenRunningServerProcess(running_server)')
+$openProcess = $restartFlow.IndexOf('OpenRunningServerProcess(running_server, running_window)')
 $shutdown = $restartFlow.IndexOf('client.ShutdownServer()')
 $disconnect = $restartFlow.IndexOf('client.Disconnect()', $shutdown)
 $waitExit = $restartFlow.IndexOf('WaitForRunningServerExit(running_server)', $disconnect)
@@ -197,6 +229,14 @@ if ($openProcess -lt 0 -or $shutdown -lt 0 -or $disconnect -lt 0 -or $waitExit -
 }
 if ($restartFlow -match 'if\s*\(quit\s*&&\s*!OpenRunningServerProcess') {
   throw 'old-process tracking must apply to normal restart as well as /quit'
+}
+if ($serverMain -match 'FindWindowW\(nullptr,\s*WEASEL_IPC_WINDOW\)' -or
+    $serverMain -notmatch 'ReadServerRuntimeState\(' -or
+    $serverMain -notmatch 'state\.process_creation_time' -or
+    $serverMain -notmatch 'ProcessIdToSessionId\(' -or
+    $serverMain -notmatch 'QueryFullProcessImageNameW\(' -or
+    $serverMain -notmatch 'FindServerWindowForProcess\(') {
+  throw 'server restart target must be authenticated by runtime generation, session, and image before using its window'
 }
 if ($restartFlow -match 'while\s*\(client\.Connect\(\)') {
   throw 'restart must not treat pipe disappearance as proof that the old server process exited'
