@@ -15,6 +15,7 @@ $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
+$deployerMain = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\WeaselDeployer.cpp') -Raw
 $fontSettingsDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\FontSettingDialog.cpp') -Raw
 $dictManagementDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\DictManagementDialog.cpp') -Raw
 $switcherDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\SwitcherSettingsDialog.cpp') -Raw
@@ -250,6 +251,15 @@ if ($switcherDialog -match 'WCHAR\s+parameters\s*\[MAX_PATH' -or
     $switcherDialog -notmatch 'const\s+std::wstring\s+parameters' -or
     $switcherDialog -notmatch 'parameters\.c_str\(\)') {
   throw 'schema-installer command lines must not fall back to MAX_PATH storage'
+}
+
+if ($deployerMain -notmatch 'struct\s+RuntimeCleanup' -or
+    $deployerMain -notmatch 'if\s*\(FAILED\(hRes\)\)[\s\S]*?CoInitialize failed' -or
+    $deployerMain -notmatch 'cleanup\.com_initialized\s*=\s*true' -or
+    $deployerMain -notmatch 'ATL module initialization failed' -or
+    $deployerMain -notmatch 'cleanup\.module_initialized\s*=\s*true' -or
+    $deployerMain -match 'ATLASSERT\(SUCCEEDED\(hRes\)\)') {
+  throw 'WeaselDeployer must handle COM/ATL initialization failures at runtime with scoped cleanup'
 }
 
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.

@@ -9,6 +9,20 @@
 
 CAppModule _Module;
 
+namespace {
+struct RuntimeCleanup {
+  bool com_initialized = false;
+  bool module_initialized = false;
+
+  ~RuntimeCleanup() {
+    if (module_initialized)
+      _Module.Term();
+    if (com_initialized)
+      ::CoUninitialize();
+  }
+};
+}  // namespace
+
 static int Run(LPTSTR lpCmdLine);
 
 int APIENTRY _tWinMain(HINSTANCE hInstance,
@@ -22,12 +36,13 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
   SetThreadUILanguage(langId);
   SetThreadLocale(langId);
 
+  RuntimeCleanup cleanup;
   HRESULT hRes = ::CoInitialize(NULL);
-  // If you are running on NT 4.0 or higher you can use the following call
-  // instead to make the EXE free threaded. This means that calls come in on a
-  // random RPC thread.
-  // HRESULT hRes = ::CoInitializeEx(NULL, COINIT_MULTITHREADED);
-  ATLASSERT(SUCCEEDED(hRes));
+  if (FAILED(hRes)) {
+    LOG(ERROR) << "CoInitialize failed: " << hRes;
+    return 1;
+  }
+  cleanup.com_initialized = true;
 
   // this resolves ATL window thunking problem when Microsoft Layer for Unicode
   // (MSLU) is used
@@ -37,7 +52,11 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
       ICC_BAR_CLASSES);  // add flags to support other controls
 
   hRes = _Module.Init(NULL, hInstance);
-  ATLASSERT(SUCCEEDED(hRes));
+  if (FAILED(hRes)) {
+    LOG(ERROR) << "ATL module initialization failed: " << hRes;
+    return 1;
+  }
+  cleanup.module_initialized = true;
 
   CreateDirectory(WeaselUserDataPath().c_str(), NULL);
 
@@ -57,9 +76,6 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
   if (hMutex) {
     CloseHandle(hMutex);
   }
-  _Module.Term();
-  ::CoUninitialize();
-
   return ret;
 }
 
