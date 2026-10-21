@@ -114,6 +114,9 @@ if ($forwardFlow -notmatch 'RunTsfUninstallForwardRecovery\(ops\)' -or
     $forwardFlow -notmatch 'process_tsf_registration_files\(L"\.dll",\s*false,\s*profile,\s*silent,\s*true,\s*true\)') {
   throw 'forward recovery must retry every existing architecture and tolerate a missing primary DLL'
 }
+if ($imeSetup -notmatch 'allow_missing_primary[\s\S]*?unregister_text_service_without_dll\(\)[\s\S]*?return\s+0;') {
+  throw 'forward recovery must retain best-effort direct TSF unregister when the primary DLL is missing'
+}
 if ($uninstallTransaction -notmatch 'RunTsfUninstallForwardRecovery[\s\S]*?remove_layouts_best_effort\(\)[\s\S]*?unregister_services\(\)[\s\S]*?mark_file_cleanup\(\)') {
   throw 'forward recovery must converge from layout cleanup through unregister to FileCleanup'
 }

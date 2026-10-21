@@ -968,10 +968,15 @@ static int process_tsf_registration_file(const std::wstring& path,
 
     if (!register_ime && primary) {
       if (allow_missing_primary) {
-        // Cross-process recovery cannot distinguish "primary DLL was already
-        // unregistered and later removed" from an older damaged install.
-        // Missing is therefore an idempotent success here; final registration
-        // cleanup removes any exact Weasel registry residue.
+        // Preserve the old damaged-install recovery path when possible, but do
+        // not let an already-absent TSF registration make cross-process retry
+        // fail forever. Final exact-key cleanup runs after uninstall succeeds.
+        const HRESULT hr = unregister_text_service_without_dll();
+        if (FAILED(hr)) {
+          LOG(WARNING) << "Direct TSF unregister for a missing primary DLL "
+                          "did not succeed during forward recovery, hr: "
+                       << hr;
+        }
         return 0;
       }
 
