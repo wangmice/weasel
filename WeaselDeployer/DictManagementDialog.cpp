@@ -75,6 +75,12 @@ DictManagementDialog::DictManagementDialog() {
 DictManagementDialog::~DictManagementDialog() {}
 
 void DictManagementDialog::Populate() {
+  RimeOperationWatchdog operation_watchdog;
+  if (!operation_watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm dictionary enumeration watchdog.";
+    return;
+  }
+
   user_dict_list_.ResetContent();
   RimeUserDictIterator iter = {0};
   api_->user_dict_iterator_init(&iter);
@@ -137,6 +143,13 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
                MB_OK | MB_ICONINFORMATION);
     return 0;
   }
+  RimeOperationWatchdog operation_watchdog;
+  if (!operation_watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm dictionary backup watchdog.";
+    MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+    return 0;
+  }
+
   std::wstring path;
   {
     char dir[MAX_PATH] = {0};
@@ -186,7 +199,18 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, NULL, L"snapshot");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
-    if (!api_->restore_user_dict(path.c_str())) {
+    bool restored = false;
+    {
+      RimeOperationWatchdog operation_watchdog;
+      if (!operation_watchdog.Arm()) {
+        LOG(ERROR) << "Could not arm dictionary restore watchdog.";
+        MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+        return 0;
+      }
+      restored = api_->restore_user_dict(path.c_str());
+    }
+
+    if (!restored) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
       Populate();  // 词典内容已变，重载列表反映恢复结果
@@ -227,7 +251,16 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
     std::string dict_name_str = wtou8(dict_name);
-    int result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
+    int result = -1;
+    {
+      RimeOperationWatchdog operation_watchdog;
+      if (!operation_watchdog.Arm()) {
+        LOG(ERROR) << "Could not arm dictionary export watchdog.";
+        MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+        return 0;
+      }
+      result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
+    }
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else if (_waccess(selected_path.c_str(), 0) != 0) {
@@ -272,7 +305,17 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
-    int result = api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
+    int result = -1;
+    {
+      RimeOperationWatchdog operation_watchdog;
+      if (!operation_watchdog.Arm()) {
+        LOG(ERROR) << "Could not arm dictionary import watchdog.";
+        MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+        return 0;
+      }
+      result =
+          api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
+    }
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {

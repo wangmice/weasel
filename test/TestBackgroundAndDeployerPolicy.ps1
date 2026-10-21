@@ -139,6 +139,10 @@ if ($deployer -notmatch 'RimeOperationWatchdog\s+initialization_watchdog[\s\S]*?
     $configurator -notmatch 'int\s+Configurator::UpdateWorkspace[\s\S]*?RimeOperationWatchdog\s+deploy_watchdog[\s\S]*?deploy_watchdog\.Arm\(\)[\s\S]*?ServerLifecycleLock\s+lifecycle_lock') {
   throw 'Rime initialization and workspace deployment must each have an operation-scoped hard watchdog'
 }
+if ($configurator -notmatch 'int\s+Configurator::DictManagement\(\)[\s\S]*?RimeOperationWatchdog\s+setup_watchdog[\s\S]*?setup_watchdog\.Arm\(\)[\s\S]*?run_task\("installation_update"\)' -or
+    $configurator -notmatch 'DictManagement\(const\s+std::vector<std::wstring>&\s+args\)[\s\S]*?RimeOperationWatchdog\s+dict_watchdog[\s\S]*?dict_watchdog\.Arm\(\)[\s\S]*?ServerLifecycleLock\s+lifecycle_lock') {
+  throw 'GUI dictionary setup and CLI dictionary work must be bounded without timing the GUI dialog lifetime'
+}
 
 if ($configurator -notmatch 'ServerSingletonPresent\(\)[\s\S]*?GetServerInstanceName\(\)[\s\S]*?GetLegacyServerInstanceName\(\)' -or
     $configurator -notmatch 'if\s*\(!client\.Connect\(\)\)[\s\S]*?ServerSingletonPresent\(\)[\s\S]*?return false;[\s\S]*?return true;') {

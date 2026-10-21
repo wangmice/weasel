@@ -252,6 +252,10 @@ if ($dictManagementDialog -match 'WideCharToMultiByte\(CP_UTF8[\s\S]{0,160}selec
     $dictManagementDialog -notmatch 'const\s+std::string\s+path\s*=\s*wtou8\(selected_path\)') {
   throw 'dictionary file-dialog paths must remain dynamically sized UTF-8 strings'
 }
+if (([regex]::Matches($dictManagementDialog, 'RimeOperationWatchdog\s+operation_watchdog')).Count -ne 5 -or
+    ([regex]::Matches($dictManagementDialog, 'operation_watchdog\.Arm\(\)')).Count -ne 5) {
+  throw 'dictionary enumeration backup restore export and import must each have operation-scoped hard watchdogs'
+}
 if ($switcherDialog -match 'WCHAR\s+parameters\s*\[MAX_PATH' -or
     $switcherDialog -notmatch 'const\s+std::wstring\s+parameters' -or
     $switcherDialog -notmatch 'parameters\.c_str\(\)') {
