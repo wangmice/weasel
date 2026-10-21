@@ -318,9 +318,17 @@ LRESULT ServerImpl::OnServiceNotifyMessage(UINT uMsg,
 DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
                             DWORD wParam,
                             DWORD lParam) {
+  const UINT command = LOWORD(wParam);
+  // Run() already holds g_api_mutex for every pipe command. The quit menu
+  // handler calls Stop(), which would try to acquire the same non-recursive
+  // mutex again on this worker thread. Use the lock-held stop helper directly.
+  if (command == ID_WEASELTRAY_QUIT) {
+    _RequestStopUnderApiLock();
+    return 1;
+  }
+
   BOOL handled = TRUE;
-  // Run() already holds g_api_mutex for every pipe command.
-  _HandleCommand(LOWORD(wParam), lParam, handled);
+  _HandleCommand(command, lParam, handled);
   return handled;
 }
 
