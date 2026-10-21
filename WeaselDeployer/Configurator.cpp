@@ -253,6 +253,12 @@ int Configurator::Run(bool installing) {
 }
 
 int Configurator::UpdateWorkspace(bool report_errors) {
+  RimeOperationWatchdog deploy_watchdog;
+  if (!deploy_watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm Rime workspace deployment watchdog.";
+    return 1;
+  }
+
   weasel::ServerLifecycleLock lifecycle_lock;
   if (!lifecycle_lock.Acquire(0)) {
     LOG(WARNING) << "another server lifecycle operation is running; aborting "

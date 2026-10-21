@@ -12,59 +12,32 @@ CAppModule _Module;
 
 namespace {
 constexpr wchar_t kInternalSyncWorkerOption[] = L"/internal-sync-worker";
-constexpr DWORD kSyncWorkerHardTimeoutMs = 15 * 60 * 1000;
+constexpr DWORD kRimeOperationHardTimeoutMs = 15 * 60 * 1000;
 constexpr DWORD kSyncSupervisorGraceMs = 10 * 1000;
 constexpr DWORD kSyncTerminationWaitMs = 5 * 1000;
 
-DWORD WINAPI SyncWorkerWatchdogProc(LPVOID param) noexcept {
+DWORD WINAPI RimeOperationWatchdogProc(LPVOID param) noexcept {
   HANDLE cancel_event = static_cast<HANDLE>(param);
   const DWORD wait_result =
-      WaitForSingleObject(cancel_event, kSyncWorkerHardTimeoutMs);
+      WaitForSingleObject(cancel_event, kRimeOperationHardTimeoutMs);
   CloseHandle(cancel_event);
 
   if (wait_result != WAIT_OBJECT_0) {
-    // The librime maintenance worker is not cancellable. Killing only this
-    // isolated helper makes the server's maintenance-owner exit callback the
-    // single authority that may resume service after the process is gone.
+    // librime deployment work is not cancellable. Once the hard deadline
+    // expires, process exit is the only boundary that can prove local Rime
+    // work has stopped before WeaselServer is allowed to recover maintenance.
     TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
   }
   return 0;
 }
 
-HANDLE ArmSyncWorkerWatchdog() noexcept {
-  HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!cancel_event)
-    return nullptr;
-
-  HANDLE watchdog_event = nullptr;
-  if (!DuplicateHandle(GetCurrentProcess(), cancel_event, GetCurrentProcess(),
-                       &watchdog_event, SYNCHRONIZE, FALSE, 0)) {
-    CloseHandle(cancel_event);
-    return nullptr;
-  }
-
-  HANDLE thread = CreateThread(nullptr, 0, SyncWorkerWatchdogProc,
-                               watchdog_event, 0, nullptr);
-  if (!thread) {
-    CloseHandle(watchdog_event);
-    CloseHandle(cancel_event);
-    return nullptr;
-  }
-
-  CloseHandle(thread);
-  return cancel_event;
-}
-
 struct RuntimeCleanup {
   bool com_initialized = false;
   bool module_initialized = false;
-  HANDLE watchdog_cancel = nullptr;
+  RimeOperationWatchdog watchdog;
 
   ~RuntimeCleanup() {
-    if (watchdog_cancel) {
-      SetEvent(watchdog_cancel);
-      CloseHandle(watchdog_cancel);
-    }
+    watchdog.Disarm();
     if (module_initialized)
       _Module.Term();
     if (com_initialized)
@@ -74,10 +47,6 @@ struct RuntimeCleanup {
 
 bool IsInternalSyncWorker(int argc, wchar_t* argv[]) {
   return argc == 2 && _wcsicmp(argv[1], kInternalSyncWorkerOption) == 0;
-}
-
-bool IsBoundedWorkspaceDeploy(int argc, wchar_t* argv[]) {
-  return argc == 2 && _wcsicmp(argv[1], L"/deploy") == 0;
 }
 
 std::wstring CurrentExecutablePath() {
@@ -115,7 +84,7 @@ int RunIsolatedSyncWorker() {
 
   CloseHandle(process.hThread);
   const DWORD wait_result = WaitForSingleObject(
-      process.hProcess, kSyncWorkerHardTimeoutMs + kSyncSupervisorGraceMs);
+      process.hProcess, kRimeOperationHardTimeoutMs + kSyncSupervisorGraceMs);
   if (wait_result == WAIT_OBJECT_0) {
     DWORD exit_code = ERROR_GEN_FAILURE;
     const bool got_exit_code =
@@ -153,6 +122,46 @@ int RunIsolatedSyncWorker() {
   return 1;
 }
 }  // namespace
+
+RimeOperationWatchdog::~RimeOperationWatchdog() {
+  Disarm();
+}
+
+bool RimeOperationWatchdog::Arm() noexcept {
+  if (cancel_event_)
+    return true;
+
+  HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!cancel_event)
+    return false;
+
+  HANDLE watchdog_event = nullptr;
+  if (!DuplicateHandle(GetCurrentProcess(), cancel_event, GetCurrentProcess(),
+                       &watchdog_event, SYNCHRONIZE, FALSE, 0)) {
+    CloseHandle(cancel_event);
+    return false;
+  }
+
+  HANDLE thread = CreateThread(nullptr, 0, RimeOperationWatchdogProc,
+                               watchdog_event, 0, nullptr);
+  if (!thread) {
+    CloseHandle(watchdog_event);
+    CloseHandle(cancel_event);
+    return false;
+  }
+
+  CloseHandle(thread);
+  cancel_event_ = cancel_event;
+  return true;
+}
+
+void RimeOperationWatchdog::Disarm() noexcept {
+  if (!cancel_event_)
+    return;
+  SetEvent(cancel_event_);
+  CloseHandle(cancel_event_);
+  cancel_event_ = nullptr;
+}
 
 static int Run(int argc, wchar_t* argv[]);
 
@@ -209,14 +218,10 @@ static void DetachGuiConsole() {
 
 int wmain(int argc, wchar_t* argv[]) {
   const bool internal_sync_worker = IsInternalSyncWorker(argc, argv);
-  const bool bounded_workspace_deploy = IsBoundedWorkspaceDeploy(argc, argv);
   RuntimeCleanup cleanup;
-  if (internal_sync_worker || bounded_workspace_deploy) {
-    cleanup.watchdog_cancel = ArmSyncWorkerWatchdog();
-    if (!cleanup.watchdog_cancel) {
-      LOG(ERROR) << "Could not arm Rime maintenance watchdog.";
-      return 1;
-    }
+  if (internal_sync_worker && !cleanup.watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm Rime maintenance watchdog.";
+    return 1;
   }
 
   if (!IsDictionaryCli(argc, argv)) {
@@ -301,7 +306,14 @@ static int Run(int argc, wchar_t* argv[]) {
   }
 
   Configurator configurator;
-  configurator.Initialize();
+  {
+    RimeOperationWatchdog initialization_watchdog;
+    if (!initialization_watchdog.Arm()) {
+      LOG(ERROR) << "Could not arm Rime initialization watchdog.";
+      return 1;
+    }
+    configurator.Initialize();
+  }
 
   if (args.empty()) {
     return configurator.Run(false);
