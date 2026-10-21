@@ -36,6 +36,61 @@ if ($serverImpl -notmatch 'kServerStartupLifecycleWaitMs\s*=\s*2000' -or
     $serverImpl -match 'm_startupLifecycleLock\.Acquire\(INFINITE') {
   throw 'server startup lifecycle wait must remain bounded'
 }
+
+if ($ipc -notmatch 'kServerLifecycleTickMarker\s*=\s*0x80000000u' -or
+    $ipc -notmatch 'ServerLifecycleElapsedAtLeast\s*\(' -or
+    $serverImpl -notmatch '_SetRuntimeLifecycle[\s\S]*?EncodeServerLifecycleTick\(GetTickCount\(\)\)[\s\S]*?InterlockedExchange' -or
+    $serverImpl -notmatch '_TryTransitionRuntimeLifecycle[\s\S]*?EncodeServerLifecycleTick\(GetTickCount\(\)\)[\s\S]*?InterlockedCompareExchange') {
+  throw 'server runtime state must publish a backward-compatible monotonic lifecycle-start tick before lifecycle changes'
+}
+if ($tsf -notmatch 'kServerNonReadyHardTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000' -or
+    $tsf -notmatch 'NonReadyLifecycleHardTimeoutExpired\s*\(') {
+  throw 'non-Ready server recovery must retain the conservative fifteen-minute hard deadline'
+}
+$recoveryOnceStart = $tsf.IndexOf('void RunServerRecoveryOnce() noexcept')
+$recoveryWorkerStart = $tsf.IndexOf('void RunServerRecoveryWorker() noexcept', $recoveryOnceStart)
+if ($recoveryOnceStart -lt 0 -or $recoveryWorkerStart -le $recoveryOnceStart) {
+  throw 'unable to isolate RunServerRecoveryOnce for non-Ready recovery policy'
+}
+$recoveryOnce = $tsf.Substring($recoveryOnceStart, $recoveryWorkerStart - $recoveryOnceStart)
+$busyStart = $recoveryOnce.IndexOf('if (!lifecycle_lock.Acquire(0))')
+$busyEnd = $recoveryOnce.IndexOf('const bool server_present', $busyStart)
+if ($busyStart -lt 0 -or $busyEnd -le $busyStart) {
+  throw 'unable to isolate lifecycle-busy recovery branch'
+}
+$busyRecovery = $recoveryOnce.Substring($busyStart, $busyEnd - $busyStart)
+if ($busyRecovery -notmatch 'ServerLifecycle::Starting' -or
+    $busyRecovery -notmatch 'NonReadyLifecycleHardTimeoutExpired\(state\)' -or
+    $busyRecovery -notmatch 'StopPersistentlyUnavailableServer\([\s\S]*?ServerLifecycle::Starting,[\s\S]*?false\)' -or
+    $busyRecovery -match 'ServerLifecycle::Maintenance') {
+  throw 'lifecycle-busy recovery may bypass ownership only for a hard-timed-out Starting server'
+}
+$ownedNonReadyStart = $recoveryOnce.IndexOf('if (state.lifecycle !=', $busyEnd)
+$ownedNonReadyEnd = $recoveryOnce.IndexOf('} else {', $ownedNonReadyStart)
+if ($ownedNonReadyStart -lt 0 -or $ownedNonReadyEnd -le $ownedNonReadyStart) {
+  throw 'unable to isolate lifecycle-owned non-Ready recovery branch'
+}
+$ownedNonReady = $recoveryOnce.Substring(
+  $ownedNonReadyStart,
+  $ownedNonReadyEnd - $ownedNonReadyStart
+)
+$deadlineCheck = $ownedNonReady.IndexOf('NonReadyLifecycleHardTimeoutExpired(state)')
+$expectedLifecycle = $ownedNonReady.IndexOf('const auto expected_lifecycle')
+$authenticatedStop = $ownedNonReady.IndexOf('StopPersistentlyUnavailableServer(')
+if ($ownedNonReady -notmatch 'ServerLifecycle::Ready' -or
+    $deadlineCheck -lt 0 -or $expectedLifecycle -lt 0 -or $authenticatedStop -lt 0 -or
+    -not ($deadlineCheck -lt $expectedLifecycle -and $expectedLifecycle -lt $authenticatedStop) -or
+    $ownedNonReady -notmatch 'state,\s*health_revision,\s*expected_lifecycle,\s*false') {
+  throw 'once lifecycle ownership is acquired timed-out non-Ready generations must use the authenticated stop path'
+}
+if ($tsf -notmatch 'latest_state\.lifecycle\s*!=\s*static_cast<LONG>\(expected_lifecycle\)[\s\S]*?!probe_liveness[\s\S]*?!NonReadyLifecycleHardTimeoutExpired\(latest_state\)') {
+  throw 'destructive non-Ready recovery must revalidate generation lifecycle and hard deadline at the commit point'
+}
+if ($serverCommands -notmatch 'test_server_lifecycle_tick_deadline\(\)' -or
+    $serverCommands -notmatch 'legacy runtime states without the tick marker never hard-timeout' -or
+    $serverCommands -notmatch 'lifecycle deadline arithmetic survives the 31-bit tick wrap') {
+  throw 'TestServerCommands must dynamically cover lifecycle deadline threshold wrap and legacy compatibility'
+}
 if ($recoveryCoordinator -notmatch 'worker_inflight_' -or
     $recoveryCoordinator -notmatch 'FinishBackoff\(' -or
     $recoveryCoordinator -notmatch 'FinishFailure\(' -or
@@ -105,8 +160,12 @@ if ($tsf -notmatch 'kServerUnavailableRestartThresholdMs\s*=\s*1500' -or
 }
 if ($tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?kServerLivenessProbeTimeoutMs[\s\S]*?ProbeServer\(remaining\)' -or
     $tsf -notmatch 'if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?FinishServerRecoveryHealthy\(\)' -or
-    $tsf -notmatch 'StopPersistentlyUnavailableServer[\s\S]*?if\s*\(ProbeServerResponsive\(\)\)[\s\S]*?RunIfHealthUnchanged\([\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE') {
-  throw 'restart escalation must re-probe before linearizing the WM_CLOSE decision'
+    $tsf -notmatch 'StopPersistentlyUnavailableServer[\s\S]*?if\s*\(probe_liveness\)[\s\S]*?ProbeServerResponsive\(\)[\s\S]*?RunIfHealthUnchanged\([\s\S]*?PostMessageW\(current_window,\s*WM_CLOSE') {
+  throw 'Ready-state restart escalation must re-probe before linearizing the WM_CLOSE decision'
+}
+if ($tsf -notmatch 'target\.window\s*=\s*FindServerWindowForProcess\(state\.process_id\);[\s\S]*?return\s+true;' -or
+    $tsf -notmatch 'forced_without_window[\s\S]*?RunIfHealthUnchanged\([\s\S]*?SameServerGeneration\(latest_state,\s*expected_state\)[\s\S]*?NonReadyLifecycleHardTimeoutExpired\(latest_state\)[\s\S]*?FindServerWindowForProcess\(expected_state\.process_id\)[\s\S]*?PostMessageW\(current_window,\s*WM_CLOSE[\s\S]*?SameServerGeneration\(kill_state,\s*expected_state\)[\s\S]*?NonReadyLifecycleHardTimeoutExpired\(kill_state\)[\s\S]*?TerminateProcess\(target\.process,\s*ERROR_TIMEOUT\)') {
+  throw 'timed-out non-Ready recovery must recheck the window generation and deadline immediately before direct termination'
 }
 if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_instance_name\)')).Count -lt 2) {
   throw 'recovery launch must preserve singleton observation around lifecycle ownership'

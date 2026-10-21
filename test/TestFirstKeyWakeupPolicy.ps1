@@ -66,8 +66,8 @@ if ($recoveryCoordinator -match 'health_epoch_|enum\s+class\s+State|InterlockedC
 }
 if ($recoveryCoordinator -notmatch 'HealthRevision\(\)' -or
     $recoveryCoordinator -notmatch 'RunIfHealthUnchanged\(' -or
-    $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?RunIfHealthUnchanged\([\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE') {
-  throw 'foreground health must revoke stale recovery before the WM_CLOSE commit point'
+    $tsf -notmatch 'ProbeServerResponsive\(\)[\s\S]*?RunIfHealthUnchanged\([\s\S]*?PostMessageW\(current_window,\s*WM_CLOSE') {
+  throw 'foreground health must revoke stale recovery before the graceful-shutdown commit point'
 }
 if ($tsf -notmatch 'ServerRecoveryCoordinator\s+g_serverRecovery' -or
     $tsf -notmatch 'g_serverRecovery\.TryBegin\(GetTickCount64\(\)\)' -or
@@ -153,10 +153,13 @@ if ($stopStart -lt 0 -or $stopEnd -le $stopStart) {
   throw 'unable to isolate StopPersistentlyUnavailableServer'
 }
 $stopBody = $tsf.Substring($stopStart, $stopEnd - $stopStart)
-if ($stopBody -notmatch 'ProbeServerResponsive\(\)[\s\S]*?PostMessageW\(target\.window,\s*WM_CLOSE' -or
+if ($stopBody -notmatch 'ProbeServerResponsive\(\)[\s\S]*?PostMessageW\(current_window,\s*WM_CLOSE' -or
     $stopBody -notmatch 'kServerForceTerminateThresholdMs' -or
     $stopBody -notmatch 'TerminateProcess\(target\.process') {
-  throw 'persistent live-server recovery must try graceful shutdown before bounded forced termination'
+  throw 'windowed live-server recovery must try graceful shutdown before bounded forced termination'
+}
+if ($stopBody -notmatch 'forced_without_window[\s\S]*?NonReadyLifecycleHardTimeoutExpired\(kill_state\)[\s\S]*?TerminateProcess\(target\.process') {
+  throw 'windowless forced recovery must remain restricted to a revalidated non-Ready hard-timeout generation'
 }
 $stateReadStart = $tsf.IndexOf('bool ReadServerRuntimeState(')
 $stateReadEnd = $tsf.IndexOf('bool SameServerGeneration(', $stateReadStart)
