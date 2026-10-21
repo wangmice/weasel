@@ -109,12 +109,13 @@ void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
   LOG(INFO) << "Initializing la rime.";
   LOG(INFO) << "calling rime_api->initialize";
   rime_api->initialize(NULL);
-  LOG(INFO) << "starting Rime maintenance";
-  if (rime_api->start_maintenance(/*full_check = */ False)) {
-    LOG(INFO) << "waiting for Rime maintenance";
-    rime_api->join_maintenance_thread();
-  }
 
+  // Do not run librime maintenance synchronously during WeaselServer startup
+  // or END_MAINTENANCE recovery. ServerImpl still owns the startup lifecycle
+  // lock here and has not published a usable pipe yet; blocking on internal
+  // maintenance can strand the process in Starting and make every TSF client
+  // observe a singleton with no service. Workspace maintenance is owned
+  // explicitly by WeaselDeployer through START/END_MAINTENANCE.
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
@@ -618,12 +619,16 @@ void RimeWithWeaselHandler::OnUpdateUI(std::function<void()> const& cb) {
 }
 
 bool RimeWithWeaselHandler::_IsDeployerRunning() {
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
-  bool deployer_detected = hMutex && GetLastError() == ERROR_ALREADY_EXISTS;
-  if (hMutex) {
-    CloseHandle(hMutex);
+  HANDLE mutex =
+      OpenMutexW(SYNCHRONIZE, FALSE, weasel::kDeployerExclusiveMutexName);
+  if (mutex) {
+    CloseHandle(mutex);
+    return true;
   }
-  return deployer_detected;
+
+  // Access denied still proves that the named object exists; treat it as an
+  // active deployer instead of racing local Rime initialization against it.
+  return GetLastError() == ERROR_ACCESS_DENIED;
 }
 
 void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id,
