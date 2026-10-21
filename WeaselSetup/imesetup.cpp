@@ -476,20 +476,20 @@ static HRESULT is_profile_enabled_by_default(const std::wstring& profile,
   if (StringFromGUID2(c_clsidTextService, clsid, _countof(clsid)) <= 0 ||
       StringFromGUID2(c_guidProfile, profile_guid, _countof(profile_guid)) <=
           0 ||
-      FAILED(StringCchPrintfW(langid, _countof(langid), L"0x%08X",
-                              static_cast<unsigned>(profile_to_lang_id(profile))))) {
+      FAILED(StringCchPrintfW(
+          langid, _countof(langid), L"0x%08X",
+          static_cast<unsigned>(profile_to_lang_id(profile))))) {
     return E_FAIL;
   }
 
-  const std::wstring key =
-      std::wstring(L"Software\\Microsoft\\CTF\\TIP\\") + clsid +
-      L"\\LanguageProfile\\" + langid + L"\\" + profile_guid;
+  const std::wstring key = std::wstring(L"Software\\Microsoft\\CTF\\TIP\\") +
+                           clsid + L"\\LanguageProfile\\" + langid + L"\\" +
+                           profile_guid;
 
   HKEY handle = nullptr;
   const REGSAM view = is_wow64() ? KEY_WOW64_64KEY : 0;
-  const LSTATUS opened =
-      RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0,
-                    KEY_QUERY_VALUE | view, &handle);
+  const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0,
+                                       KEY_QUERY_VALUE | view, &handle);
   if (opened != ERROR_SUCCESS)
     return HRESULT_FROM_WIN32(opened);
 
@@ -1012,10 +1012,9 @@ static int process_tsf_registration_files(const std::wstring& ext,
   int retval = 0;
   auto process = [&](const std::wstring& target, bool target_wowarm32,
                      bool primary) {
-    const int result =
-        process_tsf_registration_file(target, register_ime, target_wowarm32,
-                                      primary, allow_missing_primary, profile,
-                                      silent);
+    const int result = process_tsf_registration_file(
+        target, register_ime, target_wowarm32, primary, allow_missing_primary,
+        profile, silent);
     if (result != 0)
       retval = 1;
     return result == 0 || best_effort;
@@ -1142,9 +1141,8 @@ static int remove_layouts_for_forward_recovery() {
   return result;
 }
 
-static int recover_text_service_uninstall_forward(
-    const std::wstring& profile,
-    bool silent) {
+static int recover_text_service_uninstall_forward(const std::wstring& profile,
+                                                  bool silent) {
   struct ForwardOps {
     const std::wstring& profile;
     bool silent;
@@ -1223,9 +1221,9 @@ static int uninstall_text_service_transactional(const std::wstring& profile,
     }
 
     void restore_services() {
-      if (process_tsf_registration_files(
-              L".dll", true, rollback_registration_profile, true, true,
-              false) != 0) {
+      if (process_tsf_registration_files(L".dll", true,
+                                         rollback_registration_profile, true,
+                                         true, false) != 0) {
         LOG(ERROR) << "TSF uninstall rollback could not restore all "
                       "registration DLLs.";
       }
@@ -1355,8 +1353,8 @@ int install(const std::wstring& profile, bool silent) {
   const HRESULT layout_result =
       install_layout_or_tip(profile, LayoutOrTipAction::Install);
   if (FAILED(layout_result)) {
-    LOG(ERROR) << "Could not install LayoutOrTip for profile "
-               << wtou8(profile) << ", hr: " << layout_result;
+    LOG(ERROR) << "Could not install LayoutOrTip for profile " << wtou8(profile)
+               << ", hr: " << layout_result;
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERR_SWITCH_PROFILE,
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
     return 1;

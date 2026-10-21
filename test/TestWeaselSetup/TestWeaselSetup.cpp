@@ -385,7 +385,6 @@ static void test_profile_switch_transaction() {
   }
 }
 
-
 struct TsfUninstallProbe {
   int fail_step = 0;
   std::vector<std::string> calls;
@@ -431,10 +430,9 @@ static void test_tsf_uninstall_forward_recovery() {
   {
     TsfForwardRecoveryProbe ops;
     check(weasel::setup::RunTsfUninstallForwardRecovery(ops) == 0 &&
-              ops.calls ==
-                  std::vector<std::string>({"remove_layouts_best_effort",
-                                            "unregister_services",
-                                            "mark_file_cleanup"}),
+              ops.calls == std::vector<std::string>(
+                               {"remove_layouts_best_effort",
+                                "unregister_services", "mark_file_cleanup"}),
           "forward recovery converges to file cleanup without rollback");
   }
   {
@@ -448,20 +446,19 @@ static void test_tsf_uninstall_forward_recovery() {
   {
     TsfForwardRecoveryProbe ops;
     ops.fail_step = 2;
-    check(weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
-              ops.calls ==
-                  std::vector<std::string>({"remove_layouts_best_effort",
-                                            "unregister_services"}),
-          "forward recovery keeps LogicalRetry when unregister still fails");
+    check(
+        weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
+            ops.calls == std::vector<std::string>({"remove_layouts_best_effort",
+                                                   "unregister_services"}),
+        "forward recovery keeps LogicalRetry when unregister still fails");
   }
   {
     TsfForwardRecoveryProbe ops;
     ops.fail_step = 3;
     check(weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
-              ops.calls ==
-                  std::vector<std::string>({"remove_layouts_best_effort",
-                                            "unregister_services",
-                                            "mark_file_cleanup"}),
+              ops.calls == std::vector<std::string>(
+                               {"remove_layouts_best_effort",
+                                "unregister_services", "mark_file_cleanup"}),
           "forward recovery reports failure when FileCleanup cannot persist");
   }
 }
@@ -470,29 +467,26 @@ static void test_tsf_uninstall_transaction() {
   {
     TsfUninstallProbe ops;
     check(weasel::setup::RunTsfUninstallTransaction(ops) == 0 &&
-              ops.calls ==
-                  std::vector<std::string>({"remove_layouts",
-                                            "unregister_services"}),
+              ops.calls == std::vector<std::string>(
+                               {"remove_layouts", "unregister_services"}),
           "TSF uninstall commits only after layout and registration cleanup");
   }
   {
     TsfUninstallProbe ops;
     ops.fail_step = 1;
     check(weasel::setup::RunTsfUninstallTransaction(ops) != 0 &&
-              ops.calls ==
-                  std::vector<std::string>({"remove_layouts",
-                                            "restore_layouts"}),
+              ops.calls == std::vector<std::string>(
+                               {"remove_layouts", "restore_layouts"}),
           "layout failure restores user layout without touching registration");
   }
   {
     TsfUninstallProbe ops;
     ops.fail_step = 2;
     check(weasel::setup::RunTsfUninstallTransaction(ops) != 0 &&
-              ops.calls ==
-                  std::vector<std::string>(
-                      {"remove_layouts", "unregister_services",
-                       "restore_services", "restore_default_profiles",
-                       "restore_profiles", "restore_layouts"}),
+              ops.calls == std::vector<std::string>(
+                               {"remove_layouts", "unregister_services",
+                                "restore_services", "restore_default_profiles",
+                                "restore_profiles", "restore_layouts"}),
           "regsvr32 failure rebuilds registration before user-state rollback");
   }
 }

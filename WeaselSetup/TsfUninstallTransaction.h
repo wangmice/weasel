@@ -36,7 +36,8 @@ auto RunTsfUninstallForwardRecovery(Ops& ops)
     -> decltype(ops.unregister_services()) {
   // LayoutOrTip state may already be partially gone and the prior rollback
   // snapshot no longer exists. Converge forward, but do not unregister the
-  // service or commit FileCleanup until every residual layout is confirmed gone.
+  // service or commit FileCleanup until every residual layout is confirmed
+  // gone.
   auto result = ops.remove_layouts_best_effort();
   if (ops.failed(result))
     return result;
