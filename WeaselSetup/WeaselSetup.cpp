@@ -73,7 +73,11 @@ static std::wstring install_dir() {
 }
 
 namespace {
-constexpr DWORD kServerTransitionTimeoutMs = 30000;
+// The server's own shutdown watchdog fires at 20s and WeaselServer /q waits
+// up to 30s for the old process. Setup is the outer supervisor, so it needs
+// additional grace to observe /q completion rather than racing the same
+// deadline.
+constexpr DWORD kServerTransitionTimeoutMs = 45000;
 constexpr DWORD kDeployerOperationTimeoutMs = 15 * 60 * 1000 + 10 * 1000;
 constexpr DWORD kDeployerTerminationWaitMs = 5000;
 constexpr DWORD kElevationCommandTimeoutMs = 60 * 60 * 1000;
