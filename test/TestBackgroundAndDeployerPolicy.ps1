@@ -95,8 +95,12 @@ if ($configurator -match 'WeaselDeployerMutex') {
   throw 'deployer correctness must use the shared server lifecycle lock'
 }
 if (([regex]::Matches($configurator, 'ServerLifecycleLock\s+lifecycle_lock')).Count -ne 4 -or
-    ([regex]::Matches($configurator, 'lifecycle_lock\.Acquire\(0\)')).Count -ne 4) {
+    ([regex]::Matches($configurator, 'lifecycle_lock\.Acquire\(0\)')).Count -ne 3) {
   throw 'workspace deploy GUI dictionary CLI dictionary and sync worker must each own the shared lifecycle lock'
+}
+if ($configurator -notmatch 'kInstallLifecycleWaitMs\s*=\s*30\s*\*\s*1000' -or
+    $configurator -notmatch 'UpdateWorkspace\(bool\s+report_errors,[\s\S]*?bool\s+wait_for_install_startup\)[\s\S]*?lifecycle_wait_ms\s*=\s*wait_for_install_startup\s*\?\s*kInstallLifecycleWaitMs\s*:\s*0[\s\S]*?lifecycle_lock\.Acquire\(lifecycle_wait_ms\)') {
+  throw 'installer deployment must wait boundedly for an early WeaselServer startup while normal deploy stays nonblocking'
 }
 if ($configurator -match 'CloseHandle\(hMutex\)') {
   throw 'deployer lifecycle ownership must be RAII and extend through EndMaintenance'
@@ -126,6 +130,10 @@ if ($syncSupervisor -lt 0 -or $deployerInit -lt 0 -or $syncSupervisor -gt $deplo
 }
 if ($deployer -notmatch 'if\s*\(internal_sync_worker\)[\s\S]*?return\s+Run\(argc,\s*argv\);[\s\S]*?CreateMutex\(NULL,\s*TRUE,\s*L"WeaselDeployerExclusiveMutex"\)') {
   throw 'only the exact internal sync worker may bypass the deployer process singleton'
+}
+if ($deployer -notmatch 'kInstallerDeployOption\[\]\s*=\s*L"/install-deploy"' -or
+    $deployer -notmatch 'IsOption\(args\.front\(\),\s*kInstallerDeployOption\)[\s\S]*?UpdateWorkspace\(false,\s*true\)') {
+  throw 'installer-only deployment mode must wait for startup arbitration without changing manual /deploy behavior'
 }
 
 if ($deployer -match 'IsBoundedWorkspaceDeploy' -or

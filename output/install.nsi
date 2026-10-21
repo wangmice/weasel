@@ -809,7 +809,7 @@ install_deploy:
   GoTo deploy_check
 
 deploy_silently:
-  ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3
+  ExecWait "$INSTDIR\WeaselDeployer.exe /install-deploy" $R3
 
 deploy_check:
   ${If} ${Errors}

@@ -21,6 +21,7 @@
 namespace {
 
 constexpr int kDictCliUsageError = 2;
+constexpr DWORD kInstallLifecycleWaitMs = 30 * 1000;
 
 bool IsDictCommand(const std::wstring& value, const wchar_t* command) {
   return _wcsicmp(value.c_str(), command) == 0;
@@ -248,11 +249,12 @@ int Configurator::Run(bool installing) {
 
   int deploy_result = 0;
   if (installing || reconfigured)
-    deploy_result = UpdateWorkspace(reconfigured);
+    deploy_result = UpdateWorkspace(reconfigured, installing);
   return (config_failed || deploy_result != 0) ? 1 : 0;
 }
 
-int Configurator::UpdateWorkspace(bool report_errors) {
+int Configurator::UpdateWorkspace(bool report_errors,
+                                  bool wait_for_install_startup) {
   RimeOperationWatchdog deploy_watchdog;
   if (!deploy_watchdog.Arm()) {
     LOG(ERROR) << "Could not arm Rime workspace deployment watchdog.";
@@ -260,9 +262,12 @@ int Configurator::UpdateWorkspace(bool report_errors) {
   }
 
   weasel::ServerLifecycleLock lifecycle_lock;
-  if (!lifecycle_lock.Acquire(0)) {
+  const DWORD lifecycle_wait_ms =
+      wait_for_install_startup ? kInstallLifecycleWaitMs : 0;
+  if (!lifecycle_lock.Acquire(lifecycle_wait_ms)) {
     LOG(WARNING) << "another server lifecycle operation is running; aborting "
-                    "deployment operation.";
+                    "deployment operation after "
+                 << lifecycle_wait_ms << " ms.";
     if (report_errors) {
       // MessageBox(NULL,
       // L"正在執行另一項部署任務，方纔所做的修改將在輸入法再次啓動後生效。",

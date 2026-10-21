@@ -520,5 +520,9 @@ if ($imeSetup -notmatch 'const\s+HRESULT\s+layout_result\s*=\s*install_layout_or
     $imeSetup -notmatch 'if\s*\(FAILED\(layout_result\)\)[\s\S]*?return\s+1;[\s\S]*?clear_pending_uninstall') {
   throw 'legacy forced install must fail before success when LayoutOrTip installation fails'
 }
+if ($section -notmatch 'deploy_silently:[\s\S]*?WeaselDeployer\.exe /install-deploy' -or
+    $section -match 'deploy_silently:[\s\S]*?WeaselDeployer\.exe /deploy') {
+  throw 'silent installer deployment must use the lifecycle-waiting installer mode'
+}
 
 Write-Host 'Setup transaction policy: PASS'
