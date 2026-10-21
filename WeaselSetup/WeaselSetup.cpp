@@ -455,8 +455,14 @@ static int Run(LPTSTR lpCmdLine) {
       const int result = uninstall(silent);
       if (result != 0)
         return result;
-      return weasel::setup::CleanupTextServiceRegistrationAfterUninstall() ? 0
-                                                                           : 1;
+      // Core uninstall has committed by this point. Exact CLSID/TIP cleanup
+      // is a best-effort sweep for stale historical registration entries and
+      // must not turn an otherwise successful uninstall into a failure.
+      if (!weasel::setup::CleanupTextServiceRegistrationAfterUninstall()) {
+        LOG(WARNING) << "Could not remove all stale TSF registration entries "
+                        "after uninstall.";
+      }
+      return 0;
     } else {
       return RestartAsAdmin(lpCmdLine);
     }

@@ -12,6 +12,9 @@ if ($setup -notmatch '#include\s+"TransactionalInstall\.h"') {
 if ($setup -notmatch 'InstallFreshTransactional\(profile,\s*user_dir,\s*silent\)') {
   throw 'fresh setup must pass profile and RimeUserDir into the transaction'
 }
+if ($setup -notmatch 'if\s*\(!weasel::setup::CleanupTextServiceRegistrationAfterUninstall\(\)\)[\s\S]*?LOG\(WARNING\)[\s\S]*?return\s+0;') {
+  throw 'post-uninstall exact TSF registry cleanup must be best-effort and non-fatal'
+}
 $freshFlow = [regex]::IsMatch(
   $setup,
   'if\s*\(!_has_installed\).*?InstallRequestedProfile\(profile,\s*user_dir,\s*silent\).*?return\s+0;',
