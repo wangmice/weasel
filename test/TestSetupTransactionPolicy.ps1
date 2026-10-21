@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $setup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\WeaselSetup.cpp') -Raw
 $transaction = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TransactionalInstall.h') -Raw
+$imeSetup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\imesetup.cpp') -Raw
+$uninstallTransaction = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TsfUninstallTransaction.h') -Raw
 
 if ($setup -notmatch '#include\s+"TransactionalInstall\.h"') {
   throw 'WeaselSetup must include the fresh-install transaction'
@@ -37,6 +39,51 @@ if ($transaction -notmatch 'for\s*\(auto\s+it\s*=\s*registry\.rbegin\(\)') {
 }
 if ($transaction -notmatch 'RestoreLayout\(profile,\s*old_layout\)') {
   throw 'layout state is not restored during rollback'
+}
+
+if ($imeSetup -notmatch '#include\s+"TsfUninstallTransaction\.h"') {
+  throw 'imesetup must include the TSF uninstall transaction'
+}
+if ($uninstallTransaction -notmatch 'remove_layouts\(\)[\s\S]*?unregister_services\(\)') {
+  throw 'logical uninstall must remove LayoutOrTip while profiles still exist, then unregister TSF'
+}
+if ($uninstallTransaction -notmatch 'unregister_services\(\)[\s\S]*?restore_services\(\)[\s\S]*?restore_profiles\(\)[\s\S]*?restore_layouts\(\)') {
+  throw 'failed regsvr32 phase must rebuild registration before restoring profile/layout state'
+}
+
+$uninstallStart = $imeSetup.IndexOf('int uninstall(bool silent)')
+$hasInstalledStart = $imeSetup.IndexOf('bool has_installed()', $uninstallStart)
+if ($uninstallStart -lt 0 -or $hasInstalledStart -le $uninstallStart) {
+  throw 'unable to isolate direct uninstall flow'
+}
+$uninstallFlow = $imeSetup.Substring($uninstallStart, $hasInstalledStart - $uninstallStart)
+if ($uninstallFlow -notmatch 'uninstall_text_service_transactional\(profile,\s*silent\)') {
+  throw 'direct /u must use the transactional TSF uninstall path'
+}
+if ($uninstallFlow -match 'install_layout_or_tip\(profile,\s*LayoutOrTipAction::Uninstall\)[\s\S]*?uninstall_ime_file') {
+  throw 'direct /u must not retain the old layout-first non-transactional sequence'
+}
+
+$transactionalStart = $imeSetup.IndexOf('static int uninstall_text_service_transactional')
+$installStart = $imeSetup.IndexOf('int install(const std::wstring& profile, bool silent)', $transactionalStart)
+if ($transactionalStart -lt 0 -or $installStart -le $transactionalStart) {
+  throw 'unable to isolate transactional TSF uninstall implementation'
+}
+$transactionalFlow = $imeSetup.Substring($transactionalStart, $installStart - $transactionalStart)
+if ($transactionalFlow -notmatch 'capture_text_service_user_state\(states\)') {
+  throw 'TSF uninstall must snapshot profile/layout state before mutation'
+}
+if ($transactionalFlow -notmatch 'RunTsfUninstallTransaction\(ops\)[\s\S]*?delete_tsf_files_after_unregister') {
+  throw 'DLL deletion must happen only after logical TSF uninstall commits'
+}
+if ($transactionalFlow -notmatch 'process_tsf_registration_files\(L"\.dll",\s*true,\s*profile,\s*true,\s*true\)[\s\S]*?set_profile_enabled_for_user[\s\S]*?restore_layout_or_tip') {
+  throw 'rollback must re-register all available architectures before restoring user state'
+}
+if ($transactionalFlow -notmatch 'mark_pending_uninstall\(\)') {
+  throw 'failed transactional uninstall must persist PendingUninstall for a later retry'
+}
+if ($imeSetup -notmatch 'MOVEFILE_DELAY_UNTIL_REBOOT\)\)\s*return\s+TRUE;') {
+  throw 'deferred DLL deletion must only report success when reboot cleanup was actually queued'
 }
 
 $modifyStart = $setup.IndexOf('static int CustomInstall')

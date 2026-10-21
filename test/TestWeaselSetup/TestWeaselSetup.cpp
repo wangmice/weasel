@@ -14,6 +14,7 @@
 #include <iomanip>
 
 #include "../../WeaselSetup/ProfileSwitchTransaction.h"
+#include "../../WeaselSetup/TsfUninstallTransaction.h"
 #include "../../WeaselSetup/SetupUtil.h"
 #include <WeaselUtility.h>
 
@@ -384,12 +385,64 @@ static void test_profile_switch_transaction() {
   }
 }
 
+
+struct TsfUninstallProbe {
+  int fail_step = 0;
+  std::vector<std::string> calls;
+
+  int remove_layouts() {
+    calls.emplace_back("remove_layouts");
+    return fail_step == 1 ? 1 : 0;
+  }
+  int unregister_services() {
+    calls.emplace_back("unregister_services");
+    return fail_step == 2 ? 1 : 0;
+  }
+  void restore_services() { calls.emplace_back("restore_services"); }
+  void restore_profiles() { calls.emplace_back("restore_profiles"); }
+  void restore_layouts() { calls.emplace_back("restore_layouts"); }
+  bool failed(int result) const { return result != 0; }
+  int success() const { return 0; }
+};
+
+static void test_tsf_uninstall_transaction() {
+  {
+    TsfUninstallProbe ops;
+    check(weasel::setup::RunTsfUninstallTransaction(ops) == 0 &&
+              ops.calls ==
+                  std::vector<std::string>({"remove_layouts",
+                                            "unregister_services"}),
+          "TSF uninstall commits only after layout and registration cleanup");
+  }
+  {
+    TsfUninstallProbe ops;
+    ops.fail_step = 1;
+    check(weasel::setup::RunTsfUninstallTransaction(ops) != 0 &&
+              ops.calls ==
+                  std::vector<std::string>({"remove_layouts",
+                                            "restore_layouts"}),
+          "layout failure restores user layout without touching registration");
+  }
+  {
+    TsfUninstallProbe ops;
+    ops.fail_step = 2;
+    check(weasel::setup::RunTsfUninstallTransaction(ops) != 0 &&
+              ops.calls ==
+                  std::vector<std::string>(
+                      {"remove_layouts", "unregister_services",
+                       "restore_services", "restore_profiles",
+                       "restore_layouts"}),
+          "regsvr32 failure rebuilds registration before user-state rollback");
+  }
+}
+
 int main() {
   test_unquote_argument();
   test_read_reg_sz();
   test_delete_reg_tree();
   test_reg_get_string_value();
   test_profile_switch_transaction();
+  test_tsf_uninstall_transaction();
 
   if (g_failures) {
     printf("%d failure(s)\n", g_failures);
