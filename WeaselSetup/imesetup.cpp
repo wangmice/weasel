@@ -694,7 +694,8 @@ int register_text_service(const std::wstring& tsf_path,
   const std::wstring app = std::wstring(system_dir) + L"\\regsvr32.exe";
 
   std::wstring command_line = L"\"" + app + L"\"" + params;
-  std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+  std::vector<wchar_t> mutable_command(command_line.begin(),
+                                       command_line.end());
   mutable_command.push_back(L'\0');
 
   STARTUPINFOW startup_info = {sizeof(startup_info)};
@@ -718,8 +719,8 @@ int register_text_service(const std::wstring& tsf_path,
     // Never let Setup continue rollback while regsvr32 may still be mutating
     // COM/TSF registration. Stop the child first and confirm process death.
     (void)TerminateProcess(process_info.hProcess, failure_code);
-    const DWORD terminated = WaitForSingleObject(
-        process_info.hProcess, kRegsvr32TerminationWaitMs);
+    const DWORD terminated =
+        WaitForSingleObject(process_info.hProcess, kRegsvr32TerminationWaitMs);
     CloseHandle(process_info.hProcess);
     if (terminated != WAIT_OBJECT_0) {
       LOG(ERROR) << "regsvr32 could not be confirmed stopped; aborting Setup "
