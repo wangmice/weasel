@@ -300,11 +300,11 @@ if ($restorePrefs -lt 0) {
   throw 'unable to isolate previous-version uninstall result handling'
 }
 $oldUninstallFlow = $prepare.Substring($oldUninstall, $restorePrefs - $oldUninstall)
-if ($oldUninstallFlow -notmatch 'DetailPrint\s+"Previous WeaselSetup /u exited with \$R2; continuing transactional replacement\."') {
-  throw 'recoverable previous-uninstall failure must remain observable in installer details'
+if ($oldUninstallFlow -notmatch 'ExecWait\s+''"\$PreviousInstallDir\\WeaselSetup\.exe" /u''\s+\$R2[\s\S]*?Call RollbackPreviousInstall[\s\S]*?StrCpy \$R9 "1"[\s\S]*?Return') {
+  throw 'previous WeaselSetup /u failure must rollback and stop the upgrade before replacement'
 }
-if ($oldUninstallFlow -match 'Abort|Quit|Return') {
-  throw 'previous WeaselSetup /u nonzero exit must not hard-abort transactional overwrite'
+if ($oldUninstallFlow -match 'continuing transactional replacement') {
+  throw 'upgrade must not continue after previous WeaselSetup /u fails'
 }
 
 $samePathStart = $prepare.IndexOf('prepare_remove_same_path:')
@@ -348,6 +348,11 @@ if ($canonicalIndex -lt 0 -or $targetIndex -lt 0 -or $prepareIndex -lt 0 -or
     -not ($canonicalIndex -lt $targetIndex -and $targetIndex -lt $prepareIndex -and
           $prepareIndex -lt $overwriteIndex)) {
   throw 'installer must select the canonical path, prepare it transactionally, then enable overwrite'
+}
+$replacementStart = $section.IndexOf('StrCpy $ReplacementStarted "1"')
+if ($replacementStart -lt 0 -or -not ($prepareIndex -lt $replacementStart -and
+                                       $replacementStart -lt $overwriteIndex)) {
+  throw 'installer must mark replacement start only after previous-install preparation succeeds and before writing payload'
 }
 if ($installer -match '\.upgrade-\$UpgradeSlotId') {
   throw 'installer must not create a side-by-side .upgrade-* replacement slot'
@@ -409,6 +414,24 @@ if ($rollback -match '(?m)^rollback_register_old:\s*$') {
 }
 if ($rollback -notmatch 'rollback_registration_failed:[\s\S]*?StrCpy \$RollbackFailed "1"[\s\S]*?GoTo rollback_restore_base_registry') {
   throw 'failed old-version registration must skip runtime autorun/server restoration'
+}
+if ($rollback -match 'WeaselSetup\.exe" /i') {
+  throw 'rollback must not use ambiguous /i registration that can route to modify-install'
+}
+foreach ($profileRestore in @(
+  'StrCpy $R6 "/s"',
+  'StrCpy $R6 "/t"',
+  'StrCpy $R6 "/hk"',
+  'StrCpy $R6 "/mc"',
+  'StrCpy $R6 "/sg"',
+  'ExecWait ''"$PreviousInstallDir\WeaselSetup.exe" $R6'' $R2'
+)) {
+  if (-not $rollback.Contains($profileRestore)) {
+    throw "rollback must force the restored TSF payload with '$profileRestore'"
+  }
+}
+if ($rollback -notmatch 'StrCmp \$ReplacementStarted "1" rollback_remove_partial_new rollback_restore_program') {
+  throw 'rollback must not unregister the old install again before replacement files exist'
 }
 $baseRegistryStart = $rollback.IndexOf('rollback_restore_base_registry:')
 $runtimeRegistryStart = $rollback.IndexOf('rollback_restore_runtime_registry:', $baseRegistryStart)

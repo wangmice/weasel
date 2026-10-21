@@ -45,6 +45,7 @@ Var HadPreviousInstall
 Var UpgradeSlotId
 Var RollbackFailed
 Var ProgramRestoreFailed
+Var ReplacementStarted
 Var DeployExitCode
 
 ; The name of the installer
@@ -200,7 +201,13 @@ Function RollbackPreviousInstall
   StrCpy $ProgramRestoreFailed "0"
   StrCmp $HadPreviousInstall "1" 0 rollback_fresh_only
 
-  ; Best effort: remove any partial registration produced by the new Setup.
+  ; Only remove a partial new registration/tree after payload extraction has
+  ; actually started. PreparePreviousInstall can fail after the old /u but
+  ; before any replacement file exists; re-running /u there would mutate the
+  ; old installation a second time while trying to recover it.
+  StrCmp $ReplacementStarted "1" rollback_remove_partial_new rollback_restore_program
+
+rollback_remove_partial_new:
   IfFileExists "$INSTDIR\WeaselSetup.exe" 0 rollback_remove_new_files
   ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
 
@@ -240,7 +247,43 @@ rollback_after_config:
   StrCmp $ProgramRestoreFailed "1" rollback_restore_base_registry
 
   IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 rollback_registration_failed
-  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /i' $R2
+
+  ; /i can route to modify-install solely because a system weasel.dll still
+  ; exists. Rollback must instead force the restored old program tree to copy
+  ; and register its own TSF payload. Select an explicit profile command from
+  ; the restored HKCU state.
+  StrCpy $R6 "/s"
+  ReadRegStr $R4 HKCU "Software\Rime\Weasel" "Profile"
+  StrCmp $R4 "hant" rollback_profile_hant
+  StrCmp $R4 "hongkong" rollback_profile_hongkong
+  StrCmp $R4 "macau" rollback_profile_macau
+  StrCmp $R4 "singapore" rollback_profile_singapore
+  StrCmp $R4 "" rollback_profile_legacy rollback_profile_ready
+
+rollback_profile_hant:
+  StrCpy $R6 "/t"
+  GoTo rollback_profile_ready
+rollback_profile_hongkong:
+  StrCpy $R6 "/hk"
+  GoTo rollback_profile_ready
+rollback_profile_macau:
+  StrCpy $R6 "/mc"
+  GoTo rollback_profile_ready
+rollback_profile_singapore:
+  StrCpy $R6 "/sg"
+  GoTo rollback_profile_ready
+rollback_profile_legacy:
+  ReadRegDWORD $R5 HKCU "Software\Rime\Weasel" "Hant"
+  StrCmp $R5 "0" rollback_profile_ready
+  StrCpy $R6 "/t"
+
+rollback_profile_ready:
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" $R6' $R2
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_restore_base_registry
+  ${EndIf}
   ${If} $R2 != 0
     StrCpy $RollbackFailed "1"
     GoTo rollback_restore_base_registry
@@ -336,9 +379,19 @@ prepare_backup_verified:
   ; same-path directory removal below detects that condition without killing
   ; unrelated user processes.
   ExecWait '"$PreviousInstallDir\WeaselServer.exe" /quit'
+  ClearErrors
   ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /u' $R2
+  ${If} ${Errors}
+    DetailPrint "Previous WeaselSetup /u could not be executed; restoring the previous installation."
+    Call RollbackPreviousInstall
+    StrCpy $R9 "1"
+    Return
+  ${EndIf}
   ${If} $R2 != 0
-    DetailPrint "Previous WeaselSetup /u exited with $R2; continuing transactional replacement."
+    DetailPrint "Previous WeaselSetup /u exited with $R2; restoring the previous installation."
+    Call RollbackPreviousInstall
+    StrCpy $R9 "1"
+    Return
   ${EndIf}
 
   ; Restore preferences for the replacement Setup. Keep the export until commit
@@ -387,6 +440,7 @@ Function .onInit
   StrCpy $UpgradeSlotId ""
   StrCpy $RollbackFailed "0"
   StrCpy $ProgramRestoreFailed "0"
+  StrCpy $ReplacementStarted "0"
   StrCpy $DeployExitCode "0"
 
 !ifndef WEASEL_HAS_ARM64_PAYLOAD
@@ -500,6 +554,9 @@ install_target_locked_restored:
   Abort "$(FILESINUSE)"
 
 install_target_ready:
+  ; From this point rollback may need to unregister/remove a partially written
+  ; replacement before restoring the old program tree.
+  StrCpy $ReplacementStarted "1"
   SetOverwrite on
   ; Set output path to the installation directory.
   SetOutPath $INSTDIR
