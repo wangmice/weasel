@@ -358,15 +358,22 @@ if ($replacementStart -lt 0 -or -not ($prepareIndex -lt $replacementStart -and
                                        $replacementStart -lt $overwriteIndex)) {
   throw 'installer must mark replacement start only after previous-install preparation succeeds and before writing payload'
 }
+if ($installer -notmatch 'Var OrphanedPreviousInstall' -or
+    $init -notmatch 'StrCpy \$OrphanedPreviousInstall "0"') {
+  throw 'installer must track orphaned previous-install recovery explicitly'
+}
+if ($section -notmatch 'StrCmp \$OrphanedPreviousInstall "1" setup_preserve_existing_profile') {
+  throw 'orphaned recovery must bypass ambiguous /i setup routing'
+}
 if ($installer -match '\.upgrade-\$UpgradeSlotId') {
   throw 'installer must not create a side-by-side .upgrade-* replacement slot'
 }
 if ($installer -match '/REBOOTOK') {
   throw 'installer must not schedule install/version directories for deferred reboot deletion'
 }
-if ($section -notmatch '\$\{GetOptions\}\s+\$R0\s+"/S"[\s\S]*?StrCmp \$HadPreviousInstall "1" setup_preserve_upgrade_profile' -or
-    $section -notmatch 'setup_preserve_upgrade_profile:[\s\S]*?ReadRegStr \$R4 HKCU "Software\\Rime\\Weasel" "Profile"[\s\S]*?setup_profile_hant:[\s\S]*?StrCpy \$R2 "/t"[\s\S]*?setup_profile_hongkong:[\s\S]*?StrCpy \$R2 "/hk"[\s\S]*?setup_profile_macau:[\s\S]*?StrCpy \$R2 "/mc"[\s\S]*?setup_profile_singapore:[\s\S]*?StrCpy \$R2 "/sg"') {
-  throw 'silent upgrade must preserve the restored profile instead of forcing hans'
+if ($section -notmatch 'StrCmp \$OrphanedPreviousInstall "1" setup_preserve_existing_profile[\s\S]*?\$\{GetOptions\}\s+\$R0\s+"/S"[\s\S]*?StrCmp \$HadPreviousInstall "1" setup_preserve_existing_profile' -or
+    $section -notmatch 'setup_preserve_existing_profile:[\s\S]*?ReadRegStr \$R4 HKCU "Software\\Rime\\Weasel" "Profile"[\s\S]*?setup_profile_hant:[\s\S]*?StrCpy \$R2 "/t"[\s\S]*?setup_profile_hongkong:[\s\S]*?StrCpy \$R2 "/hk"[\s\S]*?setup_profile_macau:[\s\S]*?StrCpy \$R2 "/mc"[\s\S]*?setup_profile_singapore:[\s\S]*?StrCpy \$R2 "/sg"') {
+  throw 'silent upgrade and orphaned recovery must preserve the existing profile with an explicit install command'
 }
 if ($section -notmatch 'setup_profile_legacy:[\s\S]*?StrCpy \$R5 "0"[\s\S]*?ReadRegDWORD \$R5 HKCU "Software\\Rime\\Weasel" "Hant"') {
   throw 'silent upgrade legacy profile fallback must initialize and read Hant safely'
@@ -381,11 +388,20 @@ $init = $installer.Substring($initStart, $initEnd - $initStart)
 if ($init.Contains('Abort "$(SETUPFAILED)"')) {
   throw '.onInit must not silently abort with a status-only SETUPFAILED string'
 }
-if (-not $init.Contains('!insertmacro AbortInitFailure')) {
-  throw '.onInit fatal upgrade paths must use the visible failure macro'
-}
 if ($init -match 'WeaselServer\.exe"\s+/quit|WeaselSetup\.exe"\s+/u') {
   throw '.onInit must remain non-destructive; old shutdown/uninstall belongs in PreparePreviousInstall'
+}
+if ($init -notmatch 'previous_invalid:[\s\S]*?StrCpy \$OrphanedPreviousInstall "1"[\s\S]*?StrCpy \$HadPreviousInstall "0"[\s\S]*?GoTo done') {
+  throw 'missing or damaged previous program root must enter orphaned forward recovery instead of aborting'
+}
+$previousInvalidStart = $init.IndexOf('previous_invalid:')
+$doneLabel = $init.IndexOf('done:', $previousInvalidStart)
+if ($previousInvalidStart -lt 0 -or $doneLabel -le $previousInvalidStart) {
+  throw 'unable to isolate orphaned previous-install recovery block'
+}
+$previousInvalid = $init.Substring($previousInvalidStart, $doneLabel - $previousInvalidStart)
+if ($previousInvalid -match 'Abort|Quit|AbortInitFailure') {
+  throw 'orphaned previous installation must remain installable through forward recovery'
 }
 
 # A failed program-tree restore must never be treated as a runnable rollback.

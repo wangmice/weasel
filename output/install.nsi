@@ -42,6 +42,7 @@ Var PreviousBaseDir
 Var PreviousInstallDir
 Var PreviousProgramBackupDir
 Var HadPreviousInstall
+Var OrphanedPreviousInstall
 Var UpgradeSlotId
 Var RollbackFailed
 Var ProgramRestoreFailed
@@ -447,6 +448,7 @@ FunctionEnd
 
 Function .onInit
   StrCpy $HadPreviousInstall "0"
+  StrCpy $OrphanedPreviousInstall "0"
   StrCpy $PreviousBaseDir ""
   StrCpy $PreviousInstallDir ""
   StrCpy $PreviousProgramBackupDir ""
@@ -519,10 +521,15 @@ uninst:
   GoTo done
 
 previous_invalid:
-  ; The uninstall metadata says an old version exists but its Setup executable
-  ; cannot be found. Aborting is safer than destroying unrecoverable state.
-  SetErrorLevel 1
-  !insertmacro AbortInitFailure
+  ; Windows uninstall metadata survived, but the registered program root is
+  ; missing or no longer contains WeaselSetup.exe. There is no trustworthy old
+  ; transaction to roll back to. Treat this as an orphaned installation and
+  ; converge forward with the current payload while preserving HKCU settings.
+  StrCpy $OrphanedPreviousInstall "1"
+  StrCpy $HadPreviousInstall "0"
+  StrCpy $PreviousInstallDir ""
+  DetailPrint "Previous Weasel installation is incomplete; continuing with forward recovery."
+  GoTo done
 
 done:
 FunctionEnd
@@ -661,19 +668,23 @@ program_files:
 
   SetOutPath $INSTDIR
 
-  ; Select the Setup profile command. A fresh silent install defaults to hans,
-  ; while a silent upgrade preserves the profile restored from the previous
-  ; HKCU backup. Explicit /T still overrides the preserved profile.
+  ; Select the Setup profile command. A fresh silent install defaults to hans;
+  ; silent upgrades and orphaned-install recovery preserve the existing HKCU
+  ; profile. Explicit /T still overrides the preserved profile.
   StrCpy $R2 "/i"
   ${GetParameters} $R0
+  ; Orphaned installs must never use /i: a stale system weasel.dll would make
+  ; WeaselSetup misclassify recovery as modify-install. Select the preserved
+  ; profile explicitly so the current payload is copied and registered again.
+  StrCmp $OrphanedPreviousInstall "1" setup_preserve_existing_profile
   ClearErrors
   ${GetOptions} $R0 "/S" $R1
   IfErrors setup_check_traditional
-  StrCmp $HadPreviousInstall "1" setup_preserve_upgrade_profile
+  StrCmp $HadPreviousInstall "1" setup_preserve_existing_profile
   StrCpy $R2 "/s"
   GoTo setup_check_traditional
 
-setup_preserve_upgrade_profile:
+setup_preserve_existing_profile:
   StrCpy $R2 "/s"
   ReadRegStr $R4 HKCU "Software\Rime\Weasel" "Profile"
   StrCmp $R4 "hant" setup_profile_hant
