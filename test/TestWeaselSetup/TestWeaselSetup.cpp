@@ -408,6 +408,55 @@ struct TsfUninstallProbe {
   int success() const { return 0; }
 };
 
+struct TsfForwardRecoveryProbe {
+  int fail_step = 0;
+  std::vector<std::string> calls;
+
+  void remove_layouts_best_effort() {
+    calls.emplace_back("remove_layouts_best_effort");
+  }
+  int unregister_services() {
+    calls.emplace_back("unregister_services");
+    return fail_step == 1 ? 1 : 0;
+  }
+  int mark_file_cleanup() {
+    calls.emplace_back("mark_file_cleanup");
+    return fail_step == 2 ? 1 : 0;
+  }
+  bool failed(int result) const { return result != 0; }
+};
+
+static void test_tsf_uninstall_forward_recovery() {
+  {
+    TsfForwardRecoveryProbe ops;
+    check(weasel::setup::RunTsfUninstallForwardRecovery(ops) == 0 &&
+              ops.calls ==
+                  std::vector<std::string>({"remove_layouts_best_effort",
+                                            "unregister_services",
+                                            "mark_file_cleanup"}),
+          "forward recovery converges to file cleanup without rollback");
+  }
+  {
+    TsfForwardRecoveryProbe ops;
+    ops.fail_step = 1;
+    check(weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
+              ops.calls ==
+                  std::vector<std::string>({"remove_layouts_best_effort",
+                                            "unregister_services"}),
+          "forward recovery keeps LogicalRetry when unregister still fails");
+  }
+  {
+    TsfForwardRecoveryProbe ops;
+    ops.fail_step = 2;
+    check(weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
+              ops.calls ==
+                  std::vector<std::string>({"remove_layouts_best_effort",
+                                            "unregister_services",
+                                            "mark_file_cleanup"}),
+          "forward recovery reports failure when FileCleanup cannot persist");
+  }
+}
+
 static void test_tsf_uninstall_transaction() {
   {
     TsfUninstallProbe ops;
@@ -446,6 +495,7 @@ int main() {
   test_reg_get_string_value();
   test_profile_switch_transaction();
   test_tsf_uninstall_transaction();
+  test_tsf_uninstall_forward_recovery();
 
   if (g_failures) {
     printf("%d failure(s)\n", g_failures);

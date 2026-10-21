@@ -957,6 +957,7 @@ static int process_tsf_registration_file(const std::wstring& path,
                                          bool register_ime,
                                          bool is_wowarm32,
                                          bool primary,
+                                         bool allow_missing_primary,
                                          const std::wstring& profile,
                                          bool silent) {
   const DWORD attributes = GetFileAttributesW(path.c_str());
@@ -966,8 +967,17 @@ static int process_tsf_registration_file(const std::wstring& path,
       return 1;
 
     if (!register_ime && primary) {
-      // Recovery path for an already-inconsistent installation whose primary
-      // DLL disappeared before Setup could unregister the text service.
+      if (allow_missing_primary) {
+        // Cross-process recovery cannot distinguish "primary DLL was already
+        // unregistered and later removed" from an older damaged install.
+        // Missing is therefore an idempotent success here; final registration
+        // cleanup removes any exact Weasel registry residue.
+        return 0;
+      }
+
+      // Strict first-run transaction recovery for an already-inconsistent
+      // installation whose primary DLL disappeared before Setup could
+      // unregister the text service.
       return FAILED(unregister_text_service_without_dll()) ? 1 : 0;
     }
     return 0;
@@ -983,7 +993,8 @@ static int process_tsf_registration_files(const std::wstring& ext,
                                           bool register_ime,
                                           const std::wstring& profile,
                                           bool silent,
-                                          bool best_effort) {
+                                          bool best_effort,
+                                          bool allow_missing_primary) {
   WCHAR path[MAX_PATH] = {0};
   if (!GetSystemDirectoryW(path, _countof(path)))
     return 1;
@@ -996,7 +1007,8 @@ static int process_tsf_registration_files(const std::wstring& ext,
                      bool primary) {
     const int result =
         process_tsf_registration_file(target, register_ime, target_wowarm32,
-                                      primary, profile, silent);
+                                      primary, allow_missing_primary, profile,
+                                      silent);
     if (result != 0)
       retval = 1;
     return result == 0 || best_effort;
@@ -1098,11 +1110,69 @@ static int delete_tsf_files_after_unregister(const std::wstring& ext,
   return retval;
 }
 
+static void remove_layouts_for_forward_recovery() {
+  for (const wchar_t* profile_name : kRegisteredProfiles) {
+    const HRESULT hr =
+        install_layout_or_tip(profile_name, LayoutOrTipAction::Uninstall);
+    if (SUCCEEDED(hr))
+      continue;
+
+    // ILOT_UNINSTALL is best-effort during cross-process recovery. If the
+    // entry is already gone/disabled, the desired state has been reached.
+    weasel::setup::LayoutState state;
+    if (SUCCEEDED(get_layout_or_tip_state(profile_name, &state)) &&
+        !state.enabled && !state.is_default) {
+      continue;
+    }
+
+    LOG(WARNING) << "Could not remove LayoutOrTip during forward uninstall "
+                    "recovery for profile "
+                 << wtou8(profile_name) << ", hr: " << hr;
+  }
+}
+
+static int recover_text_service_uninstall_forward(
+    const std::wstring& profile,
+    bool silent) {
+  struct ForwardOps {
+    const std::wstring& profile;
+    bool silent;
+
+    void remove_layouts_best_effort() {
+      remove_layouts_for_forward_recovery();
+    }
+
+    int unregister_services() {
+      // Retry every DLL that still exists, but treat a missing primary DLL as
+      // already progressed. best_effort keeps later architectures reachable
+      // even if one unregister attempt fails.
+      return process_tsf_registration_files(L".dll", false, profile, silent,
+                                            true, true);
+    }
+
+    int mark_file_cleanup() {
+      return set_pending_uninstall_phase(PendingUninstallPhase::FileCleanup)
+                 ? 0
+                 : 1;
+    }
+
+    bool failed(int result) const { return result != 0; }
+  } ops{profile, silent};
+
+  return weasel::setup::RunTsfUninstallForwardRecovery(ops);
+}
+
 static int uninstall_text_service_transactional(const std::wstring& profile,
                                                 bool silent) {
   std::vector<TextServiceUserState> states;
-  if (!capture_text_service_user_state(states))
-    return 1;
+  if (!capture_text_service_user_state(states)) {
+    // The install is already inconsistent enough that an exact rollback
+    // snapshot is unavailable. Persist a recovery intent and finish forward
+    // rather than making /u permanently depend on the missing state.
+    if (!set_pending_uninstall_phase(PendingUninstallPhase::LogicalRetry))
+      return 1;
+    return recover_text_service_uninstall_forward(profile, silent);
+  }
 
   // Persist intent before the first mutation. A crash or terminated Setup
   // therefore never loses the fact that the logical transaction must be
@@ -1138,12 +1208,13 @@ static int uninstall_text_service_transactional(const std::wstring& profile,
 
     int unregister_services() {
       return process_tsf_registration_files(L".dll", false, profile, silent,
-                                            false);
+                                            false, false);
     }
 
     void restore_services() {
       if (process_tsf_registration_files(
-              L".dll", true, rollback_registration_profile, true, true) != 0) {
+              L".dll", true, rollback_registration_profile, true, true,
+              false) != 0) {
         LOG(ERROR) << "TSF uninstall rollback could not restore all "
                       "registration DLLs.";
       }
@@ -1212,14 +1283,9 @@ static int uninstall_text_service_transactional(const std::wstring& profile,
     return 1;
   }
 
-  // Registration/profile/layout is committed as uninstalled. File removal is
-  // post-commit cleanup and can safely be retried without touching TSF again.
-  if (delete_tsf_files_after_unregister(L".dll", silent) != 0) {
-    LOG(WARNING) << "TSF logical uninstall succeeded but DLL cleanup is still "
-                    "pending; retry after reboot.";
-    return 1;
-  }
-
+  // Registration/profile/layout is committed as uninstalled. Physical file
+  // cleanup is centralized in uninstall() so all FileCleanup entries share the
+  // same retry path.
   return 0;
 }
 
@@ -1326,16 +1392,32 @@ int uninstall(bool silent) {
   PendingUninstallPhase pending = PendingUninstallPhase::None;
   if (!read_pending_uninstall_phase(&pending))
     return 1;
-  if (pending == PendingUninstallPhase::FileCleanup) {
-    // The logical TSF transaction already committed in an earlier /u. Never
-    // call regsvr32 again from this state; only finish physical file cleanup.
-    if (delete_tsf_files_after_unregister(L".dll", silent) != 0)
-      return 1;
-  } else {
-    // None and LogicalRetry both run the recoverable logical transaction.
+  if (pending == PendingUninstallPhase::None) {
     retval += uninstall_text_service_transactional(profile, silent);
     if (retval)
       return 1;
+  } else if (pending == PendingUninstallPhase::LogicalRetry) {
+    // The previous process may have died anywhere inside the logical phase.
+    // Its in-memory snapshot is gone, so never pretend rollback is still
+    // available: converge forward from the observable current state.
+    retval += recover_text_service_uninstall_forward(profile, silent);
+    if (retval)
+      return 1;
+  }
+
+  // All successful logical paths must have committed FileCleanup by here.
+  PendingUninstallPhase committed = PendingUninstallPhase::None;
+  if (!read_pending_uninstall_phase(&committed) ||
+      committed != PendingUninstallPhase::FileCleanup) {
+    LOG(ERROR) << "TSF uninstall reached file cleanup without a committed "
+                  "FileCleanup phase.";
+    return 1;
+  }
+
+  if (delete_tsf_files_after_unregister(L".dll", silent) != 0) {
+    LOG(WARNING) << "TSF logical uninstall succeeded but DLL cleanup is still "
+                    "pending; retry after reboot.";
+    return 1;
   }
 
   // 清除注册信息（RegDeleteKey 遇有子键的键即失败，必须递归整树删除；

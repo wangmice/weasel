@@ -63,8 +63,8 @@ $uninstallFlow = $imeSetup.Substring($uninstallStart, $hasInstalledStart - $unin
 if ($uninstallFlow -notmatch 'uninstall_text_service_transactional\(profile,\s*silent\)') {
   throw 'direct /u must use the transactional TSF uninstall path'
 }
-if ($uninstallFlow -notmatch 'pending\s*==\s*PendingUninstallPhase::FileCleanup[\s\S]*?delete_tsf_files_after_unregister[\s\S]*?else[\s\S]*?uninstall_text_service_transactional') {
-  throw 'file-cleanup retries must skip the logical TSF transaction'
+if ($uninstallFlow -notmatch 'pending\s*==\s*PendingUninstallPhase::None[\s\S]*?uninstall_text_service_transactional[\s\S]*?pending\s*==\s*PendingUninstallPhase::LogicalRetry[\s\S]*?recover_text_service_uninstall_forward[\s\S]*?delete_tsf_files_after_unregister') {
+  throw 'uninstall must route fresh work transactionally, persisted LogicalRetry forward, and FileCleanup physically'
 }
 if ($uninstallFlow -match 'install_layout_or_tip\(profile,\s*LayoutOrTipAction::Uninstall\)[\s\S]*?uninstall_ime_file') {
   throw 'direct /u must not retain the old layout-first non-transactional sequence'
@@ -92,8 +92,11 @@ if ($transactionalFlow -notmatch 'is_profile_enabled_by_default[\s\S]*?enabled_b
 if ($transactionalFlow -notmatch 'set_pending_uninstall_phase\(PendingUninstallPhase::LogicalRetry\)[\s\S]*?RunTsfUninstallTransaction') {
   throw 'logical retry state must be persisted before the first uninstall mutation'
 }
-if ($transactionalFlow -notmatch 'RunTsfUninstallTransaction\(ops\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::FileCleanup\)[\s\S]*?delete_tsf_files_after_unregister') {
-  throw 'logical commit must transition to file-cleanup state before deleting DLLs'
+if ($transactionalFlow -notmatch 'RunTsfUninstallTransaction\(ops\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::FileCleanup\)') {
+  throw 'logical commit must transition to file-cleanup state'
+}
+if ($transactionalFlow -match 'delete_tsf_files_after_unregister') {
+  throw 'transactional logical helper must not perform physical DLL cleanup'
 }
 if ($transactionalFlow -notmatch 'set_pending_uninstall_phase\(PendingUninstallPhase::FileCleanup\)[\s\S]*?restore_layouts\(\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::LogicalRetry\)') {
   throw 'failed file-cleanup phase transition must reassert LogicalRetry after rollback'
@@ -101,8 +104,21 @@ if ($transactionalFlow -notmatch 'set_pending_uninstall_phase\(PendingUninstallP
 if ($transactionalFlow -notmatch 'restore_services\(\)[\s\S]*?restore_default_profiles\(\)[\s\S]*?restore_profiles\(\)[\s\S]*?restore_layouts\(\)') {
   throw 'failed phase transition must rollback registration defaults and user state'
 }
-if ($transactionalFlow -notmatch 'RunTsfUninstallTransaction\(ops\)[\s\S]*?delete_tsf_files_after_unregister') {
-  throw 'DLL deletion must happen only after logical TSF uninstall commits'
+$forwardStart = $imeSetup.IndexOf('static int recover_text_service_uninstall_forward')
+$forwardEnd = $imeSetup.IndexOf('static int uninstall_text_service_transactional', $forwardStart)
+if ($forwardStart -lt 0 -or $forwardEnd -le $forwardStart) {
+  throw 'unable to isolate cross-process forward recovery'
+}
+$forwardFlow = $imeSetup.Substring($forwardStart, $forwardEnd - $forwardStart)
+if ($forwardFlow -notmatch 'RunTsfUninstallForwardRecovery\(ops\)' -or
+    $forwardFlow -notmatch 'process_tsf_registration_files\(L"\.dll",\s*false,\s*profile,\s*silent,\s*true,\s*true\)') {
+  throw 'forward recovery must retry every existing architecture and tolerate a missing primary DLL'
+}
+if ($uninstallTransaction -notmatch 'RunTsfUninstallForwardRecovery[\s\S]*?remove_layouts_best_effort\(\)[\s\S]*?unregister_services\(\)[\s\S]*?mark_file_cleanup\(\)') {
+  throw 'forward recovery must converge from layout cleanup through unregister to FileCleanup'
+}
+if ($uninstallFlow -notmatch 'committed\s*!=\s*PendingUninstallPhase::FileCleanup[\s\S]*?delete_tsf_files_after_unregister') {
+  throw 'DLL deletion must require a persisted FileCleanup phase'
 }
 if ($transactionalFlow -notmatch 'process_tsf_registration_files[\s\S]*?rollback_registration_profile[\s\S]*?set_profile_enabled_by_default[\s\S]*?set_profile_enabled_for_user[\s\S]*?restore_layout_or_tip') {
   throw 'rollback must use the snapshotted machine default profile before restoring current-user state'
@@ -111,8 +127,8 @@ if ($transactionalFlow -notmatch 'if\s*\(!state\.layout\.enabled\s*-and\s*!state
     $transactionalFlow -notmatch 'if\s*\(!state\.layout\.enabled\s*&&\s*!state\.layout\.is_default\)') {
   throw 'layout rollback must skip profiles that were not present/enabled before uninstall'
 }
-if ($transactionalFlow -notmatch 'mark_pending_uninstall\(\)') {
-  throw 'failed transactional uninstall must persist PendingUninstall for a later retry'
+if ($transactionalFlow -notmatch 'capture_text_service_user_state\(states\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::LogicalRetry\)[\s\S]*?recover_text_service_uninstall_forward\(profile,\s*silent\)') {
+  throw 'snapshot failure must persist LogicalRetry and fall forward instead of blocking damaged installs'
 }
 if ($imeSetup -notmatch 'MOVEFILE_DELAY_UNTIL_REBOOT\)\)\s*return\s+TRUE;') {
   throw 'deferred DLL deletion must only report success when reboot cleanup was actually queued'

@@ -31,4 +31,19 @@ auto RunTsfUninstallTransaction(Ops& ops) -> decltype(ops.remove_layouts()) {
   return ops.success();
 }
 
+template <typename Ops>
+auto RunTsfUninstallForwardRecovery(Ops& ops)
+    -> decltype(ops.unregister_services()) {
+  // LayoutOrTip state may already be partially gone and the prior rollback
+  // snapshot no longer exists. Keep this cleanup best-effort and converge
+  // forward instead of attempting to reconstruct lost state.
+  ops.remove_layouts_best_effort();
+
+  auto result = ops.unregister_services();
+  if (ops.failed(result))
+    return result;
+
+  return ops.mark_file_cleanup();
+}
+
 }  // namespace weasel::setup
