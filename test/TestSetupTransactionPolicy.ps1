@@ -358,8 +358,7 @@ if ($replacementStart -lt 0 -or -not ($prepareIndex -lt $replacementStart -and
                                        $replacementStart -lt $overwriteIndex)) {
   throw 'installer must mark replacement start only after previous-install preparation succeeds and before writing payload'
 }
-if ($installer -notmatch 'Var OrphanedPreviousInstall' -or
-    $init -notmatch 'StrCpy \$OrphanedPreviousInstall "0"') {
+if ($installer -notmatch 'Var OrphanedPreviousInstall') {
   throw 'installer must track orphaned previous-install recovery explicitly'
 }
 if ($section -notmatch 'StrCmp \$OrphanedPreviousInstall "1" setup_preserve_existing_profile') {
@@ -385,6 +384,9 @@ if ($installer -notmatch '(?s)!macro AbortInitFailure.*?IfSilent \+2.*?MessageBo
 $initStart = $installer.IndexOf('Function .onInit')
 $initEnd = $installer.IndexOf('FunctionEnd', $initStart)
 $init = $installer.Substring($initStart, $initEnd - $initStart)
+if ($init -notmatch 'StrCpy \$OrphanedPreviousInstall "0"') {
+  throw 'orphaned previous-install state must be reset when the installer starts'
+}
 if ($init.Contains('Abort "$(SETUPFAILED)"')) {
   throw '.onInit must not silently abort with a status-only SETUPFAILED string'
 }
