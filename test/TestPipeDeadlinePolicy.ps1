@@ -91,11 +91,14 @@ if ($tsfHeader -notmatch 'kFastTransportRecoveryBudgetMs\s*=\s*20' -or
     $tsfHeader -notmatch 'kSessionEstablishmentTimeoutMs\s*=\s*1000') {
   throw 'TSF must separate fast transport recovery from bounded Rime session establishment'
 }
-if ($tsf -notmatch '_EnsureServerConnected\(\)[\s\S]*?GetTickCount64\(\)\s*\+[\s\S]*?kSessionEstablishmentTimeoutMs') {
-  throw 'activation-time session establishment must not inherit the 20 ms transport budget'
+if ($tsf -notmatch '_EnsureServerConnected\(\)[\s\S]*?GetTickCount64\(\)\s*\+[\s\S]*?kFastTransportRecoveryBudgetMs') {
+  throw 'activation-time pipe discovery must stay on the short transport budget'
 }
-if ($tsf -notmatch '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(remaining\)') {
-  throw 'Connect and StartSession must consume one shared first-key deadline'
+if ($tsf -notmatch '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(kSessionEstablishmentTimeoutMs\)') {
+  throw 'pipe discovery and Rime session establishment must use separate bounded budgets'
+}
+if ($tsf -match '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.StartSession\(remaining\)') {
+  throw 'StartSession must not consume only the few milliseconds left by pipe discovery'
 }
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
   throw 'transport/session retry must reuse the physical key recovery deadline'

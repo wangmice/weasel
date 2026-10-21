@@ -32,8 +32,8 @@ if ($tsfHeader -notmatch 'kSessionEstablishmentTimeoutMs\s*=\s*1000') {
 if ($ensure -notmatch 'if\s*\(m_client\.IsSessionActive\(\)\)\s*return true;') {
   throw 'healthy connection check must return before recovery work'
 }
-if ($ensure -notmatch 'kSessionEstablishmentTimeoutMs') {
-  throw 'activation-time session establishment must use the dedicated bounded session budget'
+if ($ensure -notmatch 'kFastTransportRecoveryBudgetMs') {
+  throw 'activation-time transport discovery must stay on the short failure-path budget'
 }
 $fastReturn = $ensure.IndexOf('return true;')
 $clockRead = $ensure.IndexOf('GetTickCount64()')
@@ -226,8 +226,11 @@ if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_in
   throw 'launcher must double-check the server singleton around launch arbitration'
 }
 
-if ($until -notmatch 'm_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(remaining\)') {
-  throw 'bounded reconnect must share one absolute deadline across Connect and StartSession'
+if ($until -notmatch 'm_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(kSessionEstablishmentTimeoutMs\)') {
+  throw 'bounded reconnect must separate pipe discovery from Rime session establishment'
+}
+if ($until -match 'm_client\.StartSession\(remaining\)') {
+  throw 'Rime session establishment must never inherit the leftover 20 ms transport budget'
 }
 if ($until -notmatch '_ScheduleServerRecovery\(\)') {
   throw 'failed bounded reconnect must hand server startup to the background coordinator'

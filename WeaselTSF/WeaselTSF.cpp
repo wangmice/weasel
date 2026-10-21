@@ -815,13 +815,10 @@ bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
     if (!remaining || !m_client.Connect(remaining))
       return false;
 
-    remaining = RemainingRecoveryTime(deadline);
-    if (!remaining) {
-      m_client.Disconnect();
-      return false;
-    }
-
-    m_client.StartSession(remaining);
+    // Pipe reachability and Rime session creation have different latency
+    // characteristics. Once the pipe is reachable, do not squeeze AddSession
+    // into the few milliseconds left from the transport deadline.
+    m_client.StartSession(kSessionEstablishmentTimeoutMs);
     _ConsumeResponseIfFresh();
     return m_client.IsSessionActive();
   };
@@ -862,5 +859,5 @@ bool WeaselTSF::_EnsureServerConnected() {
     return true;
 
   return _EnsureServerConnectedUntil(GetTickCount64() +
-                                     kSessionEstablishmentTimeoutMs);
+                                     kFastTransportRecoveryBudgetMs);
 }
