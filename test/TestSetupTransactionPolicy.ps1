@@ -50,8 +50,8 @@ if ($imeSetup -notmatch '#include\s+"TsfUninstallTransaction\.h"') {
 if ($uninstallTransaction -notmatch 'remove_layouts\(\)[\s\S]*?unregister_services\(\)') {
   throw 'logical uninstall must remove LayoutOrTip while profiles still exist, then unregister TSF'
 }
-if ($uninstallTransaction -notmatch 'unregister_services\(\)[\s\S]*?restore_services\(\)[\s\S]*?restore_profiles\(\)[\s\S]*?restore_layouts\(\)') {
-  throw 'failed regsvr32 phase must rebuild registration before restoring profile/layout state'
+if ($uninstallTransaction -notmatch 'unregister_services\(\)[\s\S]*?restore_services\(\)[\s\S]*?restore_default_profiles\(\)[\s\S]*?restore_profiles\(\)[\s\S]*?restore_layouts\(\)') {
+  throw 'failed regsvr32 phase must rebuild registration and machine defaults before restoring user state'
 }
 
 $uninstallStart = $imeSetup.IndexOf('int uninstall(bool silent)')
@@ -62,6 +62,9 @@ if ($uninstallStart -lt 0 -or $hasInstalledStart -le $uninstallStart) {
 $uninstallFlow = $imeSetup.Substring($uninstallStart, $hasInstalledStart - $uninstallStart)
 if ($uninstallFlow -notmatch 'uninstall_text_service_transactional\(profile,\s*silent\)') {
   throw 'direct /u must use the transactional TSF uninstall path'
+}
+if ($uninstallFlow -notmatch 'pending\s*==\s*PendingUninstallPhase::FileCleanup[\s\S]*?delete_tsf_files_after_unregister[\s\S]*?else[\s\S]*?uninstall_text_service_transactional') {
+  throw 'file-cleanup retries must skip the logical TSF transaction'
 }
 if ($uninstallFlow -match 'install_layout_or_tip\(profile,\s*LayoutOrTipAction::Uninstall\)[\s\S]*?uninstall_ime_file') {
   throw 'direct /u must not retain the old layout-first non-transactional sequence'
@@ -76,11 +79,26 @@ $transactionalFlow = $imeSetup.Substring($transactionalStart, $installStart - $t
 if ($transactionalFlow -notmatch 'capture_text_service_user_state\(states\)') {
   throw 'TSF uninstall must snapshot profile/layout state before mutation'
 }
+if ($imeSetup -notmatch 'enum\s+class\s+PendingUninstallPhase\s*:\s*DWORD[\s\S]*?LogicalRetry\s*=\s*1[\s\S]*?FileCleanup\s*=\s*2') {
+  throw 'PendingUninstall must distinguish logical retry from post-commit file cleanup'
+}
+if ($transactionalFlow -notmatch 'is_profile_enabled_by_default[\s\S]*?enabled_by_default') {
+  throw 'TSF uninstall must snapshot machine default-profile state before unregistering'
+}
+if ($transactionalFlow -notmatch 'set_pending_uninstall_phase\(PendingUninstallPhase::LogicalRetry\)[\s\S]*?RunTsfUninstallTransaction') {
+  throw 'logical retry state must be persisted before the first uninstall mutation'
+}
+if ($transactionalFlow -notmatch 'RunTsfUninstallTransaction\(ops\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::FileCleanup\)[\s\S]*?delete_tsf_files_after_unregister') {
+  throw 'logical commit must transition to file-cleanup state before deleting DLLs'
+}
+if ($transactionalFlow -notmatch 'restore_services\(\)[\s\S]*?restore_default_profiles\(\)[\s\S]*?restore_profiles\(\)[\s\S]*?restore_layouts\(\)') {
+  throw 'failed phase transition must rollback registration defaults and user state'
+}
 if ($transactionalFlow -notmatch 'RunTsfUninstallTransaction\(ops\)[\s\S]*?delete_tsf_files_after_unregister') {
   throw 'DLL deletion must happen only after logical TSF uninstall commits'
 }
-if ($transactionalFlow -notmatch 'process_tsf_registration_files\(L"\.dll",\s*true,\s*profile,\s*true,\s*true\)[\s\S]*?set_profile_enabled_for_user[\s\S]*?restore_layout_or_tip') {
-  throw 'rollback must re-register all available architectures before restoring user state'
+if ($transactionalFlow -notmatch 'process_tsf_registration_files[\s\S]*?rollback_registration_profile[\s\S]*?set_profile_enabled_by_default[\s\S]*?set_profile_enabled_for_user[\s\S]*?restore_layout_or_tip') {
+  throw 'rollback must use the snapshotted machine default profile before restoring current-user state'
 }
 if ($transactionalFlow -notmatch 'if\s*\(!state\.layout\.enabled\s*-and\s*!state\.layout\.is_default\)' -and
     $transactionalFlow -notmatch 'if\s*\(!state\.layout\.enabled\s*&&\s*!state\.layout\.is_default\)') {
@@ -380,6 +398,14 @@ $runtimeRestore = $rollback.Substring($runtimeRegistryStart, $cleanupStart - $ru
 if ($runtimeRestore -notmatch 'CurrentVersion\\Run' -or
     $runtimeRestore -notmatch 'Exec\s+''"\$PreviousInstallDir\\WeaselServer\.exe"''') {
   throw 'a fully restored and registered rollback must still restore autorun and restart WeaselServer'
+}
+
+$werIndex = $uninstallFlow.IndexOf('const LSTATUS wer_deleted')
+$userDeleteIndex = $uninstallFlow.IndexOf('const LSTATUS user_deleted')
+$machineFailureGuard = $uninstallFlow.IndexOf('if (retval)', $werIndex)
+if ($werIndex -lt 0 -or $machineFailureGuard -lt 0 -or $userDeleteIndex -lt 0 -or
+    -not ($werIndex -lt $machineFailureGuard -and $machineFailureGuard -lt $userDeleteIndex)) {
+  throw 'per-user PendingUninstall state must survive until all machine cleanup succeeds'
 }
 
 Write-Host 'Setup transaction policy: PASS'

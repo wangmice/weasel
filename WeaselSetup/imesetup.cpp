@@ -449,6 +449,66 @@ static HRESULT is_profile_enabled_for_user(const std::wstring& profile,
   return hr;
 }
 
+static HRESULT set_profile_enabled_by_default(const std::wstring& profile,
+                                              BOOL enabled) {
+  ITfInputProcessorProfiles* pProfiles = NULL;
+  HRESULT hr = CoCreateInstance(
+      CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER,
+      IID_ITfInputProcessorProfiles, (LPVOID*)&pProfiles);
+  if (FAILED(hr))
+    return hr;
+
+  hr = pProfiles->EnableLanguageProfileByDefault(
+      c_clsidTextService, profile_to_lang_id(profile), c_guidProfile, enabled);
+  pProfiles->Release();
+  return hr;
+}
+
+static HRESULT is_profile_enabled_by_default(const std::wstring& profile,
+                                             BOOL* enabled) {
+  if (!enabled)
+    return E_POINTER;
+  *enabled = FALSE;
+
+  WCHAR clsid[64] = {};
+  WCHAR profile_guid[64] = {};
+  WCHAR langid[16] = {};
+  if (StringFromGUID2(c_clsidTextService, clsid, _countof(clsid)) <= 0 ||
+      StringFromGUID2(c_guidProfile, profile_guid, _countof(profile_guid)) <=
+          0 ||
+      FAILED(StringCchPrintfW(langid, _countof(langid), L"0x%08X",
+                              static_cast<unsigned>(profile_to_lang_id(profile))))) {
+    return E_FAIL;
+  }
+
+  const std::wstring key =
+      std::wstring(L"Software\\Microsoft\\CTF\\TIP\\") + clsid +
+      L"\\LanguageProfile\\" + langid + L"\\" + profile_guid;
+
+  HKEY handle = nullptr;
+  const REGSAM view = is_wow64() ? KEY_WOW64_64KEY : 0;
+  const LSTATUS opened =
+      RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0,
+                    KEY_QUERY_VALUE | view, &handle);
+  if (opened != ERROR_SUCCESS)
+    return HRESULT_FROM_WIN32(opened);
+
+  DWORD type = 0;
+  DWORD value = 0;
+  DWORD bytes = sizeof(value);
+  const LSTATUS status =
+      RegQueryValueExW(handle, L"Enable", nullptr, &type,
+                       reinterpret_cast<LPBYTE>(&value), &bytes);
+  RegCloseKey(handle);
+  if (status != ERROR_SUCCESS)
+    return HRESULT_FROM_WIN32(status);
+  if (type != REG_DWORD || bytes != sizeof(value))
+    return HRESULT_FROM_WIN32(ERROR_INVALID_DATATYPE);
+
+  *enabled = value != 0;
+  return S_OK;
+}
+
 // 注册/注销路径保持原语义：初始安装时启用当前用户 profile，并把所选
 // profile 设为默认；卸载时彻底移除注册条目。
 HRESULT enable_profile(BOOL fEnable, const std::wstring& profile) {
@@ -777,32 +837,80 @@ int register_text_service(const std::wstring& tsf_path,
   return 0;
 }
 
+enum class PendingUninstallPhase : DWORD {
+  None = 0,
+  LogicalRetry = 1,
+  FileCleanup = 2,
+};
+
 struct TextServiceUserState {
   std::wstring profile;
   BOOL enabled = FALSE;
+  BOOL enabled_by_default = FALSE;
   weasel::setup::LayoutState layout;
 };
 
-static void mark_pending_uninstall() noexcept {
+static PendingUninstallPhase read_pending_uninstall_phase() noexcept {
   const std::wstring key = per_user_subkey(L"Software\\Rime\\Weasel");
+  HKEY handle = nullptr;
+  if (RegOpenKeyExW(per_user_root(), key.c_str(), 0, KEY_QUERY_VALUE, &handle) !=
+      ERROR_SUCCESS) {
+    return PendingUninstallPhase::None;
+  }
+
+  DWORD type = 0;
+  DWORD value = 0;
+  DWORD bytes = sizeof(value);
   const LSTATUS status =
-      SetRegKeyValue(per_user_root(), key.c_str(), L"PendingUninstall", 1,
-                     REG_DWORD);
-  if (status != ERROR_SUCCESS)
-    LOG(ERROR) << "Could not persist PendingUninstall, error: " << status;
+      RegQueryValueExW(handle, L"PendingUninstall", nullptr, &type,
+                       reinterpret_cast<LPBYTE>(&value), &bytes);
+  RegCloseKey(handle);
+  if (status == ERROR_FILE_NOT_FOUND)
+    return PendingUninstallPhase::None;
+  if (status != ERROR_SUCCESS || type != REG_DWORD || bytes != sizeof(value)) {
+    LOG(WARNING) << "Invalid PendingUninstall state; retrying the logical "
+                    "transaction conservatively.";
+    return PendingUninstallPhase::LogicalRetry;
+  }
+
+  if (value == static_cast<DWORD>(PendingUninstallPhase::FileCleanup))
+    return PendingUninstallPhase::FileCleanup;
+  if (value == static_cast<DWORD>(PendingUninstallPhase::None))
+    return PendingUninstallPhase::None;
+  // Value 1 is also the boolean marker written by the immediately preceding
+  // implementation, so keep it backward-compatible as a logical retry.
+  return PendingUninstallPhase::LogicalRetry;
 }
 
-static void clear_pending_uninstall() noexcept {
+static bool set_pending_uninstall_phase(PendingUninstallPhase phase) noexcept {
   const std::wstring key = per_user_subkey(L"Software\\Rime\\Weasel");
+  if (phase != PendingUninstallPhase::None) {
+    const LSTATUS status =
+        SetRegKeyValue(per_user_root(), key.c_str(), L"PendingUninstall",
+                       static_cast<DWORD>(phase), REG_DWORD);
+    if (status != ERROR_SUCCESS) {
+      LOG(ERROR) << "Could not persist PendingUninstall phase, error: "
+                 << status;
+      return false;
+    }
+    return true;
+  }
+
   HKEY handle = nullptr;
   const LSTATUS opened =
       RegOpenKeyExW(per_user_root(), key.c_str(), 0, KEY_SET_VALUE, &handle);
+  if (opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND)
+    return true;
   if (opened != ERROR_SUCCESS)
-    return;
+    return false;
   const LSTATUS deleted = RegDeleteValueW(handle, L"PendingUninstall");
   RegCloseKey(handle);
-  if (deleted != ERROR_SUCCESS && deleted != ERROR_FILE_NOT_FOUND)
-    LOG(WARNING) << "Could not clear PendingUninstall, error: " << deleted;
+  return deleted == ERROR_SUCCESS || deleted == ERROR_FILE_NOT_FOUND;
+}
+
+static void clear_pending_uninstall() noexcept {
+  if (!set_pending_uninstall_phase(PendingUninstallPhase::None))
+    LOG(WARNING) << "Could not clear PendingUninstall.";
 }
 
 static bool capture_text_service_user_state(
@@ -813,6 +921,9 @@ static bool capture_text_service_user_state(
     TextServiceUserState state;
     state.profile = profile_name;
     HRESULT hr = is_profile_enabled_for_user(state.profile, &state.enabled);
+    if (SUCCEEDED(hr))
+      hr = is_profile_enabled_by_default(state.profile,
+                                         &state.enabled_by_default);
     if (SUCCEEDED(hr))
       hr = get_layout_or_tip_state(state.profile, &state.layout);
     if (FAILED(hr)) {
@@ -973,13 +1084,26 @@ static int delete_tsf_files_after_unregister(const std::wstring& ext,
 static int uninstall_text_service_transactional(const std::wstring& profile,
                                                 bool silent) {
   std::vector<TextServiceUserState> states;
-  if (!capture_text_service_user_state(states)) {
-    mark_pending_uninstall();
+  if (!capture_text_service_user_state(states))
     return 1;
+
+  // Persist intent before the first mutation. A crash or terminated Setup
+  // therefore never loses the fact that the logical transaction must be
+  // retried/recovered.
+  if (!set_pending_uninstall_phase(PendingUninstallPhase::LogicalRetry))
+    return 1;
+
+  std::wstring rollback_registration_profile = L"hans";
+  for (const auto& state : states) {
+    if (state.enabled_by_default) {
+      rollback_registration_profile = state.profile;
+      break;
+    }
   }
 
   struct Ops {
     const std::wstring& profile;
+    const std::wstring& rollback_registration_profile;
     bool silent;
     std::vector<TextServiceUserState>& states;
 
@@ -1001,10 +1125,22 @@ static int uninstall_text_service_transactional(const std::wstring& profile,
     }
 
     void restore_services() {
-      if (process_tsf_registration_files(L".dll", true, profile, true, true) !=
-          0) {
+      if (process_tsf_registration_files(
+              L".dll", true, rollback_registration_profile, true, true) != 0) {
         LOG(ERROR) << "TSF uninstall rollback could not restore all "
                       "registration DLLs.";
+      }
+    }
+
+    void restore_default_profiles() {
+      for (const auto& state : states) {
+        const HRESULT hr = set_profile_enabled_by_default(
+            state.profile, state.enabled_by_default);
+        if (FAILED(hr)) {
+          LOG(ERROR) << "TSF uninstall rollback could not restore machine "
+                        "default profile state for "
+                     << wtou8(state.profile) << ", hr: " << hr;
+        }
       }
     }
 
@@ -1035,21 +1171,29 @@ static int uninstall_text_service_transactional(const std::wstring& profile,
 
     bool failed(int result) const { return result != 0; }
     int success() const { return 0; }
-  } ops{profile, silent, states};
+  } ops{profile, rollback_registration_profile, silent, states};
 
   const int logical_result = weasel::setup::RunTsfUninstallTransaction(ops);
   if (logical_result != 0) {
-    mark_pending_uninstall();
     LOG(WARNING) << "TSF uninstall did not commit; restored the installed "
                     "state where possible. Retry after sign-out or reboot.";
     return 1;
   }
 
-  // Registration/profile/layout is now committed as uninstalled. File removal
-  // is post-commit cleanup: loaded DLLs may be renamed and queued for deletion
-  // at reboot, but no file is deleted before every regsvr32 /u succeeded.
+  // The next retry must never re-run regsvr32 after this point. If the phase
+  // transition itself cannot be persisted, restore the installed state while
+  // every DLL is still present instead of leaving an ambiguous half-commit.
+  if (!set_pending_uninstall_phase(PendingUninstallPhase::FileCleanup)) {
+    ops.restore_services();
+    ops.restore_default_profiles();
+    ops.restore_profiles();
+    ops.restore_layouts();
+    return 1;
+  }
+
+  // Registration/profile/layout is committed as uninstalled. File removal is
+  // post-commit cleanup and can safely be retried without touching TSF again.
   if (delete_tsf_files_after_unregister(L".dll", silent) != 0) {
-    mark_pending_uninstall();
     LOG(WARNING) << "TSF logical uninstall succeeded but DLL cleanup is still "
                     "pending; retry after reboot.";
     return 1;
@@ -1158,15 +1302,18 @@ int uninstall(bool silent) {
     RegCloseKey(hKey);
   }
 
-  // Treat TSF registration, profile state, and LayoutOrTip as one logical
-  // transaction. DLL deletion begins only after the logical uninstall commits.
-  retval += uninstall_text_service_transactional(profile, silent);
-
-  // Preserve install metadata after transactional TSF/layout/file cleanup
-  // failures. PendingUninstall plus the persisted profile/root lets a later
-  // /u retry safely after sign-out or reboot.
-  if (retval)
-    return 1;
+  const PendingUninstallPhase pending = read_pending_uninstall_phase();
+  if (pending == PendingUninstallPhase::FileCleanup) {
+    // The logical TSF transaction already committed in an earlier /u. Never
+    // call regsvr32 again from this state; only finish physical file cleanup.
+    if (delete_tsf_files_after_unregister(L".dll", silent) != 0)
+      return 1;
+  } else {
+    // None and LogicalRetry both run the recoverable logical transaction.
+    retval += uninstall_text_service_transactional(profile, silent);
+    if (retval)
+      return 1;
+  }
 
   // 清除注册信息（RegDeleteKey 遇有子键的键即失败，必须递归整树删除；
   // 键本就不存在视为已清除，其余失败计入 retval 报卸载失败）
@@ -1176,16 +1323,6 @@ int uninstall(bool silent) {
         deleted != ERROR_PATH_NOT_FOUND) {
       ++retval;
     }
-  }
-
-  // NSIS 卸载脚本只清 HKLM 不碰 HKCU（output/install.nsi Uninstall 段），
-  // 用户配置键（Profile/Hant/RimeUserDir/Language 等）在此一并清除；
-  // 用户数据目录的文件留给用户自行处理
-  const LSTATUS user_deleted =
-      delete_reg_tree(per_user_root(), per_user_subkey(KEY).c_str());
-  if (user_deleted != ERROR_SUCCESS && user_deleted != ERROR_FILE_NOT_FOUND &&
-      user_deleted != ERROR_PATH_NOT_FOUND) {
-    ++retval;
   }
 
   // delete WER register,
@@ -1199,8 +1336,21 @@ int uninstall(bool silent) {
     ++retval;
   }
 
+  // Keep the per-user key (and its FileCleanup marker) until every machine
+  // cleanup step succeeds. If HKLM/WER cleanup fails, the next /u can resume
+  // post-commit cleanup without accidentally re-registering TSF.
   if (retval)
     return 1;
+
+  // NSIS 卸载脚本只清 HKLM 不碰 HKCU（output/install.nsi Uninstall 段），
+  // 用户配置键（Profile/Hant/RimeUserDir/Language 等）最后清除；
+  // 用户数据目录的文件留给用户自行处理
+  const LSTATUS user_deleted =
+      delete_reg_tree(per_user_root(), per_user_subkey(KEY).c_str());
+  if (user_deleted != ERROR_SUCCESS && user_deleted != ERROR_FILE_NOT_FOUND &&
+      user_deleted != ERROR_PATH_NOT_FOUND) {
+    return 1;
+  }
 
   MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_UNINSTALL_SUCCESS_INFO,
                         IDS_STR_UNINSTALL_SUCCESS_CAP,

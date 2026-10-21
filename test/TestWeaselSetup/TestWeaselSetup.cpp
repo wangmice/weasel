@@ -399,6 +399,9 @@ struct TsfUninstallProbe {
     return fail_step == 2 ? 1 : 0;
   }
   void restore_services() { calls.emplace_back("restore_services"); }
+  void restore_default_profiles() {
+    calls.emplace_back("restore_default_profiles");
+  }
   void restore_profiles() { calls.emplace_back("restore_profiles"); }
   void restore_layouts() { calls.emplace_back("restore_layouts"); }
   bool failed(int result) const { return result != 0; }
@@ -430,8 +433,8 @@ static void test_tsf_uninstall_transaction() {
               ops.calls ==
                   std::vector<std::string>(
                       {"remove_layouts", "unregister_services",
-                       "restore_services", "restore_profiles",
-                       "restore_layouts"}),
+                       "restore_services", "restore_default_profiles",
+                       "restore_profiles", "restore_layouts"}),
           "regsvr32 failure rebuilds registration before user-state rollback");
   }
 }

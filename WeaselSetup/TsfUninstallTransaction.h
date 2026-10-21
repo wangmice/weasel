@@ -22,6 +22,7 @@ auto RunTsfUninstallTransaction(Ops& ops) -> decltype(ops.remove_layouts()) {
     // partial COM/TSF mutation. Rebuild registration first, then restore the
     // exact user-facing state captured before the transaction.
     ops.restore_services();
+    ops.restore_default_profiles();
     ops.restore_profiles();
     ops.restore_layouts();
     return result;
