@@ -323,20 +323,19 @@ int Configurator::DictManagement() {
   MaintenanceReleaser releaser(client, maintenance_started);
   {
     RimeApi* rime = rime_get_api();
-    if (RIME_API_AVAILABLE(rime, run_task)) {
-      RimeOperationWatchdog operation_watchdog;
-      if (!operation_watchdog.Arm()) {
-        LOG(ERROR) << "Could not arm dictionary preparation watchdog.";
-        result = 1;
-      } else if (!rime->run_task("installation_update")) {
-        LOG(ERROR) << "Dictionary installation_update task failed.";
-        result = 1;
-      }
+    if (RIME_API_AVAILABLE(rime, run_task) &&
+        !rime->run_task("installation_update")) {
+      // installation_update rewrites installation.yaml directly. A
+      // process-killing watchdog could truncate that file, so this mutating
+      // operation must complete or fail naturally until it is isolated behind
+      // a recoverable transaction boundary.
+      LOG(ERROR) << "Dictionary installation_update task failed.";
+      result = 1;
     }
   }
 
-  // Never time the user's interaction with the modal dialog. Individual Rime
-  // operations inside the dialog arm their own watchdogs.
+  // Never time the user's interaction with the modal dialog. Only read-only
+  // dictionary enumeration inside the dialog uses a hard watchdog.
   if (!result) {
     DictManagementDialog dlg;
     dlg.DoModal();
@@ -393,14 +392,9 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
     LOG(ERROR) << "Rime levers module is unavailable.";
     result = 1;
   } else if (RIME_API_AVAILABLE(rime, run_task)) {
-    RimeOperationWatchdog preparation_watchdog;
-    if (!preparation_watchdog.Arm()) {
-      LOG(ERROR) << "Could not arm dictionary preparation watchdog.";
-      result = 1;
-    } else {
-      rime->run_task("installation_update");
-      preparation_watchdog.Disarm();
-    }
+    // installation_update writes installation.yaml through a direct
+    // std::ofstream in librime. Do not make a timeout corrupt that file.
+    rime->run_task("installation_update");
   }
 
   if (!result && list) {
@@ -451,20 +445,16 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
   } else if (!result && export_dict) {
     const std::string dict_name = wtou8(args[1]);
     const std::string text_file = wtou8(args[2]);
-    RimeOperationWatchdog export_watchdog;
-    if (!export_watchdog.Arm()) {
-      LOG(ERROR) << "Could not arm dictionary export watchdog.";
+    // Export writes directly to the caller-selected file. Hard-killing the
+    // process can truncate an existing target, so leave this write unbounded
+    // until export uses a temporary-file + atomic-replace boundary.
+    const int count =
+        api->export_user_dict(dict_name.c_str(), text_file.c_str());
+    if (count < 0) {
+      LOG(ERROR) << "Failed to export user dictionary: " << dict_name;
       result = 1;
     } else {
-      const int count =
-          api->export_user_dict(dict_name.c_str(), text_file.c_str());
-      export_watchdog.Disarm();
-      if (count < 0) {
-        LOG(ERROR) << "Failed to export user dictionary: " << dict_name;
-        result = 1;
-      } else {
-        std::wcout << count << std::endl;
-      }
+      std::wcout << count << std::endl;
     }
   } else if (!result && import_dict) {
     // Import performs incremental db_->Update() calls. Keep it outside the

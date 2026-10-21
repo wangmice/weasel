@@ -74,11 +74,11 @@ DictManagementDialog::DictManagementDialog() {
 
 DictManagementDialog::~DictManagementDialog() {}
 
-static bool ArmDictionaryOperationWatchdog(
+static bool ArmDictionaryEnumerationWatchdog(
     RimeOperationWatchdog& watchdog) noexcept {
   if (watchdog.Arm())
     return true;
-  LOG(ERROR) << "Could not arm dictionary operation watchdog.";
+  LOG(ERROR) << "Could not arm dictionary enumeration watchdog.";
   MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
   return false;
 }
@@ -87,7 +87,7 @@ void DictManagementDialog::Populate() {
   user_dict_list_.ResetContent();
 
   RimeOperationWatchdog operation_watchdog;
-  if (!ArmDictionaryOperationWatchdog(operation_watchdog))
+  if (!ArmDictionaryEnumerationWatchdog(operation_watchdog))
     return;
 
   RimeUserDictIterator iter = {0};
@@ -253,12 +253,9 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
     std::string dict_name_str = wtou8(dict_name);
-    RimeOperationWatchdog operation_watchdog;
-    if (!ArmDictionaryOperationWatchdog(operation_watchdog))
-      return 0;
-
+    // librime writes export output directly to the selected path. Do not
+    // hard-kill the process while that file may be only partially rewritten.
     int result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
-    operation_watchdog.Disarm();
 
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
