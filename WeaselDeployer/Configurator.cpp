@@ -319,16 +319,29 @@ int Configurator::DictManagement() {
     return 1;
   }
 
+  int result = 0;
   MaintenanceReleaser releaser(client, maintenance_started);
   {
     RimeApi* rime = rime_get_api();
     if (RIME_API_AVAILABLE(rime, run_task)) {
-      rime->run_task("installation_update");  // setup user data sync dir
+      RimeOperationWatchdog setup_watchdog;
+      if (!setup_watchdog.Arm()) {
+        LOG(ERROR) << "Could not arm dictionary setup watchdog.";
+        result = 1;
+      } else if (!rime->run_task("installation_update")) {
+        LOG(ERROR) << "Failed to initialize dictionary sync data.";
+        result = 1;
+      }
     }
-    DictManagementDialog dlg;
-    dlg.DoModal();
+
+    if (!result) {
+      DictManagementDialog dlg;
+      dlg.DoModal();
+    }
   }
-  return releaser.Finish() ? 0 : 1;
+  if (!releaser.Finish())
+    result = 1;
+  return result;
 }
 
 int Configurator::DictManagement(const std::vector<std::wstring>& args) {
@@ -355,6 +368,12 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
     return kDictCliUsageError;
   }
 
+  RimeOperationWatchdog dict_watchdog;
+  if (!dict_watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm dictionary operation watchdog.";
+    return 1;
+  }
+
   weasel::ServerLifecycleLock lifecycle_lock;
   if (!lifecycle_lock.Acquire(0)) {
     LOG(WARNING) << "another server lifecycle operation is running; aborting "
@@ -376,8 +395,10 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
   if (!api) {
     LOG(ERROR) << "Rime levers module is unavailable.";
     result = 1;
-  } else if (RIME_API_AVAILABLE(rime, run_task)) {
-    rime->run_task("installation_update");
+  } else if (RIME_API_AVAILABLE(rime, run_task) &&
+             !rime->run_task("installation_update")) {
+    LOG(ERROR) << "Failed to initialize dictionary sync data.";
+    result = 1;
   }
 
   if (!result && list) {
