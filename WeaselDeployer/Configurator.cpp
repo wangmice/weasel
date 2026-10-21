@@ -319,16 +319,32 @@ int Configurator::DictManagement() {
     return 1;
   }
 
+  int result = 0;
   MaintenanceReleaser releaser(client, maintenance_started);
   {
     RimeApi* rime = rime_get_api();
     if (RIME_API_AVAILABLE(rime, run_task)) {
-      rime->run_task("installation_update");  // setup user data sync dir
+      RimeOperationWatchdog operation_watchdog;
+      if (!operation_watchdog.Arm()) {
+        LOG(ERROR) << "Could not arm dictionary preparation watchdog.";
+        result = 1;
+      } else if (!rime->run_task("installation_update")) {
+        LOG(ERROR) << "Dictionary installation_update task failed.";
+        result = 1;
+      }
     }
+  }
+
+  // Never time the user's interaction with the modal dialog. Individual Rime
+  // operations inside the dialog arm their own watchdogs.
+  if (!result) {
     DictManagementDialog dlg;
     dlg.DoModal();
   }
-  return releaser.Finish() ? 0 : 1;
+
+  if (!releaser.Finish())
+    result = 1;
+  return result;
 }
 
 int Configurator::DictManagement(const std::vector<std::wstring>& args) {
@@ -372,8 +388,12 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
   RimeApi* rime = rime_get_api();
   RimeLeversApi* api = GetLeversApi();
   int result = 0;
+  RimeOperationWatchdog operation_watchdog;
 
-  if (!api) {
+  if (!operation_watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm dictionary operation watchdog.";
+    result = 1;
+  } else if (!api) {
     LOG(ERROR) << "Rime levers module is unavailable.";
     result = 1;
   } else if (RIME_API_AVAILABLE(rime, run_task)) {
@@ -430,6 +450,9 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
       std::wcout << count << std::endl;
     }
   }
+
+  // The watchdog protects only local Rime work, not the IPC resume handshake.
+  operation_watchdog.Disarm();
 
   // run_task() and the levers dictionary operations above are synchronous;
   // do not add an unrelated unbounded maintenance join to this CLI path.

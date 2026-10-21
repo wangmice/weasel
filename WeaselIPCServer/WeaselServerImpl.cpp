@@ -24,6 +24,71 @@ static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
 static constexpr DWORD kPrimaryPipeReadyTimeoutMs = 2000;
 static constexpr DWORD kServerStartupLifecycleWaitMs = 2000;
+static constexpr DWORD kServerShutdownHardTimeoutMs = 30 * 1000;
+
+DWORD WINAPI ServerShutdownWatchdogProc(LPVOID param) noexcept {
+  HANDLE cancel_event = static_cast<HANDLE>(param);
+  const DWORD wait_result =
+      WaitForSingleObject(cancel_event, kServerShutdownHardTimeoutMs);
+  CloseHandle(cancel_event);
+
+  if (wait_result != WAIT_OBJECT_0) {
+    // Request handlers may be blocked inside librime or another synchronous
+    // business operation that cannot be safely cancelled at thread scope.
+    // Once graceful pipe shutdown exceeds the hard deadline, process exit is
+    // the only safe ownership boundary; TSF recovery can then start a clean
+    // server generation without leaving detached workers behind.
+    TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+  }
+  return 0;
+}
+
+class ServerShutdownWatchdog {
+ public:
+  ServerShutdownWatchdog() noexcept = default;
+  ServerShutdownWatchdog(const ServerShutdownWatchdog&) = delete;
+  ServerShutdownWatchdog& operator=(const ServerShutdownWatchdog&) = delete;
+  ~ServerShutdownWatchdog() { Disarm(); }
+
+  bool Arm() noexcept {
+    if (cancel_event_)
+      return true;
+
+    HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!cancel_event)
+      return false;
+
+    HANDLE watchdog_event = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), cancel_event, GetCurrentProcess(),
+                         &watchdog_event, SYNCHRONIZE, FALSE, 0)) {
+      CloseHandle(cancel_event);
+      return false;
+    }
+
+    HANDLE thread = CreateThread(nullptr, 0, ServerShutdownWatchdogProc,
+                                 watchdog_event, 0, nullptr);
+    if (!thread) {
+      CloseHandle(watchdog_event);
+      CloseHandle(cancel_event);
+      return false;
+    }
+
+    CloseHandle(thread);
+    cancel_event_ = cancel_event;
+    return true;
+  }
+
+  void Disarm() noexcept {
+    if (!cancel_event_)
+      return;
+    SetEvent(cancel_event_);
+    CloseHandle(cancel_event_);
+    cancel_event_ = nullptr;
+  }
+
+ private:
+  HANDLE cancel_event_ = nullptr;
+};
 
 class SynchronousPipeIoScope {
  public:
@@ -66,6 +131,7 @@ ServerImpl::ServerImpl()
       process_tracker(
           [this](ClientProcessToken token) { _OnClientProcessExit(token); }),
       m_pRequestHandler(NULL),
+      m_singletonMutex(NULL),
       m_runtimeStateMapping(NULL),
       m_runtimeState(nullptr),
       m_darkMode(IsUserDarkMode()) {
@@ -95,6 +161,13 @@ void ServerImpl::_Finailize() {
   if (m_runtimeStateMapping) {
     CloseHandle(m_runtimeStateMapping);
     m_runtimeStateMapping = NULL;
+  }
+  // Keep the named singleton mutex alive until all server-owned resources have
+  // finished teardown. Closing it earlier would allow a second generation to
+  // start while this one is still draining workers or destroying its window.
+  if (m_singletonMutex) {
+    CloseHandle(m_singletonMutex);
+    m_singletonMutex = NULL;
   }
 }
 
@@ -383,7 +456,12 @@ HWND ServerImpl::Start() {
     m_runtimeStateMapping = NULL;
     m_startupLifecycleLock.Release();
     CloseHandle(hMutexOneInstance);
+    return 0;
   }
+
+  // This handle is intentionally process-lifetime state: it keeps the named
+  // mutex object present for as long as this server generation is alive.
+  m_singletonMutex = hMutexOneInstance;
   return hwnd;
 }
 
@@ -534,6 +612,12 @@ int ServerImpl::Run() {
 void ServerImpl::_StopPipeServer() {
   if (!pipeThread)
     return;
+
+  ServerShutdownWatchdog shutdown_watchdog;
+  if (!shutdown_watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm server shutdown watchdog.";
+  }
+
   channel->StopListener(*pipeThread);
   channel->DrainWorkers();
   pipeThread.reset();
