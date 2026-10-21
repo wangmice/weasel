@@ -862,5 +862,5 @@ bool WeaselTSF::_EnsureServerConnected() {
     return true;
 
   return _EnsureServerConnectedUntil(GetTickCount64() +
-                                     kFastSessionRecoveryBudgetMs);
+                                     kSessionEstablishmentTimeoutMs);
 }

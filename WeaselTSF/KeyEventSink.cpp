@@ -9,15 +9,9 @@ WeaselTSF::KeyDispatchResult WeaselTSF::_ProcessKeyEventWithRecovery(
     ULONGLONG recovery_deadline) {
   const auto ensure_recovery_deadline = [&]() {
     if (!recovery_deadline) {
-      recovery_deadline = GetTickCount64() + kFastSessionRecoveryBudgetMs;
+      recovery_deadline = GetTickCount64() + kFastTransportRecoveryBudgetMs;
     }
     return recovery_deadline;
-  };
-  const auto remaining_recovery_time = [&](ULONGLONG deadline) {
-    const ULONGLONG now = GetTickCount64();
-    if (now >= deadline)
-      return static_cast<DWORD>(0);
-    return static_cast<DWORD>(deadline - now);
   };
   const auto process_key_bounded = [&]() {
     return m_client.ProcessKeyEventEx(keyEvent, kKeyEventTransactionTimeoutMs);
@@ -29,11 +23,10 @@ WeaselTSF::KeyDispatchResult WeaselTSF::_ProcessKeyEventWithRecovery(
   auto result = process_key_bounded();
 
   if (result == weasel::KeyEventResult::TransportNotDelivered) {
-    // The request definitely did not reach the server. Reconnect and session
-    // establishment share the 20 ms recovery budget. Once recovered, the
-    // actual key transaction gets its own bounded 100 ms response window;
-    // squeezing it into the leftover recovery milliseconds would turn a fast
-    // 15-20 ms recovery into a spurious ambiguous key timeout.
+    // The request definitely did not reach the server. Keep pipe discovery
+    // and reconnect inside the 20 ms physical-key transport budget. Once a
+    // session exists, the actual key transaction gets its own bounded 100 ms
+    // response window.
     const ULONGLONG deadline = ensure_recovery_deadline();
     if (!_EnsureServerConnectedUntil(deadline))
       return KeyDispatchResult::Unhandled;
@@ -42,16 +35,10 @@ WeaselTSF::KeyDispatchResult WeaselTSF::_ProcessKeyEventWithRecovery(
 
   if (result == weasel::KeyEventResult::InvalidSession) {
     // InvalidSession is emitted before librime receives the key, so one retry
-    // is safe. Session rebuild is limited to the 20 ms recovery budget; the
-    // replay itself still uses the bounded 100 ms physical-key IPC timeout.
-    const ULONGLONG deadline = ensure_recovery_deadline();
-    const DWORD remaining = remaining_recovery_time(deadline);
-    if (!remaining) {
-      _ScheduleServerRecovery();
-      return KeyDispatchResult::Unhandled;
-    }
-
-    m_client.StartSession(remaining);
+    // is safe. Rebuilding the Rime session is heavier than pipe recovery and
+    // must not inherit the 20 ms transport deadline: AddSession can create a
+    // Rime session, load schema/style state, and refresh UI.
+    m_client.StartSession(kSessionEstablishmentTimeoutMs);
     _ConsumeResponseIfFresh();
     if (!m_client.IsSessionActive()) {
       _ScheduleServerRecovery();
@@ -95,7 +82,7 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
   // clock.
   ULONGLONG recovery_deadline = 0;
   if (!m_client.IsSessionActive()) {
-    recovery_deadline = GetTickCount64() + kFastSessionRecoveryBudgetMs;
+    recovery_deadline = GetTickCount64() + kFastTransportRecoveryBudgetMs;
     if (!_EnsureServerConnectedUntil(recovery_deadline)) {
       *pfEaten = FALSE;
       return;
