@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include "WeaselServerImpl.h"
 #include <PipeServer.h>
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 #include <Windows.h>
@@ -152,8 +153,7 @@ ServerImpl::~ServerImpl() {
 void ServerImpl::_Finailize() {
   _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   m_startupLifecycleLock.Release();
-  _StopPipeServer();
-  process_tracker.Stop();
+  _StopRuntime();
 
   if (IsWindow())
     DestroyWindow();
@@ -582,13 +582,13 @@ int ServerImpl::Run() {
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     // Startup lifecycle ownership stays held through WeaselServerApp cleanup;
     // ServerImpl destruction releases it after Rime/UI teardown.
-    _StopPipeServer();
+    _StopRuntime();
     return -1;
   }
 
   if (!_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,
                                       ServerLifecycle::Ready)) {
-    _StopPipeServer();
+    _StopRuntime();
     return -1;
   }
   _UnlockStartupLifecycleLock();
@@ -603,23 +603,37 @@ int ServerImpl::Run() {
     std::lock_guard guard(g_api_mutex);
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   }
-  // Stop the pipe server before the caller (WeaselServerApp::Run) starts
-  // destroying the handler and UI: late requests would touch freed objects.
-  _StopPipeServer();
-  // Process-exit waits are another asynchronous source that can touch the
-  // handler. Drain them at the same lifetime boundary before returning.
-  process_tracker.Stop();
+  // Drain every asynchronous source that can still touch the handler before
+  // WeaselServerApp starts destroying Rime/UI state. One hard deadline covers
+  // both pipe workers and process-exit callbacks.
+  _StopRuntime();
   return nRet;
+}
+
+void ServerImpl::_StopRuntime() {
+  if (m_runtimeStopped)
+    return;
+
+  ServerShutdownWatchdog shutdown_watchdog;
+  if (!shutdown_watchdog.Arm()) {
+    // Teardown below contains blocking joins. Continuing without the hard
+    // watchdog would restore the unbounded-shutdown failure mode precisely
+    // when the process is resource-starved. We are already committed to
+    // Stopping, so fail closed at the process ownership boundary instead.
+    LOG(ERROR) << "Could not arm server shutdown watchdog; terminating "
+                  "WeaselServer instead of entering unbounded teardown.";
+    TerminateProcess(GetCurrentProcess(), ERROR_GEN_FAILURE);
+    std::abort();
+  }
+
+  _StopPipeServer();
+  process_tracker.Stop();
+  m_runtimeStopped = true;
 }
 
 void ServerImpl::_StopPipeServer() {
   if (!pipeThread)
     return;
-
-  ServerShutdownWatchdog shutdown_watchdog;
-  if (!shutdown_watchdog.Arm()) {
-    LOG(ERROR) << "Could not arm server shutdown watchdog.";
-  }
 
   channel->StopListener(*pipeThread);
   channel->DrainWorkers();
