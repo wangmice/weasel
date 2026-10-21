@@ -101,6 +101,11 @@ void ServerImpl::_Finailize() {
 void ServerImpl::_SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept {
   if (!m_runtimeState)
     return;
+
+  // Publish the monotonic start tick before the lifecycle value. A reader that
+  // observes the new lifecycle can therefore never pair it with an older
+  // timestamp and prematurely classify the state as wedged.
+  m_runtimeState->reserved = EncodeServerLifecycleTick(GetTickCount());
   InterlockedExchange(&m_runtimeState->lifecycle, static_cast<LONG>(lifecycle));
 }
 
@@ -117,6 +122,11 @@ bool ServerImpl::_TryTransitionRuntimeLifecycle(
     ServerLifecycle desired) noexcept {
   if (!m_runtimeState)
     return false;
+
+  // Stamping before the compare-exchange is conservative: a failed transition
+  // can only make recovery wait longer for the still-current state, never make
+  // it look older than it really is.
+  m_runtimeState->reserved = EncodeServerLifecycleTick(GetTickCount());
   return InterlockedCompareExchange(
              &m_runtimeState->lifecycle, static_cast<LONG>(desired),
              static_cast<LONG>(expected)) == static_cast<LONG>(expected);

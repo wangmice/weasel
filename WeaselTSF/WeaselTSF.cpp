@@ -282,6 +282,7 @@ constexpr DWORD kServerUnavailableRestartThresholdMs = 1500;
 constexpr DWORD kServerGracefulShutdownTimeoutMs = 1500;
 constexpr DWORD kServerForceTerminateThresholdMs = 5000;
 constexpr DWORD kServerForcedExitTimeoutMs = 1000;
+constexpr DWORD kServerNonReadyHardTimeoutMs = 15 * 60 * 1000;
 constexpr DWORD kServerLivenessProbeTimeoutMs = 100;
 constexpr DWORD kServerRecoveryWorkerRetryBudgetMs = 2500;
 constexpr DWORD kFirstKeyRecoveryPollMs = 5;
@@ -363,6 +364,19 @@ bool SameServerGeneration(const weasel::ServerRuntimeState& lhs,
                           const weasel::ServerRuntimeState& rhs) noexcept {
   return lhs.version == rhs.version && lhs.process_id == rhs.process_id &&
          lhs.process_creation_time == rhs.process_creation_time;
+}
+
+bool IsKnownNonReadyLifecycle(LONG lifecycle) noexcept {
+  return lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Starting) ||
+         lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Maintenance) ||
+         lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Stopping);
+}
+
+bool NonReadyLifecycleHardTimeoutExpired(
+    const weasel::ServerRuntimeState& state) noexcept {
+  return IsKnownNonReadyLifecycle(state.lifecycle) &&
+         weasel::ServerLifecycleElapsedAtLeast(state.reserved, GetTickCount(),
+                                               kServerNonReadyHardTimeoutMs);
 }
 
 bool IsServerInstancePresent(
@@ -448,7 +462,7 @@ bool OpenCurrentSessionServerTarget(const weasel::ServerRuntimeState& state,
   if (_wcsicmp(file_name.c_str(), L"WeaselServer.exe") != 0)
     return false;
   target.window = FindServerWindowForProcess(state.process_id);
-  return target.window != nullptr;
+  return true;
 }
 
 bool ProbeServerResponsive() noexcept {
@@ -472,7 +486,9 @@ enum class StopServerResult {
 
 StopServerResult StopPersistentlyUnavailableServer(
     const weasel::ServerRuntimeState& expected_state,
-    ULONGLONG health_revision) noexcept {
+    ULONGLONG health_revision,
+    weasel::ServerLifecycle expected_lifecycle = weasel::ServerLifecycle::Ready,
+    bool probe_liveness = true) noexcept {
   RunningServerTarget target;
   if (!OpenCurrentSessionServerTarget(expected_state, target))
     return StopServerResult::Failed;
@@ -480,35 +496,75 @@ StopServerResult StopPersistentlyUnavailableServer(
   weasel::ServerRuntimeState current_state{};
   if (!ReadServerRuntimeState(current_state) ||
       !SameServerGeneration(current_state, expected_state) ||
-      current_state.lifecycle !=
-          static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+      current_state.lifecycle != static_cast<LONG>(expected_lifecycle) ||
+      (!probe_liveness &&
+       !NonReadyLifecycleHardTimeoutExpired(current_state))) {
     return StopServerResult::Failed;
   }
 
-  // Keep the potentially 100 ms IPC probe outside the coordinator lock.
-  // ServerLifecycleLock is already owned by the worker, so no new START_SESSION
-  // can commit while this final liveness observation is in flight.
-  if (ProbeServerResponsive())
-    return StopServerResult::SupersededByHealth;
+  // Ready-state recovery probes the pipe before making a destructive decision.
+  // Timed-out non-Ready recovery deliberately skips that probe: Starting has
+  // no listener yet, while Maintenance can have its dispatcher blocked behind
+  // the very Rime operation whose hard deadline expired.
+  if (probe_liveness) {
+    if (!target.window)
+      return StopServerResult::Failed;
+    if (ProbeServerResponsive())
+      return StopServerResult::SupersededByHealth;
+  }
 
-  // Linearize only the irreversible graceful-shutdown decision against a
-  // same-process foreground reconnect that completed before lifecycle
-  // ownership was acquired. Cross-process START_SESSION is excluded by the
-  // lifecycle lock above.
-  const bool close_posted =
+  // Linearize the irreversible shutdown decision against a same-process
+  // foreground reconnect. Revalidate the exact process generation and
+  // lifecycle at the commit point. A timed-out Starting generation may have
+  // published runtime state before creating its window; only that non-Ready
+  // hard-timeout path may terminate directly when no graceful target exists.
+  bool forced_without_window = false;
+  const bool shutdown_started =
       g_serverRecovery.RunIfHealthUnchanged(health_revision, [&]() noexcept {
         weasel::ServerRuntimeState latest_state{};
         if (!ReadServerRuntimeState(latest_state) ||
             !SameServerGeneration(latest_state, expected_state) ||
-            latest_state.lifecycle !=
-                static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+            latest_state.lifecycle != static_cast<LONG>(expected_lifecycle) ||
+            (!probe_liveness &&
+             !NonReadyLifecycleHardTimeoutExpired(latest_state))) {
           return false;
         }
-        return !!PostMessageW(target.window, WM_CLOSE, 0, 0);
+
+        HWND current_window = target.window;
+        if (!current_window)
+          current_window =
+              FindServerWindowForProcess(expected_state.process_id);
+        if (current_window)
+          return !!PostMessageW(current_window, WM_CLOSE, 0, 0);
+
+        if (probe_liveness)
+          return false;
+
+        // The window may be created concurrently after the first state read.
+        // Re-read immediately before the irreversible fallback so a generation
+        // that reached Ready cannot be killed using a stale Starting snapshot.
+        weasel::ServerRuntimeState kill_state{};
+        if (!ReadServerRuntimeState(kill_state) ||
+            !SameServerGeneration(kill_state, expected_state) ||
+            kill_state.lifecycle != static_cast<LONG>(expected_lifecycle) ||
+            !NonReadyLifecycleHardTimeoutExpired(kill_state)) {
+          return false;
+        }
+
+        forced_without_window =
+            !!TerminateProcess(target.process, ERROR_TIMEOUT);
+        return forced_without_window;
       });
-  if (!close_posted) {
+  if (!shutdown_started) {
     return g_serverRecovery.HealthRevision() != health_revision
                ? StopServerResult::SupersededByHealth
+               : StopServerResult::Failed;
+  }
+
+  if (forced_without_window) {
+    return WaitForSingleObject(target.process, kServerForcedExitTimeoutMs) ==
+                   WAIT_OBJECT_0
+               ? StopServerResult::Stopped
                : StopServerResult::Failed;
   }
 
@@ -543,54 +599,34 @@ StopServerResult StopPersistentlyUnavailableServer(
 
 void RunServerRecoveryOnce() noexcept {
   try {
-    weasel::ServerLifecycleLock lifecycle_lock;
-    if (!lifecycle_lock.Acquire(0)) {
-      ResetServerRecoveryFailureStreak();
-      ResetServerUnavailableObservation();
-      FinishServerRecoveryBackoff(kServerLifecycleBusyBackoffMs);
-      return;
-    }
-
     const std::wstring instance_name = weasel::GetServerInstanceName();
     const std::wstring legacy_instance_name =
         weasel::GetLegacyServerInstanceName();
-    const bool server_present =
-        IsServerInstancePresent(instance_name, legacy_instance_name);
 
-    const ULONGLONG health_revision = g_serverRecovery.HealthRevision();
-
-    if (server_present) {
+    weasel::ServerLifecycleLock lifecycle_lock;
+    if (!lifecycle_lock.Acquire(0)) {
+      // Starting is special: the server publishes this state only after it
+      // acquires the startup lifecycle mutex, and it keeps that mutex until
+      // Ready. Therefore a marked Starting generation that exceeded the hard
+      // deadline can be recovered even though the stuck server still owns the
+      // mutex. Maintenance never takes this bypass because a healthy deployer
+      // deliberately owns the same mutex while mutating local Rime data.
       weasel::ServerRuntimeState state{};
-      if (!ReadServerRuntimeState(state) ||
-          state.lifecycle !=
-              static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+      const bool timed_out_starting =
+          ReadServerRuntimeState(state) &&
+          state.lifecycle ==
+              static_cast<LONG>(weasel::ServerLifecycle::Starting) &&
+          NonReadyLifecycleHardTimeoutExpired(state);
+      if (!timed_out_starting) {
         ResetServerRecoveryFailureStreak();
         ResetServerUnavailableObservation();
-        FinishServerRecoveryBackoff(kServerPresentBackoffMs);
-        return;
-      }
-      if (!ObserveServerUnavailableLongEnough()) {
-        ResetServerRecoveryFailureStreak();
-        FinishServerRecoveryBackoff(kServerPresentBackoffMs);
-        return;
-      }
-      if (ProbeServerResponsive()) {
-        FinishServerRecoveryHealthy();
+        FinishServerRecoveryBackoff(kServerLifecycleBusyBackoffMs);
         return;
       }
 
-      weasel::ServerRuntimeState latest_state{};
-      if (!ReadServerRuntimeState(latest_state) ||
-          !SameServerGeneration(latest_state, state) ||
-          latest_state.lifecycle !=
-              static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
-        ResetServerRecoveryFailureStreak();
-        ResetServerUnavailableObservation();
-        FinishServerRecoveryBackoff(kServerPresentBackoffMs);
-        return;
-      }
-      const StopServerResult stop_result =
-          StopPersistentlyUnavailableServer(latest_state, health_revision);
+      const ULONGLONG health_revision = g_serverRecovery.HealthRevision();
+      const StopServerResult stop_result = StopPersistentlyUnavailableServer(
+          state, health_revision, weasel::ServerLifecycle::Starting, false);
       if (stop_result == StopServerResult::SupersededByHealth) {
         FinishServerRecoveryHealthy();
         return;
@@ -599,7 +635,87 @@ void RunServerRecoveryOnce() noexcept {
         FinishServerRecoveryFailure();
         return;
       }
+
       ResetServerUnavailableObservation();
+      ResetServerRecoveryFailureStreak();
+      if (!lifecycle_lock.Acquire(kServerForcedExitTimeoutMs)) {
+        FinishServerRecoveryBackoff(kServerLifecycleBusyBackoffMs);
+        return;
+      }
+    }
+
+    const bool server_present =
+        IsServerInstancePresent(instance_name, legacy_instance_name);
+    const ULONGLONG health_revision = g_serverRecovery.HealthRevision();
+
+    if (server_present) {
+      weasel::ServerRuntimeState state{};
+      if (!ReadServerRuntimeState(state)) {
+        ResetServerRecoveryFailureStreak();
+        ResetServerUnavailableObservation();
+        FinishServerRecoveryBackoff(kServerPresentBackoffMs);
+        return;
+      }
+
+      if (state.lifecycle !=
+          static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+        // At this point recovery owns the lifecycle mutex. A legitimate
+        // external maintenance owner therefore cannot still be active. Keep
+        // waiting for ordinary non-Ready transitions, but place a hard upper
+        // bound on a generation that never reaches Ready.
+        if (!NonReadyLifecycleHardTimeoutExpired(state)) {
+          ResetServerRecoveryFailureStreak();
+          ResetServerUnavailableObservation();
+          FinishServerRecoveryBackoff(kServerPresentBackoffMs);
+          return;
+        }
+
+        const auto expected_lifecycle =
+            static_cast<weasel::ServerLifecycle>(state.lifecycle);
+        const StopServerResult stop_result = StopPersistentlyUnavailableServer(
+            state, health_revision, expected_lifecycle, false);
+        if (stop_result == StopServerResult::SupersededByHealth) {
+          FinishServerRecoveryHealthy();
+          return;
+        }
+        if (stop_result != StopServerResult::Stopped) {
+          FinishServerRecoveryFailure();
+          return;
+        }
+        ResetServerUnavailableObservation();
+      } else {
+        if (!ObserveServerUnavailableLongEnough()) {
+          ResetServerRecoveryFailureStreak();
+          FinishServerRecoveryBackoff(kServerPresentBackoffMs);
+          return;
+        }
+        if (ProbeServerResponsive()) {
+          FinishServerRecoveryHealthy();
+          return;
+        }
+
+        weasel::ServerRuntimeState latest_state{};
+        if (!ReadServerRuntimeState(latest_state) ||
+            !SameServerGeneration(latest_state, state) ||
+            latest_state.lifecycle !=
+                static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+          ResetServerRecoveryFailureStreak();
+          ResetServerUnavailableObservation();
+          FinishServerRecoveryBackoff(kServerPresentBackoffMs);
+          return;
+        }
+        const StopServerResult stop_result =
+            StopPersistentlyUnavailableServer(latest_state, health_revision);
+        if (stop_result == StopServerResult::SupersededByHealth) {
+          FinishServerRecoveryHealthy();
+          return;
+        }
+        if (stop_result != StopServerResult::Stopped) {
+          FinishServerRecoveryFailure();
+          return;
+        }
+        ResetServerUnavailableObservation();
+      }
     } else {
       ResetServerUnavailableObservation();
     }

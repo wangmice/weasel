@@ -81,12 +81,37 @@ struct ServerRuntimeState {
   UINT32 version;
   UINT32 process_id;
   LONG lifecycle;
+  // Version 1 originally left this word at zero. New servers keep the same
+  // wire layout and mark it with a monotonic 31-bit lifecycle-start tick so
+  // new recovery code can bound wedged non-Ready states without breaking
+  // already-loaded older TSF clients.
   UINT32 reserved;
   UINT64 process_creation_time;
 };
 static_assert(sizeof(ServerRuntimeState) == 24,
               "ServerRuntimeState must be cross-architecture stable");
 constexpr UINT32 kServerRuntimeStateVersion = 1;
+constexpr UINT32 kServerLifecycleTickMarker = 0x80000000u;
+constexpr UINT32 kServerLifecycleTickMask = 0x7fffffffu;
+
+inline UINT32 EncodeServerLifecycleTick(DWORD tick) noexcept {
+  return kServerLifecycleTickMarker |
+         (static_cast<UINT32>(tick) & kServerLifecycleTickMask);
+}
+
+inline bool ServerLifecycleElapsedAtLeast(UINT32 encoded_tick,
+                                          DWORD now,
+                                          DWORD threshold_ms) noexcept {
+  if (!(encoded_tick & kServerLifecycleTickMarker) ||
+      threshold_ms > kServerLifecycleTickMask) {
+    return false;
+  }
+
+  const UINT32 started = encoded_tick & kServerLifecycleTickMask;
+  const UINT32 current = static_cast<UINT32>(now) & kServerLifecycleTickMask;
+  const UINT32 elapsed = (current - started) & kServerLifecycleTickMask;
+  return elapsed >= threshold_ms;
+}
 
 // 處理請求之物件
 struct RequestHandler {
