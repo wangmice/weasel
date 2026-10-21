@@ -210,7 +210,19 @@ Function RollbackPreviousInstall
 
 rollback_remove_partial_new:
   IfFileExists "$INSTDIR\WeaselSetup.exe" 0 rollback_remove_new_files
-  ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $R2
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_keep_temp
+  ${EndIf}
+  ${If} $R2 != 0
+    ; A failed child /u can mean regsvr32 could not be confirmed stopped.
+    ; Never delete/restore/register another payload while TSF mutation may
+    ; still be in flight. Preserve the backup and fail closed.
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_keep_temp
+  ${EndIf}
 
 rollback_remove_new_files:
   SetOutPath $TEMP

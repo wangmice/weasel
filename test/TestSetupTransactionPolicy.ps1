@@ -120,8 +120,12 @@ if ($forwardFlow -notmatch 'RunTsfUninstallForwardRecovery\(ops\)' -or
 if ($imeSetup -notmatch 'allow_missing_primary[\s\S]*?unregister_text_service_without_dll\(\)[\s\S]*?return\s+0;') {
   throw 'forward recovery must retain best-effort direct TSF unregister when the primary DLL is missing'
 }
-if ($uninstallTransaction -notmatch 'RunTsfUninstallForwardRecovery[\s\S]*?remove_layouts_best_effort\(\)[\s\S]*?unregister_services\(\)[\s\S]*?mark_file_cleanup\(\)') {
-  throw 'forward recovery must converge from layout cleanup through unregister to FileCleanup'
+if ($uninstallTransaction -notmatch 'RunTsfUninstallForwardRecovery[\s\S]*?remove_layouts_best_effort\(\)[\s\S]*?ops\.failed\(result\)[\s\S]*?unregister_services\(\)[\s\S]*?mark_file_cleanup\(\)') {
+  throw 'forward recovery must stop at residual LayoutOrTip before unregistering or committing FileCleanup'
+}
+if ($forwardFlow -notmatch 'int\s+remove_layouts_best_effort\(\)[\s\S]*?return\s+remove_layouts_for_forward_recovery\(\);' -or
+    $imeSetup -notmatch 'static\s+int\s+remove_layouts_for_forward_recovery\(\)[\s\S]*?get_layout_or_tip_state[\s\S]*?result\s*=\s*1;[\s\S]*?return\s+result;') {
+  throw 'forward recovery must fail when a LayoutOrTip removal cannot be confirmed'
 }
 if ($uninstallFlow -notmatch 'committed\s*!=\s*PendingUninstallPhase::FileCleanup[\s\S]*?delete_tsf_files_after_unregister') {
   throw 'DLL deletion must require a persisted FileCleanup phase'
@@ -465,6 +469,16 @@ foreach ($profileRestore in @(
 if ($rollback -notmatch 'StrCmp \$ReplacementStarted "1" rollback_remove_partial_new rollback_restore_program') {
   throw 'rollback must not unregister the old install again before replacement files exist'
 }
+$partialCleanupStart = $rollback.IndexOf('rollback_remove_partial_new:')
+$partialCleanupEnd = $rollback.IndexOf('rollback_remove_new_files:', $partialCleanupStart)
+if ($partialCleanupStart -lt 0 -or $partialCleanupEnd -le $partialCleanupStart) {
+  throw 'unable to isolate partial-new rollback cleanup'
+}
+$partialCleanup = $rollback.Substring($partialCleanupStart, $partialCleanupEnd - $partialCleanupStart)
+if ($partialCleanup -notmatch 'ExecWait\s+''"\$INSTDIR\\WeaselSetup\.exe" /u''\s+\$R2' -or
+    $partialCleanup -notmatch '\$\{If\}\s+\$R2\s*!=\s*0[\s\S]*?StrCpy \$RollbackFailed "1"[\s\S]*?GoTo rollback_keep_temp') {
+  throw 'partial-new /u failure must stop rollback before deleting or restoring another payload'
+}
 if ($rollback -notmatch 'rollback_profile_legacy:[\s\S]*?StrCpy \$R5 "0"[\s\S]*?ReadRegDWORD \$R5 HKCU') {
   throw 'legacy rollback profile fallback must initialize Hant before reading it'
 }
@@ -501,6 +515,10 @@ if ($freshInstall -notmatch 'RegDeleteValueW\(user_handle, L"PendingUninstall"\)
 if ($imeSetup -notmatch 'static\s+bool\s+clear_pending_uninstall\(\)' -or
     $imeSetup -notmatch 'if\s*\(!clear_pending_uninstall\(\)\)\s*return\s+1;[\s\S]*?IDS_STR_INSTALL_SUCCESS_INFO') {
   throw 'existing install must not report success when PendingUninstall cannot be cleared'
+}
+if ($imeSetup -notmatch 'const\s+HRESULT\s+layout_result\s*=\s*install_layout_or_tip\(profile,\s*LayoutOrTipAction::Install\)' -or
+    $imeSetup -notmatch 'if\s*\(FAILED\(layout_result\)\)[\s\S]*?return\s+1;[\s\S]*?clear_pending_uninstall') {
+  throw 'legacy forced install must fail before success when LayoutOrTip installation fails'
 }
 
 Write-Host 'Setup transaction policy: PASS'

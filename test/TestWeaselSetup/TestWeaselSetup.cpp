@@ -412,16 +412,17 @@ struct TsfForwardRecoveryProbe {
   int fail_step = 0;
   std::vector<std::string> calls;
 
-  void remove_layouts_best_effort() {
+  int remove_layouts_best_effort() {
     calls.emplace_back("remove_layouts_best_effort");
+    return fail_step == 1 ? 1 : 0;
   }
   int unregister_services() {
     calls.emplace_back("unregister_services");
-    return fail_step == 1 ? 1 : 0;
+    return fail_step == 2 ? 1 : 0;
   }
   int mark_file_cleanup() {
     calls.emplace_back("mark_file_cleanup");
-    return fail_step == 2 ? 1 : 0;
+    return fail_step == 3 ? 1 : 0;
   }
   bool failed(int result) const { return result != 0; }
 };
@@ -441,13 +442,21 @@ static void test_tsf_uninstall_forward_recovery() {
     ops.fail_step = 1;
     check(weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
               ops.calls ==
+                  std::vector<std::string>({"remove_layouts_best_effort"}),
+          "forward recovery keeps LogicalRetry while LayoutOrTip remains");
+  }
+  {
+    TsfForwardRecoveryProbe ops;
+    ops.fail_step = 2;
+    check(weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
+              ops.calls ==
                   std::vector<std::string>({"remove_layouts_best_effort",
                                             "unregister_services"}),
           "forward recovery keeps LogicalRetry when unregister still fails");
   }
   {
     TsfForwardRecoveryProbe ops;
-    ops.fail_step = 2;
+    ops.fail_step = 3;
     check(weasel::setup::RunTsfUninstallForwardRecovery(ops) != 0 &&
               ops.calls ==
                   std::vector<std::string>({"remove_layouts_best_effort",
