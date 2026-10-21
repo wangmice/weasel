@@ -137,14 +137,15 @@ if ($rimeWithWeasel -notmatch 'void\s+RimeWithWeaselHandler::_Initialize\(bool\s
     $rimeWithWeasel -notmatch 'm_disabled\s*=\s*true[\s\S]*?detect_deployer\s*&&\s*_IsDeployerRunning\(\)') {
   throw 'Rime initialization must separate startup deployer detection from maintenance resume'
 }
-$rimeInit = [regex]::Match(
-  $rimeWithWeasel,
-  'void\s+RimeWithWeaselHandler::_Initialize\(bool\s+detect_deployer\)\s*\{(?<body>[\s\S]*?)\n\}',
-  [System.Text.RegularExpressions.RegexOptions]::Singleline)
-if (-not $rimeInit.Success) {
+$rimeInitStart = $rimeWithWeasel.IndexOf('void RimeWithWeaselHandler::_Initialize(bool detect_deployer)')
+$rimeFinalizeStart = $rimeWithWeasel.IndexOf('void RimeWithWeaselHandler::Finalize()', $rimeInitStart)
+if ($rimeInitStart -lt 0 -or $rimeFinalizeStart -le $rimeInitStart) {
   throw 'unable to isolate RimeWithWeaselHandler::_Initialize'
 }
-$rimeInitBody = $rimeInit.Groups['body'].Value
+$rimeInitBody = $rimeWithWeasel.Substring(
+  $rimeInitStart,
+  $rimeFinalizeStart - $rimeInitStart
+)
 if ($rimeInitBody -match 'start_maintenance\s*\(' -or
     $rimeInitBody -match 'join_maintenance_thread\s*\(') {
   throw 'WeaselServer startup must not run synchronous librime maintenance before IPC Ready'
