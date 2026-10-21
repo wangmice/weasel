@@ -9,6 +9,7 @@ namespace {
 
 constexpr DWORD kStateChangingTransactionTimeoutMs = 3000;
 constexpr DWORD kMaintenanceTransactionTimeoutMs = 30000;
+constexpr DWORD kHostCallbackTransactionTimeoutMs = 100;
 constexpr DWORD kTeardownTransactionTimeoutMs = 100;
 
 DWORD TransactionTimeoutForCommand(WEASEL_IPC_COMMAND command) {
@@ -16,6 +17,11 @@ DWORD TransactionTimeoutForCommand(WEASEL_IPC_COMMAND command) {
     case WEASEL_IPC_START_MAINTENANCE:
     case WEASEL_IPC_END_MAINTENANCE:
       return kMaintenanceTransactionTimeoutMs;
+    case WEASEL_IPC_ECHO:
+    case WEASEL_IPC_FOCUS_IN:
+    case WEASEL_IPC_FOCUS_OUT:
+    case WEASEL_IPC_UPDATE_INPUT_POS:
+      return kHostCallbackTransactionTimeoutMs;
     case WEASEL_IPC_START_SESSION:
     case WEASEL_IPC_SHUTDOWN_SERVER:
     case WEASEL_IPC_COMMIT_COMPOSITION:

@@ -32,6 +32,20 @@ if ($clientCpp -notmatch 'kStateChangingTransactionTimeoutMs\s*=\s*3000') {
 if ($clientCpp -notmatch 'kMaintenanceTransactionTimeoutMs\s*=\s*30000') {
   throw 'maintenance IPC must retain its separate 30-second bounded timeout'
 }
+if ($clientCpp -notmatch 'kHostCallbackTransactionTimeoutMs\s*=\s*100') {
+  throw 'host callback IPC must stay bounded to 100 ms'
+}
+foreach ($command in @(
+  'WEASEL_IPC_ECHO',
+  'WEASEL_IPC_FOCUS_IN',
+  'WEASEL_IPC_FOCUS_OUT',
+  'WEASEL_IPC_UPDATE_INPUT_POS'
+)) {
+  $pattern = [regex]::Escape($command) + '[\s\S]*?kHostCallbackTransactionTimeoutMs'
+  if ($clientCpp -notmatch $pattern) {
+    throw "$command must use the 100 ms host-callback timeout"
+  }
+}
 foreach ($command in @(
   'WEASEL_IPC_START_SESSION',
   'WEASEL_IPC_SHUTDOWN_SERVER',
@@ -80,6 +94,12 @@ if ($clientCpp -notmatch 'ProcessKeyEventEx\(KeyEvent\s+const&\s+keyEvent,\s*DWO
 }
 if ($tsfHeader -notmatch 'kKeyEventTransactionTimeoutMs\s*=\s*100') {
   throw 'healthy physical-key IPC must stay bounded to 100 ms'
+}
+if ($tsf -notmatch 'OnSetThreadFocus\(\)[\s\S]*?m_client\.Echo\(\)[\s\S]*?ProcessKeyEventEx\(weasel::KeyEvent\(0\),[\s\S]*?kKeyEventTransactionTimeoutMs\)') {
+  throw 'thread-focus status synchronization must use the bounded key IPC overload'
+}
+if ($tsf -match 'OnSetThreadFocus\(\)[\s\S]*?m_client\.ProcessKeyEvent\(0\)') {
+  throw 'thread-focus status synchronization must not use the one-second default key transaction'
 }
 if ($keySink -notmatch 'process_key_bounded[\s\S]*?ProcessKeyEventEx\(keyEvent,[\s\S]*?kKeyEventTransactionTimeoutMs\)') {
   throw 'healthy TSF keys must use the bounded key IPC overload'

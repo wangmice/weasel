@@ -204,7 +204,11 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   //   在本客户端无通知的情况下改变本会话状态，焦点切换时须重新同步
   //   _status 与语言栏图标，省掉会让图标陈旧至下一次击键。
   if (m_client.Echo()) {
-    m_client.ProcessKeyEvent(0);
+    // Thread-focus notification runs on the host thread. Keep the status-sync
+    // no-op key on the same bounded budget as a physical key so a wedged
+    // server cannot turn focus changes into a one-second UI stall.
+    m_client.ProcessKeyEventEx(weasel::KeyEvent(0),
+                               kKeyEventTransactionTimeoutMs);
     _ConsumeResponseIfFresh();
   }
   return S_OK;
