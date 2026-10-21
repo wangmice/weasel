@@ -1021,6 +1021,10 @@ static int uninstall_text_service_transactional(const std::wstring& profile,
 
     void restore_layouts() {
       for (const auto& state : states) {
+        // remove_layouts() never touches profiles that were absent/disabled.
+        // Do not manufacture a disabled LayoutOrTip entry during rollback.
+        if (!state.layout.enabled && !state.layout.is_default)
+          continue;
         const HRESULT hr = restore_layout_or_tip(state.profile, state.layout);
         if (FAILED(hr)) {
           LOG(ERROR) << "TSF uninstall rollback could not restore layout "
