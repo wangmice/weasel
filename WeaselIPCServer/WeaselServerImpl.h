@@ -146,6 +146,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   std::optional<ClientProcessToken> m_maintenanceOwner;
   RequestHandler* m_pRequestHandler;  // points at session_router while active
   ServerLifecycleLock m_startupLifecycleLock;
+  HANDLE m_singletonMutex;
   HANDLE m_runtimeStateMapping;
   ServerRuntimeState* m_runtimeState;
   std::map<UINT, CommandHandler> m_MenuHandlers;
