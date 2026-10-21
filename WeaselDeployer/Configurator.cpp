@@ -451,6 +451,9 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
     }
   }
 
+  // The watchdog protects only local Rime work, not the IPC resume handshake.
+  operation_watchdog.Disarm();
+
   // run_task() and the levers dictionary operations above are synchronous;
   // do not add an unrelated unbounded maintenance join to this CLI path.
   if (!releaser.Finish())

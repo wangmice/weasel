@@ -97,6 +97,8 @@ void DictManagementDialog::Populate() {
     user_dict_list_.AddString(txt.c_str());
   }
   api_->user_dict_iterator_destroy(&iter);
+  operation_watchdog.Disarm();
+
   user_dict_list_.SetCurSel(-1);
   // 程序化 SetCurSel(-1) 不触发 LBN_SELCHANGE，须手动复位按钮状态
   backup_.EnableWindow(FALSE);
@@ -172,7 +174,10 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   if (!ArmDictionaryOperationWatchdog(operation_watchdog))
     return 0;
 
-  if (!api_->backup_user_dict(dict_name_str.c_str())) {
+  const bool backup_ok = api_->backup_user_dict(dict_name_str.c_str());
+  operation_watchdog.Disarm();
+
+  if (!backup_ok) {
     MSG_BY_IDS(IDS_STR_ERR_EXPORT_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     return 0;
   } else if (_waccess(path.c_str(), 0) != 0) {
@@ -209,7 +214,10 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
     if (!ArmDictionaryOperationWatchdog(operation_watchdog))
       return 0;
 
-    if (!api_->restore_user_dict(path.c_str())) {
+    const bool restore_ok = api_->restore_user_dict(path.c_str());
+    operation_watchdog.Disarm();
+
+    if (!restore_ok) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
       Populate();  // 词典内容已变，重载列表反映恢复结果
@@ -255,6 +263,8 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
       return 0;
 
     int result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
+    operation_watchdog.Disarm();
+
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else if (_waccess(selected_path.c_str(), 0) != 0) {
@@ -304,6 +314,8 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
       return 0;
 
     int result = api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
+    operation_watchdog.Disarm();
+
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
