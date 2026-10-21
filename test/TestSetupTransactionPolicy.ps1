@@ -4,6 +4,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $setup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\WeaselSetup.cpp') -Raw
 $transaction = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TransactionalInstall.h') -Raw
 $imeSetup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\imesetup.cpp') -Raw
+$transactional = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TransactionalInstall.h') -Raw
 $uninstallTransaction = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TsfUninstallTransaction.h') -Raw
 
 if ($setup -notmatch '#include\s+"TransactionalInstall\.h"') {
@@ -276,11 +277,15 @@ if ($prepare -notmatch 'prepare_export_user_config:[\s\S]*?reg export HKCU\\Soft
 }
 
 $programBackup = $prepare.IndexOf('prepare_backup_program:')
-$stopOld = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselServer.exe" /quit''')
+$stopOld = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselServer.exe" /quit'' $R2')
 $oldUninstall = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselSetup.exe" /u'' $R2')
 if ($programBackup -lt 0 -or $stopOld -lt 0 -or $oldUninstall -lt 0 -or
     -not ($programBackup -lt $stopOld -and $stopOld -lt $oldUninstall)) {
   throw 'complete program backup must finish before the old service is stopped or unregistered'
+}
+$serverStopFlow = $prepare.Substring($stopOld, $oldUninstall - $stopOld)
+if ($serverStopFlow -notmatch 'ExecWait\s+''"\$PreviousInstallDir\\WeaselServer\.exe" /quit''\s+\$R2[\s\S]*?\$R2\s*!=\s*0[\s\S]*?prepare_failed_before_mutation') {
+  throw 'upgrade must stop before TSF uninstall when the previous server does not confirm shutdown'
 }
 $backupFlow = $prepare.Substring($programBackup, $stopOld - $programBackup)
 if ($backupFlow -notmatch 'weasel-program-backup-\$UpgradeSlotId') {
@@ -359,6 +364,13 @@ if ($installer -match '\.upgrade-\$UpgradeSlotId') {
 }
 if ($installer -match '/REBOOTOK') {
   throw 'installer must not schedule install/version directories for deferred reboot deletion'
+}
+if ($section -notmatch '\$\{GetOptions\}\s+\$R0\s+"/S"[\s\S]*?StrCmp \$HadPreviousInstall "1" setup_preserve_upgrade_profile' -or
+    $section -notmatch 'setup_preserve_upgrade_profile:[\s\S]*?ReadRegStr \$R4 HKCU "Software\\Rime\\Weasel" "Profile"[\s\S]*?setup_profile_hant:[\s\S]*?StrCpy \$R2 "/t"[\s\S]*?setup_profile_hongkong:[\s\S]*?StrCpy \$R2 "/hk"[\s\S]*?setup_profile_macau:[\s\S]*?StrCpy \$R2 "/mc"[\s\S]*?setup_profile_singapore:[\s\S]*?StrCpy \$R2 "/sg"') {
+  throw 'silent upgrade must preserve the restored profile instead of forcing hans'
+}
+if ($section -notmatch 'setup_profile_legacy:[\s\S]*?StrCpy \$R5 "0"[\s\S]*?ReadRegDWORD \$R5 HKCU "Software\\Rime\\Weasel" "Hant"') {
+  throw 'silent upgrade legacy profile fallback must initialize and read Hant safely'
 }
 
 if ($installer -notmatch '(?s)!macro AbortInitFailure.*?IfSilent \+2.*?MessageBox MB_OK\|MB_ICONSTOP "\$\(SETUPFAILED\)".*?Abort.*?!macroend') {
@@ -458,6 +470,17 @@ $machineFailureGuard = $uninstallFlow.IndexOf('if (retval)', $werIndex)
 if ($werIndex -lt 0 -or $machineFailureGuard -lt 0 -or $userDeleteIndex -lt 0 -or
     -not ($werIndex -lt $machineFailureGuard -and $machineFailureGuard -lt $userDeleteIndex)) {
   throw 'per-user PendingUninstall state must survive until all machine cleanup succeeds'
+}
+
+$freshInstallStart = $transactional.IndexOf('inline int InstallFreshTransactional')
+if ($freshInstallStart -lt 0) { throw 'unable to isolate fresh install transaction' }
+$freshInstall = $transactional.Substring($freshInstallStart)
+if ($freshInstall -notmatch 'RegDeleteValueW\(user_handle, L"PendingUninstall"\)[\s\S]*?cleared\s*!=\s*ERROR_SUCCESS[\s\S]*?rollback\(\)[\s\S]*?return\s+1;') {
+  throw 'fresh install must rollback when PendingUninstall cannot be cleared'
+}
+if ($imeSetup -notmatch 'static\s+bool\s+clear_pending_uninstall\(\)' -or
+    $imeSetup -notmatch 'if\s*\(!clear_pending_uninstall\(\)\)\s*return\s+1;[\s\S]*?IDS_STR_INSTALL_SUCCESS_INFO') {
+  throw 'existing install must not report success when PendingUninstall cannot be cleared'
 }
 
 Write-Host 'Setup transaction policy: PASS'

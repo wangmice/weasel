@@ -325,13 +325,23 @@ inline int InstallFreshTransactional(const std::wstring& profile,
   }
 
   // A successful fresh install supersedes any deferred uninstall request.
-  // PendingUninstall was snapshotted above, so rollback still restores it.
+  // PendingUninstall was snapshotted above, so failure to clear it is part of
+  // the transaction and restores the prior registration/registry/layout state.
   {
     HKEY user_handle = nullptr;
-    if (RegOpenKeyExW(per_user_root(), user_key.c_str(), 0, KEY_SET_VALUE,
-                      &user_handle) == ERROR_SUCCESS) {
-      RegDeleteValueW(user_handle, L"PendingUninstall");
-      RegCloseKey(user_handle);
+    const LSTATUS opened =
+        RegOpenKeyExW(per_user_root(), user_key.c_str(), 0, KEY_SET_VALUE,
+                      &user_handle);
+    if (opened != ERROR_SUCCESS) {
+      rollback();
+      return 1;
+    }
+    const LSTATUS cleared =
+        RegDeleteValueW(user_handle, L"PendingUninstall");
+    RegCloseKey(user_handle);
+    if (cleared != ERROR_SUCCESS && cleared != ERROR_FILE_NOT_FOUND) {
+      rollback();
+      return 1;
     }
   }
 

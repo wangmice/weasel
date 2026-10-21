@@ -376,10 +376,22 @@ prepare_backup_verified:
   IfFileExists "$PreviousProgramBackupDir\WeaselSetup.exe" 0 prepare_failed_before_mutation
   IfFileExists "$PreviousProgramBackupDir\WeaselServer.exe" 0 prepare_failed_before_mutation
 
-  ; Stop our own service first. Other applications can still hold TSF DLLs; the
-  ; same-path directory removal below detects that condition without killing
-  ; unrelated user processes.
-  ExecWait '"$PreviousInstallDir\WeaselServer.exe" /quit'
+  ; Stop our own service first. Do not begin TSF mutation unless the old
+  ; server confirms shutdown; cross-version upgrades do not have same-path
+  ; file locking as a reliable fallback barrier.
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselServer.exe" /quit' $R2
+  ${If} ${Errors}
+    DetailPrint "Previous WeaselServer /quit could not be executed; leaving the old installation in place."
+    Exec '"$PreviousInstallDir\WeaselServer.exe"'
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+  ${If} $R2 != 0
+    DetailPrint "Previous WeaselServer /quit exited with $R2; leaving the old installation in place."
+    Exec '"$PreviousInstallDir\WeaselServer.exe"'
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+
   ClearErrors
   ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /u' $R2
   ${If} ${Errors}
@@ -649,13 +661,47 @@ program_files:
 
   SetOutPath $INSTDIR
 
-  ; test /T flag for zh_TW locale
+  ; Select the Setup profile command. A fresh silent install defaults to hans,
+  ; while a silent upgrade preserves the profile restored from the previous
+  ; HKCU backup. Explicit /T still overrides the preserved profile.
   StrCpy $R2 "/i"
   ${GetParameters} $R0
   ClearErrors
   ${GetOptions} $R0 "/S" $R1
-  IfErrors +2 0
+  IfErrors setup_check_traditional
+  StrCmp $HadPreviousInstall "1" setup_preserve_upgrade_profile
   StrCpy $R2 "/s"
+  GoTo setup_check_traditional
+
+setup_preserve_upgrade_profile:
+  StrCpy $R2 "/s"
+  ReadRegStr $R4 HKCU "Software\Rime\Weasel" "Profile"
+  StrCmp $R4 "hant" setup_profile_hant
+  StrCmp $R4 "hongkong" setup_profile_hongkong
+  StrCmp $R4 "macau" setup_profile_macau
+  StrCmp $R4 "singapore" setup_profile_singapore
+  StrCmp $R4 "" setup_profile_legacy setup_check_traditional
+
+setup_profile_hant:
+  StrCpy $R2 "/t"
+  GoTo setup_check_traditional
+setup_profile_hongkong:
+  StrCpy $R2 "/hk"
+  GoTo setup_check_traditional
+setup_profile_macau:
+  StrCpy $R2 "/mc"
+  GoTo setup_check_traditional
+setup_profile_singapore:
+  StrCpy $R2 "/sg"
+  GoTo setup_check_traditional
+setup_profile_legacy:
+  StrCpy $R5 "0"
+  ReadRegDWORD $R5 HKCU "Software\Rime\Weasel" "Hant"
+  StrCmp $R5 "0" setup_check_traditional
+  StrCpy $R2 "/t"
+
+setup_check_traditional:
+  ClearErrors
   ${GetOptions} $R0 "/T" $R1
   IfErrors +2 0
   StrCpy $R2 "/t"

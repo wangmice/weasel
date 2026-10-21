@@ -925,9 +925,11 @@ static bool set_pending_uninstall_phase(PendingUninstallPhase phase) noexcept {
   return deleted == ERROR_SUCCESS || deleted == ERROR_FILE_NOT_FOUND;
 }
 
-static void clear_pending_uninstall() noexcept {
-  if (!set_pending_uninstall_phase(PendingUninstallPhase::None))
-    LOG(WARNING) << "Could not clear PendingUninstall.";
+static bool clear_pending_uninstall() noexcept {
+  if (set_pending_uninstall_phase(PendingUninstallPhase::None))
+    return true;
+  LOG(ERROR) << "Could not clear PendingUninstall.";
+  return false;
 }
 
 static bool capture_text_service_user_state(
@@ -1361,7 +1363,8 @@ int install(const std::wstring& profile, bool silent) {
   SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpCount", 10,
                  REG_DWORD, true);
 
-  clear_pending_uninstall();
+  if (!clear_pending_uninstall())
+    return 1;
   MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
                         IDS_STR_INSTALL_SUCCESS_CAP,
                         MB_ICONINFORMATION | MB_OK);
