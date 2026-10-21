@@ -43,6 +43,8 @@ struct WeaselLayoutOrTipProfile {
 constexpr DWORD kLayoutOrTipInputProcessor = 1;
 constexpr DWORD kLayoutOrTipDefault = 0x0001;
 constexpr DWORD kLayoutOrTipDisabled = 0x0002;
+constexpr DWORD kRegsvr32TimeoutMs = 60 * 1000;
+constexpr DWORD kRegsvr32TerminationWaitMs = 5 * 1000;
 typedef UINT(WINAPI* PTF_ENUMENABLEDLAYOUTORTIP)(
     LPCWSTR pszUserReg,
     LPCWSTR pszSystemReg,
@@ -681,31 +683,57 @@ int register_text_service(const std::wstring& tsf_path,
     return 1;
   }
 
-  std::wstring app = L"regsvr32.exe";
+  WCHAR system_dir[MAX_PATH] = {0};
   if (is_wowarm32) {
-    WCHAR sysarm32[MAX_PATH];
-    get_wow_arm32_system_dir(sysarm32, _countof(sysarm32));
-
-    app = std::wstring(sysarm32) + L"\\" + app;
-  }
-
-  SHELLEXECUTEINFOW shExInfo = {0};
-  shExInfo.cbSize = sizeof(shExInfo);
-  shExInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
-  shExInfo.hwnd = 0;
-  shExInfo.lpVerb = L"open";               // Operation to perform
-  shExInfo.lpFile = app.c_str();           // Application to start
-  shExInfo.lpParameters = params.c_str();  // Additional parameters
-  shExInfo.lpDirectory = 0;
-  shExInfo.nShow = SW_SHOW;
-  shExInfo.hInstApp = 0;
-  if (!ShellExecuteExW(&shExInfo)) {
+    if (!get_wow_arm32_system_dir(system_dir, _countof(system_dir))) {
+      return report_regsvr32_failure(params, silent);
+    }
+  } else if (!GetSystemDirectoryW(system_dir, _countof(system_dir))) {
     return report_regsvr32_failure(params, silent);
   }
-  WaitForSingleObject(shExInfo.hProcess, INFINITE);
+  const std::wstring app = std::wstring(system_dir) + L"\\regsvr32.exe";
+
+  std::wstring command_line = L"\"" + app + L"\"" + params;
+  std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+  mutable_command.push_back(L'\0');
+
+  STARTUPINFOW startup_info = {sizeof(startup_info)};
+  PROCESS_INFORMATION process_info = {};
+  if (!CreateProcessW(app.c_str(), mutable_command.data(), nullptr, nullptr,
+                      FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info,
+                      &process_info)) {
+    return report_regsvr32_failure(params, silent);
+  }
+  CloseHandle(process_info.hThread);
+
+  const DWORD wait_result =
+      WaitForSingleObject(process_info.hProcess, kRegsvr32TimeoutMs);
+  if (wait_result != WAIT_OBJECT_0) {
+    const DWORD failure_code =
+        wait_result == WAIT_TIMEOUT ? ERROR_TIMEOUT : ERROR_GEN_FAILURE;
+    LOG(ERROR) << "regsvr32 did not exit within the bounded wait, result: "
+               << wait_result << ", error: "
+               << (wait_result == WAIT_FAILED ? GetLastError() : failure_code);
+
+    // Never let Setup continue rollback while regsvr32 may still be mutating
+    // COM/TSF registration. Stop the child first and confirm process death.
+    (void)TerminateProcess(process_info.hProcess, failure_code);
+    const DWORD terminated = WaitForSingleObject(
+        process_info.hProcess, kRegsvr32TerminationWaitMs);
+    CloseHandle(process_info.hProcess);
+    if (terminated != WAIT_OBJECT_0) {
+      LOG(ERROR) << "regsvr32 could not be confirmed stopped; aborting Setup "
+                    "without continuing the transaction.";
+      TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+      return 1;
+    }
+    return report_regsvr32_failure(params, silent);
+  }
+
   DWORD exit_code = 0;
-  BOOL got_exit_code = GetExitCodeProcess(shExInfo.hProcess, &exit_code);
-  CloseHandle(shExInfo.hProcess);
+  const BOOL got_exit_code =
+      GetExitCodeProcess(process_info.hProcess, &exit_code);
+  CloseHandle(process_info.hProcess);
   if (!got_exit_code || exit_code != 0) {
     // regsvr32 已运行但注册失败（退出码非 0）
     return report_regsvr32_failure(params, silent);
