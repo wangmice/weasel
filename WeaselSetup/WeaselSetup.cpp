@@ -76,6 +76,7 @@ namespace {
 constexpr DWORD kServerTransitionTimeoutMs = 30000;
 constexpr DWORD kDeployerOperationTimeoutMs = 15 * 60 * 1000 + 10 * 1000;
 constexpr DWORD kDeployerTerminationWaitMs = 5000;
+constexpr DWORD kElevationCommandTimeoutMs = 60 * 60 * 1000;
 
 enum class DeployerRunResult {
   Success,
@@ -545,6 +546,8 @@ bool IsProcAdmin() {
 }
 
 int RestartAsAdmin(LPTSTR lpCmdLine) {
+  const bool interactive_launch = !lpCmdLine || !*lpCmdLine;
+
   SHELLEXECUTEINFO execInfo{0};
   TCHAR path[MAX_PATH];
   GetModuleFileName(GetModuleHandle(NULL), path, _countof(path));
@@ -557,12 +560,39 @@ int RestartAsAdmin(LPTSTR lpCmdLine) {
   execInfo.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
   execInfo.hwnd = NULL;
   execInfo.hProcess = NULL;
-  if (::ShellExecuteEx(&execInfo) && execInfo.hProcess != NULL) {
-    ::WaitForSingleObject(execInfo.hProcess, INFINITE);
-    DWORD dwExitCode = 0;
-    ::GetExitCodeProcess(execInfo.hProcess, &dwExitCode);
+  if (!::ShellExecuteEx(&execInfo) || execInfo.hProcess == NULL)
+    return -1;
+
+  if (interactive_launch) {
+    // The unelevated launcher has no work to perform after UAC succeeds.
+    // Leaving immediately avoids pinning a parent process while the user keeps
+    // the elevated configuration dialog open.
     ::CloseHandle(execInfo.hProcess);
-    return dwExitCode;
+    return 0;
   }
-  return -1;
+
+  const DWORD wait_result =
+      ::WaitForSingleObject(execInfo.hProcess, kElevationCommandTimeoutMs);
+  if (wait_result == WAIT_OBJECT_0) {
+    DWORD exit_code = ERROR_GEN_FAILURE;
+    const bool got_exit_code =
+        ::GetExitCodeProcess(execInfo.hProcess, &exit_code) != FALSE;
+    ::CloseHandle(execInfo.hProcess);
+    return got_exit_code ? static_cast<int>(exit_code) : -1;
+  }
+
+  if (wait_result == WAIT_TIMEOUT) {
+    LOG(ERROR) << "Elevated WeaselSetup exceeded the command timeout.";
+    ::CloseHandle(execInfo.hProcess);
+    // Do not terminate an elevated install/uninstall transaction from the
+    // unelevated launcher. Report timeout while allowing the child to finish
+    // or recover according to its own transactional/runtime safeguards.
+    return ERROR_TIMEOUT;
+  }
+
+  const DWORD wait_error = GetLastError();
+  LOG(ERROR) << "Waiting for elevated WeaselSetup failed, error: "
+             << wait_error;
+  ::CloseHandle(execInfo.hProcess);
+  return wait_error ? static_cast<int>(wait_error) : -1;
 }
