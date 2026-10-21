@@ -170,12 +170,9 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   path += std::wstring(L"\\") + dict_name + L".userdb.txt";
   std::string dict_name_str = wtou8(dict_name);
 
-  RimeOperationWatchdog operation_watchdog;
-  if (!ArmDictionaryOperationWatchdog(operation_watchdog))
-    return 0;
-
+  // Backup can rewrite userdb metadata when the stored user id changes. Do
+  // not hard-kill a mutating userdb operation mid-write.
   const bool backup_ok = api_->backup_user_dict(dict_name_str.c_str());
-  operation_watchdog.Disarm();
 
   if (!backup_ok) {
     MSG_BY_IDS(IDS_STR_ERR_EXPORT_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
@@ -210,12 +207,10 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, NULL, L"snapshot");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
-    RimeOperationWatchdog operation_watchdog;
-    if (!ArmDictionaryOperationWatchdog(operation_watchdog))
-      return 0;
-
+    // Restore merges entries incrementally into the destination userdb.
+    // Forced process termination here could leave only part of the snapshot
+    // applied, so let the operation complete or fail naturally.
     const bool restore_ok = api_->restore_user_dict(path.c_str());
-    operation_watchdog.Disarm();
 
     if (!restore_ok) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
@@ -309,12 +304,9 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
-    RimeOperationWatchdog operation_watchdog;
-    if (!ArmDictionaryOperationWatchdog(operation_watchdog))
-      return 0;
-
+    // Import is also an incremental userdb mutation; never attach the
+    // process-killing watchdog to this call.
     int result = api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
-    operation_watchdog.Disarm();
 
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
