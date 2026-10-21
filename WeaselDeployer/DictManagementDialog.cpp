@@ -74,8 +74,22 @@ DictManagementDialog::DictManagementDialog() {
 
 DictManagementDialog::~DictManagementDialog() {}
 
+static bool ArmDictionaryOperationWatchdog(
+    RimeOperationWatchdog& watchdog) noexcept {
+  if (watchdog.Arm())
+    return true;
+  LOG(ERROR) << "Could not arm dictionary operation watchdog.";
+  MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+  return false;
+}
+
 void DictManagementDialog::Populate() {
   user_dict_list_.ResetContent();
+
+  RimeOperationWatchdog operation_watchdog;
+  if (!ArmDictionaryOperationWatchdog(operation_watchdog))
+    return;
+
   RimeUserDictIterator iter = {0};
   api_->user_dict_iterator_init(&iter);
   while (const char* dict = api_->next_user_dict(&iter)) {
@@ -153,6 +167,11 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
   path += std::wstring(L"\\") + dict_name + L".userdb.txt";
   std::string dict_name_str = wtou8(dict_name);
+
+  RimeOperationWatchdog operation_watchdog;
+  if (!ArmDictionaryOperationWatchdog(operation_watchdog))
+    return 0;
+
   if (!api_->backup_user_dict(dict_name_str.c_str())) {
     MSG_BY_IDS(IDS_STR_ERR_EXPORT_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     return 0;
@@ -186,6 +205,10 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, NULL, L"snapshot");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
+    RimeOperationWatchdog operation_watchdog;
+    if (!ArmDictionaryOperationWatchdog(operation_watchdog))
+      return 0;
+
     if (!api_->restore_user_dict(path.c_str())) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
@@ -227,6 +250,10 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
     std::string dict_name_str = wtou8(dict_name);
+    RimeOperationWatchdog operation_watchdog;
+    if (!ArmDictionaryOperationWatchdog(operation_watchdog))
+      return 0;
+
     int result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
@@ -272,6 +299,10 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
+    RimeOperationWatchdog operation_watchdog;
+    if (!ArmDictionaryOperationWatchdog(operation_watchdog))
+      return 0;
+
     int result = api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
