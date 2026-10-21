@@ -850,12 +850,21 @@ struct TextServiceUserState {
   weasel::setup::LayoutState layout;
 };
 
-static PendingUninstallPhase read_pending_uninstall_phase() noexcept {
+static bool read_pending_uninstall_phase(
+    PendingUninstallPhase* phase) noexcept {
+  if (!phase)
+    return false;
+  *phase = PendingUninstallPhase::None;
+
   const std::wstring key = per_user_subkey(L"Software\\Rime\\Weasel");
   HKEY handle = nullptr;
-  if (RegOpenKeyExW(per_user_root(), key.c_str(), 0, KEY_QUERY_VALUE, &handle) !=
-      ERROR_SUCCESS) {
-    return PendingUninstallPhase::None;
+  const LSTATUS opened =
+      RegOpenKeyExW(per_user_root(), key.c_str(), 0, KEY_QUERY_VALUE, &handle);
+  if (opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND)
+    return true;
+  if (opened != ERROR_SUCCESS) {
+    LOG(ERROR) << "Could not read PendingUninstall state, error: " << opened;
+    return false;
   }
 
   DWORD type = 0;
@@ -866,20 +875,28 @@ static PendingUninstallPhase read_pending_uninstall_phase() noexcept {
                        reinterpret_cast<LPBYTE>(&value), &bytes);
   RegCloseKey(handle);
   if (status == ERROR_FILE_NOT_FOUND)
-    return PendingUninstallPhase::None;
+    return true;
   if (status != ERROR_SUCCESS || type != REG_DWORD || bytes != sizeof(value)) {
-    LOG(WARNING) << "Invalid PendingUninstall state; retrying the logical "
-                    "transaction conservatively.";
-    return PendingUninstallPhase::LogicalRetry;
+    LOG(ERROR) << "Invalid PendingUninstall registry value, error: " << status;
+    return false;
   }
 
-  if (value == static_cast<DWORD>(PendingUninstallPhase::FileCleanup))
-    return PendingUninstallPhase::FileCleanup;
-  if (value == static_cast<DWORD>(PendingUninstallPhase::None))
-    return PendingUninstallPhase::None;
-  // Value 1 is also the boolean marker written by the immediately preceding
-  // implementation, so keep it backward-compatible as a logical retry.
-  return PendingUninstallPhase::LogicalRetry;
+  switch (value) {
+    case static_cast<DWORD>(PendingUninstallPhase::None):
+      *phase = PendingUninstallPhase::None;
+      return true;
+    case static_cast<DWORD>(PendingUninstallPhase::LogicalRetry):
+      // Value 1 is also the boolean marker written by the immediately
+      // preceding implementation.
+      *phase = PendingUninstallPhase::LogicalRetry;
+      return true;
+    case static_cast<DWORD>(PendingUninstallPhase::FileCleanup):
+      *phase = PendingUninstallPhase::FileCleanup;
+      return true;
+    default:
+      LOG(ERROR) << "Unknown PendingUninstall phase: " << value;
+      return false;
+  }
 }
 
 static bool set_pending_uninstall_phase(PendingUninstallPhase phase) noexcept {
@@ -1188,6 +1205,10 @@ static int uninstall_text_service_transactional(const std::wstring& profile,
     ops.restore_default_profiles();
     ops.restore_profiles();
     ops.restore_layouts();
+    // Normally the failed write leaves the pre-existing LogicalRetry value
+    // intact. Reassert it explicitly after rollback so an unusual partial
+    // registry update can never route the next /u into file-only cleanup.
+    (void)set_pending_uninstall_phase(PendingUninstallPhase::LogicalRetry);
     return 1;
   }
 
@@ -1302,7 +1323,9 @@ int uninstall(bool silent) {
     RegCloseKey(hKey);
   }
 
-  const PendingUninstallPhase pending = read_pending_uninstall_phase();
+  PendingUninstallPhase pending = PendingUninstallPhase::None;
+  if (!read_pending_uninstall_phase(&pending))
+    return 1;
   if (pending == PendingUninstallPhase::FileCleanup) {
     // The logical TSF transaction already committed in an earlier /u. Never
     // call regsvr32 again from this state; only finish physical file cleanup.

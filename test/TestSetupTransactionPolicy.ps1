@@ -82,6 +82,10 @@ if ($transactionalFlow -notmatch 'capture_text_service_user_state\(states\)') {
 if ($imeSetup -notmatch 'enum\s+class\s+PendingUninstallPhase\s*:\s*DWORD[\s\S]*?LogicalRetry\s*=\s*1[\s\S]*?FileCleanup\s*=\s*2') {
   throw 'PendingUninstall must distinguish logical retry from post-commit file cleanup'
 }
+if ($imeSetup -notmatch 'static\s+bool\s+read_pending_uninstall_phase[\s\S]*?opened\s*!=\s*ERROR_SUCCESS[\s\S]*?return\s+false;' -or
+    $uninstallFlow -notmatch 'if\s*\(!read_pending_uninstall_phase\(&pending\)\)\s*return\s+1;') {
+  throw 'uninstall must fail closed when the persisted recovery phase cannot be read'
+}
 if ($transactionalFlow -notmatch 'is_profile_enabled_by_default[\s\S]*?enabled_by_default') {
   throw 'TSF uninstall must snapshot machine default-profile state before unregistering'
 }
@@ -90,6 +94,9 @@ if ($transactionalFlow -notmatch 'set_pending_uninstall_phase\(PendingUninstallP
 }
 if ($transactionalFlow -notmatch 'RunTsfUninstallTransaction\(ops\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::FileCleanup\)[\s\S]*?delete_tsf_files_after_unregister') {
   throw 'logical commit must transition to file-cleanup state before deleting DLLs'
+}
+if ($transactionalFlow -notmatch 'set_pending_uninstall_phase\(PendingUninstallPhase::FileCleanup\)[\s\S]*?restore_layouts\(\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::LogicalRetry\)') {
+  throw 'failed file-cleanup phase transition must reassert LogicalRetry after rollback'
 }
 if ($transactionalFlow -notmatch 'restore_services\(\)[\s\S]*?restore_default_profiles\(\)[\s\S]*?restore_profiles\(\)[\s\S]*?restore_layouts\(\)') {
   throw 'failed phase transition must rollback registration defaults and user state'
