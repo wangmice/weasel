@@ -91,6 +91,28 @@ if ($setup -notmatch 'GetExitCodeProcess') {
   throw 'modify install must inspect helper/deployer exit codes'
 }
 
+$elevationStart = $setup.IndexOf('int RestartAsAdmin')
+if ($elevationStart -lt 0) {
+  throw 'unable to isolate RestartAsAdmin elevation flow'
+}
+$elevation = $setup.Substring($elevationStart)
+if ($elevation -match 'WaitForSingleObject\(execInfo\.hProcess,\s*INFINITE\)') {
+  throw 'RestartAsAdmin must not wait forever for the elevated child'
+}
+if ($setup -notmatch 'kElevationCommandTimeoutMs\s*=\s*60\s*\*\s*60\s*\*\s*1000' -or
+    $elevation -notmatch 'WaitForSingleObject\(execInfo\.hProcess,\s*kElevationCommandTimeoutMs\)') {
+  throw 'command-line elevation must use a finite child wait'
+}
+if ($elevation -notmatch 'interactive_launch[\s\S]*?CloseHandle\(execInfo\.hProcess\)[\s\S]*?return\s+0;') {
+  throw 'interactive elevation must detach the unelevated launcher after successful UAC launch'
+}
+if ($elevation -match 'TerminateProcess\s*\(\s*execInfo\.hProcess') {
+  throw 'the unelevated launcher must not forcibly terminate an elevated setup transaction'
+}
+if ($elevation -notmatch 'WAIT_TIMEOUT[\s\S]*?return\s+ERROR_TIMEOUT;') {
+  throw 'elevation timeout must propagate an explicit failure status'
+}
+
 if ($setup -match 'RunProcessAndWait\(deployer,\s*L"/deploy",\s*INFINITE') {
   throw 'modify install must not wait forever for WeaselDeployer'
 }
