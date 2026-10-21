@@ -24,7 +24,10 @@ static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
 static constexpr DWORD kPrimaryPipeReadyTimeoutMs = 2000;
 static constexpr DWORD kServerStartupLifecycleWaitMs = 2000;
-static constexpr DWORD kServerShutdownHardTimeoutMs = 30 * 1000;
+// Keep the in-process hard stop comfortably inside the /q supervisor's
+// 30-second process-exit wait so the supervisor has time to observe the
+// forced exit and complete normally.
+static constexpr DWORD kServerShutdownHardTimeoutMs = 20 * 1000;
 
 DWORD WINAPI ServerShutdownWatchdogProc(LPVOID param) noexcept {
   HANDLE cancel_event = static_cast<HANDLE>(param);
