@@ -433,6 +433,9 @@ foreach ($profileRestore in @(
 if ($rollback -notmatch 'StrCmp \$ReplacementStarted "1" rollback_remove_partial_new rollback_restore_program') {
   throw 'rollback must not unregister the old install again before replacement files exist'
 }
+if ($rollback -notmatch 'rollback_profile_legacy:[\s\S]*?StrCpy \$R5 "0"[\s\S]*?ReadRegDWORD \$R5 HKCU') {
+  throw 'legacy rollback profile fallback must initialize Hant before reading it'
+}
 $baseRegistryStart = $rollback.IndexOf('rollback_restore_base_registry:')
 $runtimeRegistryStart = $rollback.IndexOf('rollback_restore_runtime_registry:', $baseRegistryStart)
 $cleanupStart = $rollback.IndexOf('rollback_cleanup_temp:', $baseRegistryStart)

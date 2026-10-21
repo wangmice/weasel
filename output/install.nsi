@@ -273,6 +273,7 @@ rollback_profile_singapore:
   StrCpy $R6 "/sg"
   GoTo rollback_profile_ready
 rollback_profile_legacy:
+  StrCpy $R5 "0"
   ReadRegDWORD $R5 HKCU "Software\Rime\Weasel" "Hant"
   StrCmp $R5 "0" rollback_profile_ready
   StrCpy $R6 "/t"
