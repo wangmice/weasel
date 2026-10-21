@@ -4,7 +4,6 @@ $repo = Split-Path -Parent $PSScriptRoot
 $setup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\WeaselSetup.cpp') -Raw
 $transaction = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TransactionalInstall.h') -Raw
 $imeSetup = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\imesetup.cpp') -Raw
-$transactional = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TransactionalInstall.h') -Raw
 $uninstallTransaction = Get-Content -LiteralPath (Join-Path $repo 'WeaselSetup\TsfUninstallTransaction.h') -Raw
 
 if ($setup -notmatch '#include\s+"TransactionalInstall\.h"') {
@@ -472,9 +471,9 @@ if ($werIndex -lt 0 -or $machineFailureGuard -lt 0 -or $userDeleteIndex -lt 0 -o
   throw 'per-user PendingUninstall state must survive until all machine cleanup succeeds'
 }
 
-$freshInstallStart = $transactional.IndexOf('inline int InstallFreshTransactional')
+$freshInstallStart = $transaction.IndexOf('inline int InstallFreshTransactional')
 if ($freshInstallStart -lt 0) { throw 'unable to isolate fresh install transaction' }
-$freshInstall = $transactional.Substring($freshInstallStart)
+$freshInstall = $transaction.Substring($freshInstallStart)
 if ($freshInstall -notmatch 'RegDeleteValueW\(user_handle, L"PendingUninstall"\)[\s\S]*?cleared\s*!=\s*ERROR_SUCCESS[\s\S]*?rollback\(\)[\s\S]*?return\s+1;') {
   throw 'fresh install must rollback when PendingUninstall cannot be cleared'
 }
