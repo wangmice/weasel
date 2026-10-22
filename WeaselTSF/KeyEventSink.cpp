@@ -186,10 +186,11 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
  * OnKeyDown() never comes.
  *
  * We use the pending state to omit multiple OnTestKeyDown() calls, and for
- * OnKeyDown() to check if the key has already been sent to the server. Test
- * and Key callbacks are paired by virtual-key plus GetMessageTime(): CUAS/IMM
- * bridges do not guarantee identical lParam, while message time distinguishes
- * a swallowed old Test callback from a later physical repeat of the same key.
+ * OnKeyDown() to check if the key has already been sent to the server.
+ * Repeated Test callbacks are identified by virtual-key + GetMessageTime(),
+ * while paired Test/Key callbacks match by virtual-key alone: CUAS/IMM32
+ * bridges can change even the message timestamp between the two callbacks.
+ * Demanding timestamp equality there reintroduces double characters.
  */
 
 STDMETHODIMP WeaselTSF::OnTestKeyDown(ITfContext* pContext,
@@ -217,9 +218,8 @@ STDMETHODIMP WeaselTSF::OnKeyDown(ITfContext* pContext,
                                   LPARAM lParam,
                                   BOOL* pfEaten) {
   _testKeyUpPending.Clear();
-  const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
   const auto vkey = static_cast<std::uint32_t>(wParam);
-  if (_testKeyDownPending.ConsumePairedKey(vkey, messageTime)) {
+  if (_testKeyDownPending.ConsumePairedKey(vkey)) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);
@@ -253,9 +253,8 @@ STDMETHODIMP WeaselTSF::OnKeyUp(ITfContext* pContext,
                                 LPARAM lParam,
                                 BOOL* pfEaten) {
   _testKeyDownPending.Clear();
-  const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
   const auto vkey = static_cast<std::uint32_t>(wParam);
-  if (_testKeyUpPending.ConsumePairedKey(vkey, messageTime)) {
+  if (_testKeyUpPending.ConsumePairedKey(vkey)) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);

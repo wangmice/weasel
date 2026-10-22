@@ -159,20 +159,27 @@ static void testPendingTestKeyPairing() {
   check(!pending.IsDuplicateTest('A', 101),
         "pairing: later same-vkey message is a new physical key");
 
-  // A host may swallow the paired OnKey callback for the first Test event and
-  // later deliver the next same-vkey input as OnKey-only. Different message
-  // time means it is a new physical key and must reach the server.
-  check(!pending.ConsumePairedKey('A', 101),
-        "pairing: stale Test state cannot swallow later same-vkey OnKey");
-
-  pending.Arm('A', 110);
-  check(pending.ConsumePairedKey('A', 110),
-        "pairing: matching OnKey callback is consumed once");
-  check(!pending.ConsumePairedKey('A', 110),
+  // CUAS/IMM32 bridge regression: OnTestKeyDown and OnKeyDown can be called
+  // with different message timestamps for a single physical key. Test
+  // already sent the key to Rime; the matching Key callback must NOT replay.
+  check(pending.ConsumePairedKey('A'),
+        "pairing: same vkey Test/Key pair ignores bridge timestamp differences");
+  check(!pending.ConsumePairedKey('A'),
         "pairing: consumed state cannot swallow another key");
 
+  // Repeated Test for a later physical event re-arms with its NEW message
+  // identity; the matching Key must again be eaten without a second IPC.
+  pending.Arm('A', 110);
+  check(pending.IsDuplicateTest('A', 110),
+        "pairing: duplicate Test within the same message remains suppressed");
+  check(!pending.IsDuplicateTest('A', 111),
+        "pairing: later same-vkey Test is not suppressed");
+  pending.Arm('A', 111);
+  check(pending.ConsumePairedKey('A'),
+        "pairing: repeated physical key gets one Rime delivery");
+
   pending.Arm('A', 200);
-  check(!pending.ConsumePairedKey('B', 200),
+  check(!pending.ConsumePairedKey('B'),
         "pairing: different vkey is not treated as the old pair");
   check(!pending.pending, "pairing: different key ends the stale Test cycle");
 
