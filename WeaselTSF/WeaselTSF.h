@@ -226,9 +226,16 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // bound; the successful hot path performs the same single IPC transaction.
   static constexpr DWORD kKeyEventTransactionTimeoutMs = 100;
 
-  // Only failure-path recovery uses this budget; the active-session hot path
-  // returns before touching recovery state.
-  static constexpr DWORD kFastSessionRecoveryBudgetMs = 20;
+  // Keep transport discovery/reconnect on the physical-key path very short so
+  // a missing or dead server cannot pin the host UI thread.
+  static constexpr DWORD kFastTransportRecoveryBudgetMs = 20;
+
+  // Creating/re-emitting a Rime session is a business operation, not a pipe
+  // liveness probe: AddSession may create a Rime session, read status/schema,
+  // load style, and refresh UI. Keep the historically working one-second bound
+  // for activation and invalid-session rebuilds instead of forcing that work
+  // through the 20 ms transport budget.
+  static constexpr DWORD kSessionEstablishmentTimeoutMs = 1000;
 
   /* ui callback functions private */
   void _SelectCandidateOnCurrentPage(const size_t index);

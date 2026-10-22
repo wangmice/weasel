@@ -23,11 +23,17 @@ $ensure = $tsf.Substring($ensureStart)
 if ($tsfHeader -notmatch 'kKeyEventTransactionTimeoutMs\s*=\s*100') {
   throw 'healthy physical-key transaction timeout must remain 100 ms'
 }
-if ($tsfHeader -notmatch 'kFastSessionRecoveryBudgetMs\s*=\s*20') {
-  throw 'synchronous recovery budget must remain 20 ms'
+if ($tsfHeader -notmatch 'kFastTransportRecoveryBudgetMs\s*=\s*20') {
+  throw 'physical-key transport recovery budget must remain 20 ms'
+}
+if ($tsfHeader -notmatch 'kSessionEstablishmentTimeoutMs\s*=\s*1000') {
+  throw 'Rime session establishment must retain a realistic bounded timeout'
 }
 if ($ensure -notmatch 'if\s*\(m_client\.IsSessionActive\(\)\)\s*return true;') {
   throw 'healthy connection check must return before recovery work'
+}
+if ($ensure -notmatch 'kFastTransportRecoveryBudgetMs') {
+  throw 'activation-time transport discovery must stay on the short failure-path budget'
 }
 $fastReturn = $ensure.IndexOf('return true;')
 $clockRead = $ensure.IndexOf('GetTickCount64()')
@@ -220,8 +226,11 @@ if (([regex]::Matches($tsf, 'IsServerInstancePresent\(instance_name,\s*legacy_in
   throw 'launcher must double-check the server singleton around launch arbitration'
 }
 
-if ($until -notmatch 'm_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(remaining\)') {
-  throw 'bounded reconnect must share one absolute deadline across Connect and StartSession'
+if ($until -notmatch 'm_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(kSessionEstablishmentTimeoutMs\)') {
+  throw 'bounded reconnect must separate pipe discovery from Rime session establishment'
+}
+if ($until -match 'm_client\.StartSession\(remaining\)') {
+  throw 'Rime session establishment must never inherit the leftover 20 ms transport budget'
 }
 if ($until -notmatch '_ScheduleServerRecovery\(\)') {
   throw 'failed bounded reconnect must hand server startup to the background coordinator'
@@ -236,14 +245,17 @@ if ($tsf -notmatch 'NoteServerRecoveryHealthy\(\)[\s\S]*?g_serverRecovery\.NoteH
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
   throw 'physical-key recovery must carry a shared deadline'
 }
-if ($keySink -notmatch 'if\s*\(!m_client\.IsSessionActive\(\)\)[\s\S]*?recovery_deadline\s*=[\s\S]*?kFastSessionRecoveryBudgetMs[\s\S]*?_EnsureServerConnectedUntil\(recovery_deadline\)') {
-  throw 'inactive-session first-key recovery must allocate its deadline only on the failure path'
+if ($keySink -notmatch 'if\s*\(!m_client\.IsSessionActive\(\)\)[\s\S]*?recovery_deadline\s*=[\s\S]*?kFastTransportRecoveryBudgetMs[\s\S]*?_EnsureServerConnectedUntil\(recovery_deadline\)') {
+  throw 'inactive-session first-key transport recovery must stay inside the 20 ms failure-path budget'
 }
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\(ke,\s*recovery_deadline\)') {
   throw 'the original first-key deadline must flow into transport/session retry logic'
 }
-if ($keySink -notmatch 'InvalidSession[\s\S]*?remaining_recovery_time\(deadline\)[\s\S]*?StartSession\(remaining\)') {
-  throw 'invalid-session rebuild must consume only the remaining physical-key budget'
+if ($keySink -notmatch 'InvalidSession[\s\S]*?StartSession\(kSessionEstablishmentTimeoutMs\)') {
+  throw 'invalid-session rebuild must use the dedicated Rime session establishment budget'
+}
+if ($keySink -match 'InvalidSession[\s\S]*?remaining_recovery_time\(') {
+  throw 'invalid-session rebuild must not inherit the 20 ms transport deadline'
 }
 
 $disconnectStart = $client.IndexOf('void ClientImpl::Disconnect()')

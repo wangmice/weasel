@@ -12,6 +12,7 @@ CAppModule _Module;
 
 namespace {
 constexpr wchar_t kInternalSyncWorkerOption[] = L"/internal-sync-worker";
+constexpr wchar_t kInstallerDeployOption[] = L"/install-deploy";
 constexpr DWORD kRimeOperationHardTimeoutMs = 15 * 60 * 1000;
 constexpr DWORD kSyncSupervisorGraceMs = 10 * 1000;
 constexpr DWORD kSyncTerminationWaitMs = 5 * 1000;
@@ -321,6 +322,14 @@ static int Run(int argc, wchar_t* argv[]) {
 
   if (IsOption(args.front(), L"/deploy") && args.size() == 1) {
     return configurator.UpdateWorkspace();
+  }
+
+  if (IsOption(args.front(), kInstallerDeployOption) && args.size() == 1) {
+    // Installation registers the TSF before workspace deployment. A host that
+    // loads the new TIP immediately may start WeaselServer first; wait only in
+    // this installer-owned mode so that startup can finish and deployment can
+    // then enter maintenance instead of failing the install-time deploy race.
+    return configurator.UpdateWorkspace(false, true);
   }
 
   if (IsOption(args.front(), L"/dict")) {

@@ -32,6 +32,20 @@ if ($clientCpp -notmatch 'kStateChangingTransactionTimeoutMs\s*=\s*3000') {
 if ($clientCpp -notmatch 'kMaintenanceTransactionTimeoutMs\s*=\s*30000') {
   throw 'maintenance IPC must retain its separate 30-second bounded timeout'
 }
+if ($clientCpp -notmatch 'kHostCallbackTransactionTimeoutMs\s*=\s*100') {
+  throw 'host callback IPC must stay bounded to 100 ms'
+}
+foreach ($command in @(
+  'WEASEL_IPC_ECHO',
+  'WEASEL_IPC_FOCUS_IN',
+  'WEASEL_IPC_FOCUS_OUT',
+  'WEASEL_IPC_UPDATE_INPUT_POS'
+)) {
+  $pattern = [regex]::Escape($command) + '[\s\S]*?kHostCallbackTransactionTimeoutMs'
+  if ($clientCpp -notmatch $pattern) {
+    throw "$command must use the 100 ms host-callback timeout"
+  }
+}
 foreach ($command in @(
   'WEASEL_IPC_START_SESSION',
   'WEASEL_IPC_SHUTDOWN_SERVER',
@@ -60,9 +74,9 @@ if ($clientCpp -notmatch 'WEASEL_IPC_END_SESSION[\s\S]*?kTeardownTransactionTime
   throw 'EndSession must retain its short teardown timeout'
 }
 
-# The first-key recovery window is an end-to-end deadline. Connect and
-# StartSession must consume the same remaining budget instead of each creating
-# a fresh one-second transaction window.
+# Pipe discovery on a physical key stays on one short end-to-end deadline.
+# Rime session creation has a separate bounded budget because AddSession is
+# application work (session creation, schema/style/status/UI), not pipe I/O.
 if ($clientHeader -notmatch 'bool\s+Connect\(DWORD\s+timeout_ms\)') {
   throw 'Client must expose a bounded Connect overload for recovery'
 }
@@ -81,14 +95,30 @@ if ($clientCpp -notmatch 'ProcessKeyEventEx\(KeyEvent\s+const&\s+keyEvent,\s*DWO
 if ($tsfHeader -notmatch 'kKeyEventTransactionTimeoutMs\s*=\s*100') {
   throw 'healthy physical-key IPC must stay bounded to 100 ms'
 }
+if ($tsf -notmatch 'OnSetThreadFocus\(\)[\s\S]*?m_client\.Echo\(\)[\s\S]*?ProcessKeyEventEx\(weasel::KeyEvent\(0\),[\s\S]*?kKeyEventTransactionTimeoutMs\)') {
+  throw 'thread-focus status synchronization must use the bounded key IPC overload'
+}
+if ($tsf -match 'OnSetThreadFocus\(\)[\s\S]*?m_client\.ProcessKeyEvent\(0\)') {
+  throw 'thread-focus status synchronization must not use the one-second default key transaction'
+}
 if ($keySink -notmatch 'process_key_bounded[\s\S]*?ProcessKeyEventEx\(keyEvent,[\s\S]*?kKeyEventTransactionTimeoutMs\)') {
   throw 'healthy TSF keys must use the bounded key IPC overload'
 }
-if ($tsf -notmatch '_EnsureServerConnected\(\)[\s\S]*?GetTickCount64\(\)\s*\+[\s\S]*?kFastSessionRecoveryBudgetMs') {
-  throw 'inactive recovery must create a bounded 20 ms absolute deadline'
+if ($keySink -notmatch 'kFastTransportRecoveryBudgetMs') {
+  throw 'inactive physical-key reconnects must retain the short transport budget'
 }
-if ($tsf -notmatch '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(remaining\)') {
-  throw 'Connect and StartSession must consume one shared first-key deadline'
+if ($tsfHeader -notmatch 'kFastTransportRecoveryBudgetMs\s*=\s*20' -or
+    $tsfHeader -notmatch 'kSessionEstablishmentTimeoutMs\s*=\s*1000') {
+  throw 'TSF must separate fast transport recovery from bounded Rime session establishment'
+}
+if ($tsf -notmatch '_EnsureServerConnected\(\)[\s\S]*?GetTickCount64\(\)\s*\+[\s\S]*?kFastTransportRecoveryBudgetMs') {
+  throw 'activation-time pipe discovery must stay on the short transport budget'
+}
+if ($tsf -notmatch '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.Connect\(remaining\)[\s\S]*?m_client\.StartSession\(kSessionEstablishmentTimeoutMs\)') {
+  throw 'pipe discovery and Rime session establishment must use separate bounded budgets'
+}
+if ($tsf -match '_EnsureServerConnectedUntil\(ULONGLONG\s+recovery_deadline\)[\s\S]*?m_client\.StartSession\(remaining\)') {
+  throw 'StartSession must not consume only the few milliseconds left by pipe discovery'
 }
 if ($keySink -notmatch '_ProcessKeyEventWithRecovery\([\s\S]*?ULONGLONG\s+recovery_deadline') {
   throw 'transport/session retry must reuse the physical key recovery deadline'
@@ -100,8 +130,11 @@ if ($keySink -notmatch 'TransportError[\s\S]*?KeyDispatchResult::AmbiguousConsum
 if ($keySink -notmatch 'TransportNotDelivered[\s\S]*?_EnsureServerConnectedUntil\(deadline\)[\s\S]*?process_key_bounded\(\)') {
   throw 'definitely-undelivered keys may replay only after bounded recovery'
 }
-if ($keySink -notmatch 'InvalidSession[\s\S]*?remaining_recovery_time\(deadline\)[\s\S]*?StartSession\(remaining\)[\s\S]*?process_key_bounded\(\)') {
-  throw 'InvalidSession rebuild must consume the recovery budget before one bounded replay'
+if ($keySink -notmatch 'InvalidSession[\s\S]*?StartSession\(kSessionEstablishmentTimeoutMs\)[\s\S]*?process_key_bounded\(\)') {
+  throw 'InvalidSession rebuild must use the dedicated session-establishment timeout before one bounded replay'
+}
+if ($keySink -match 'InvalidSession[\s\S]*?remaining_recovery_time\(') {
+  throw 'InvalidSession rebuild must not be squeezed into the physical-key transport deadline'
 }
 if ($keySink -match 'process_key_bounded[\s\S]*?remaining_recovery_time\([^\)]*\)[\s\S]*?ProcessKeyEventEx\(keyEvent,\s*remaining') {
   throw 'successful recovery must not squeeze the real key IPC into leftover recovery milliseconds'
