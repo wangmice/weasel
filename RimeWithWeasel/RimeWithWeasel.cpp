@@ -1,4 +1,5 @@
 ﻿#include "stdafx.h"
+#include <WeaselDiagnosticTrace.h>
 #include <RimeWithWeasel.h>
 #include <StringAlgorithm.hpp>
 #include <WeaselConstants.h>
@@ -97,18 +98,23 @@ void RimeWithWeaselHandler::Initialize() {
 }
 
 void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
+  weasel::diagnostics::Scope init_trace("rime-handler.initialize");
   // Startup may refuse to initialize while a deployer owns local Rime,
   // whereas END_MAINTENANCE already carries explicit lifecycle ownership and
   // must bypass that startup-only probe. Real Rime sessions are created only
   // after the server pipe reaches Ready.
   m_disabled = true;
   if (detect_deployer && _IsDeployerRunning()) {
+    weasel::diagnostics::Trace("rime-handler.initialize", "deployer-active");
     return;
   }
 
   LOG(INFO) << "Initializing la rime.";
   LOG(INFO) << "calling rime_api->initialize";
-  rime_api->initialize(NULL);
+  {
+    weasel::diagnostics::Scope api_trace("rime-api.initialize");
+    rime_api->initialize(NULL);
+  }
 
   // Do not run librime maintenance synchronously during WeaselServer startup
   // or END_MAINTENANCE recovery. ServerImpl still owns the startup lifecycle
@@ -117,6 +123,7 @@ void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
   // observe a singleton with no service. Workspace maintenance is owned
   // explicitly by WeaselDeployer through START/END_MAINTENANCE.
   RimeConfig config = {NULL};
+  weasel::diagnostics::Trace("rime-handler.config", "begin");
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
       // 在本地副本上重建基础样式：Initialize 可能经 EndMaintenance 在 IPC
@@ -149,6 +156,7 @@ void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
     _LoadAppOptions(&config, m_app_options);
     rime_api->config_close(&config);
   }
+  weasel::diagnostics::Trace("rime-handler.config", "processed");
   m_last_schema_id.clear();
 
   // Real session creation may lazily load schemas and dictionaries. Keep that
@@ -156,6 +164,7 @@ void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
   // Ready; otherwise a slow/corrupt schema can strand the process in Starting
   // with no usable pipe, blocking input, restart, and uninstall at once.
   m_disabled = false;
+  weasel::diagnostics::Trace("rime-handler.initialize", "enabled");
 }
 
 void RimeWithWeaselHandler::Finalize() {
@@ -197,12 +206,19 @@ DWORD RimeWithWeaselHandler::FindSession(WeaselSessionId ipc_id) {
 }
 
 DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
+  weasel::diagnostics::Scope session_trace("rime-handler.add-session");
   // Maintenance is an explicit server lifecycle. A stale START_SESSION must
   // never reinitialize librime behind the deployer's START/END_MAINTENANCE
   // ownership.
-  if (m_disabled)
+  if (m_disabled) {
+    weasel::diagnostics::TraceRateLimited("rime-handler.add-session", "disabled");
     return 0;
-  RimeSessionId session_id = (RimeSessionId)rime_api->create_session();
+  }
+  RimeSessionId session_id = 0;
+  {
+    weasel::diagnostics::Scope create_trace("rime-api.create-session");
+    session_id = (RimeSessionId)rime_api->create_session();
+  }
   if (!session_id) {
     // rime 初始化失败/维护中：建会话失败。返回 0 让客户端感知失败
     // （客户端 session_id=0 即未激活），下次 StartSession 自动重试；
@@ -239,6 +255,7 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
   _ReadClientInfo(ipc_id, buffer);
 
   RIME_STRUCT(RimeStatus, status);
+  weasel::diagnostics::Trace("rime-handler.status", "begin");
   if (rime_api->get_status(session_id, &status)) {
     const std::string schema_id = status.schema_id ? status.schema_id : "";
     m_last_schema_id = schema_id;
@@ -250,13 +267,17 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
     session_status.__synced = false;
     rime_api->free_status(&status);
   }
+  weasel::diagnostics::Trace("rime-handler.status", "processed");
   m_ui->SetStyle(session_status.style);
   // show session's welcome message :-) if any
   if (eat) {
     _Respond(ipc_id, eat);
   }
   add_session = true;
-  _UpdateUI(ipc_id);
+  {
+    weasel::diagnostics::Scope ui_trace("rime-handler.session-ui");
+    _UpdateUI(ipc_id);
+  }
   add_session = false;
   m_active_session = ipc_id;
   return ipc_id;

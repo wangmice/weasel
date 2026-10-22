@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <WeaselDiagnosticTrace.h>
 #include "WeaselServerApp.h"
 #include <filesystem>
 
@@ -32,17 +33,20 @@ WeaselServerApp::WeaselServerApp()
 WeaselServerApp::~WeaselServerApp() {}
 
 int WeaselServerApp::Run(bool check_updates) {
+  weasel::diagnostics::Scope trace("server-app.run");
   LOG(INFO) << "starting IPC server window";
   if (!m_server.Start()) {
     LOG(ERROR) << "failed to start IPC server window";
     return -1;
   }
   LOG(INFO) << "IPC server window started";
+  weasel::diagnostics::Trace("server-app.window", "created");
 
   WinSparkleScope win_sparkle_scope;
   m_server.SetTrayRefreshCallback([this]() { tray_icon.ApplyRefresh(); });
   m_server.SetBeforeReadyCallback(
       [this, check_updates, &win_sparkle_scope]() {
+        weasel::diagnostics::Scope startup_trace("server-app.before-ready");
         // From this point onward the primary pipe is already listening while
         // lifecycle remains Starting. Any slow shell/UI/librime startup work
         // therefore cannot make the published server generation invisible to
@@ -57,33 +61,45 @@ int WeaselServerApp::Run(bool check_updates) {
           win_sparkle_set_lang("zh-CN");
         else
           win_sparkle_set_lang("en");
-        win_sparkle_init();
+        {
+          weasel::diagnostics::Scope sparkle_trace("server-app.win-sparkle");
+          win_sparkle_init();
+        }
         win_sparkle_scope.MarkInitialized();
         if (check_updates)
           check_update();
 
         LOG(INFO) << "creating candidate UI";
+        weasel::diagnostics::Trace("server-app.ui", "begin");
         if (!m_ui.Create(m_server.GetHWnd())) {
           LOG(ERROR) << "failed to create candidate UI";
+          weasel::diagnostics::Trace("server-app.ui", "failed");
           return;
         }
         LOG(INFO) << "candidate UI created";
+        weasel::diagnostics::Trace("server-app.ui", "ready");
 
         LOG(INFO) << "initializing Rime handler";
-        m_handler->Initialize();
+        {
+          weasel::diagnostics::Scope rime_trace("server-app.rime-initialize");
+          m_handler->Initialize();
+        }
         LOG(INFO) << "Rime handler initialized";
         m_handler->OnUpdateUI([this]() { tray_icon.RequestRefresh(); });
 
         LOG(INFO) << "creating tray icon after IPC listener startup";
+        weasel::diagnostics::Trace("server-app.tray", "begin");
         if (!tray_icon.Create(m_server.GetHWnd()))
           LOG(ERROR) << "failed to create tray icon";
         else
           LOG(INFO) << "tray icon created";
+        weasel::diagnostics::Trace("server-app.tray", "created");
         tray_icon.RequestRefresh();
       });
 
   LOG(INFO) << "entering IPC message loop";
   int ret = m_server.Run();
+  weasel::diagnostics::Trace("server-app.message-loop", "returned", static_cast<DWORD>(ret));
   LOG(INFO) << "IPC message loop returned: " << ret;
 
   tray_icon.DisableRefresh();
