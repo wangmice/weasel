@@ -12,6 +12,9 @@ if ($setup -notmatch '#include\s+"TransactionalInstall\.h"') {
 if ($setup -notmatch 'InstallFreshTransactional\(profile,\s*user_dir,\s*silent\)') {
   throw 'fresh setup must pass profile and RimeUserDir into the transaction'
 }
+if ($setup -notmatch 'if\s*\(!weasel::setup::CleanupTextServiceRegistrationAfterUninstall\(\)\)[\s\S]*?LOG\(WARNING\)[\s\S]*?return\s+0;') {
+  throw 'post-uninstall exact TSF registry cleanup must be best-effort and non-fatal'
+}
 $freshFlow = [regex]::IsMatch(
   $setup,
   'if\s*\(!_has_installed\).*?InstallRequestedProfile\(profile,\s*user_dir,\s*silent\).*?return\s+0;',
@@ -117,8 +120,12 @@ if ($forwardFlow -notmatch 'RunTsfUninstallForwardRecovery\(ops\)' -or
 if ($imeSetup -notmatch 'allow_missing_primary[\s\S]*?unregister_text_service_without_dll\(\)[\s\S]*?return\s+0;') {
   throw 'forward recovery must retain best-effort direct TSF unregister when the primary DLL is missing'
 }
-if ($uninstallTransaction -notmatch 'RunTsfUninstallForwardRecovery[\s\S]*?remove_layouts_best_effort\(\)[\s\S]*?unregister_services\(\)[\s\S]*?mark_file_cleanup\(\)') {
-  throw 'forward recovery must converge from layout cleanup through unregister to FileCleanup'
+if ($uninstallTransaction -notmatch 'RunTsfUninstallForwardRecovery[\s\S]*?remove_layouts_best_effort\(\)[\s\S]*?ops\.failed\(result\)[\s\S]*?unregister_services\(\)[\s\S]*?mark_file_cleanup\(\)') {
+  throw 'forward recovery must stop at residual LayoutOrTip before unregistering or committing FileCleanup'
+}
+if ($forwardFlow -notmatch 'int\s+remove_layouts_best_effort\(\)[\s\S]*?return\s+remove_layouts_for_forward_recovery\(\);' -or
+    $imeSetup -notmatch 'static\s+int\s+remove_layouts_for_forward_recovery\(\)[\s\S]*?get_layout_or_tip_state[\s\S]*?result\s*=\s*1;[\s\S]*?return\s+result;') {
+  throw 'forward recovery must fail when a LayoutOrTip removal cannot be confirmed'
 }
 if ($uninstallFlow -notmatch 'committed\s*!=\s*PendingUninstallPhase::FileCleanup[\s\S]*?delete_tsf_files_after_unregister') {
   throw 'DLL deletion must require a persisted FileCleanup phase'
@@ -276,11 +283,15 @@ if ($prepare -notmatch 'prepare_export_user_config:[\s\S]*?reg export HKCU\\Soft
 }
 
 $programBackup = $prepare.IndexOf('prepare_backup_program:')
-$stopOld = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselServer.exe" /quit''')
+$stopOld = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselServer.exe" /quit'' $R2')
 $oldUninstall = $prepare.IndexOf('  ExecWait ''"$PreviousInstallDir\WeaselSetup.exe" /u'' $R2')
 if ($programBackup -lt 0 -or $stopOld -lt 0 -or $oldUninstall -lt 0 -or
     -not ($programBackup -lt $stopOld -and $stopOld -lt $oldUninstall)) {
   throw 'complete program backup must finish before the old service is stopped or unregistered'
+}
+$serverStopFlow = $prepare.Substring($stopOld, $oldUninstall - $stopOld)
+if ($serverStopFlow -notmatch 'ExecWait\s+''"\$PreviousInstallDir\\WeaselServer\.exe" /quit''\s+\$R2[\s\S]*?\$R2\s*!=\s*0[\s\S]*?prepare_failed_before_mutation') {
+  throw 'upgrade must stop before TSF uninstall when the previous server does not confirm shutdown'
 }
 $backupFlow = $prepare.Substring($programBackup, $stopOld - $programBackup)
 if ($backupFlow -notmatch 'weasel-program-backup-\$UpgradeSlotId') {
@@ -300,11 +311,11 @@ if ($restorePrefs -lt 0) {
   throw 'unable to isolate previous-version uninstall result handling'
 }
 $oldUninstallFlow = $prepare.Substring($oldUninstall, $restorePrefs - $oldUninstall)
-if ($oldUninstallFlow -notmatch 'DetailPrint\s+"Previous WeaselSetup /u exited with \$R2; continuing transactional replacement\."') {
-  throw 'recoverable previous-uninstall failure must remain observable in installer details'
+if ($oldUninstallFlow -notmatch 'ExecWait\s+''"\$PreviousInstallDir\\WeaselSetup\.exe" /u''\s+\$R2[\s\S]*?Call RollbackPreviousInstall[\s\S]*?StrCpy \$R9 "1"[\s\S]*?Return') {
+  throw 'previous WeaselSetup /u failure must rollback and stop the upgrade before replacement'
 }
-if ($oldUninstallFlow -match 'Abort|Quit|Return') {
-  throw 'previous WeaselSetup /u nonzero exit must not hard-abort transactional overwrite'
+if ($oldUninstallFlow -match 'continuing transactional replacement') {
+  throw 'upgrade must not continue after previous WeaselSetup /u fails'
 }
 
 $samePathStart = $prepare.IndexOf('prepare_remove_same_path:')
@@ -349,11 +360,29 @@ if ($canonicalIndex -lt 0 -or $targetIndex -lt 0 -or $prepareIndex -lt 0 -or
           $prepareIndex -lt $overwriteIndex)) {
   throw 'installer must select the canonical path, prepare it transactionally, then enable overwrite'
 }
+$replacementStart = $section.IndexOf('StrCpy $ReplacementStarted "1"')
+if ($replacementStart -lt 0 -or -not ($prepareIndex -lt $replacementStart -and
+                                       $replacementStart -lt $overwriteIndex)) {
+  throw 'installer must mark replacement start only after previous-install preparation succeeds and before writing payload'
+}
+if ($installer -notmatch 'Var OrphanedPreviousInstall') {
+  throw 'installer must track orphaned previous-install recovery explicitly'
+}
+if ($section -notmatch 'StrCmp \$OrphanedPreviousInstall "1" setup_preserve_existing_profile') {
+  throw 'orphaned recovery must bypass ambiguous /i setup routing'
+}
 if ($installer -match '\.upgrade-\$UpgradeSlotId') {
   throw 'installer must not create a side-by-side .upgrade-* replacement slot'
 }
 if ($installer -match '/REBOOTOK') {
   throw 'installer must not schedule install/version directories for deferred reboot deletion'
+}
+if ($section -notmatch 'StrCmp \$OrphanedPreviousInstall "1" setup_preserve_existing_profile[\s\S]*?\$\{GetOptions\}\s+\$R0\s+"/S"[\s\S]*?StrCmp \$HadPreviousInstall "1" setup_preserve_existing_profile' -or
+    $section -notmatch 'setup_preserve_existing_profile:[\s\S]*?ReadRegStr \$R4 HKCU "Software\\Rime\\Weasel" "Profile"[\s\S]*?setup_profile_hant:[\s\S]*?StrCpy \$R2 "/t"[\s\S]*?setup_profile_hongkong:[\s\S]*?StrCpy \$R2 "/hk"[\s\S]*?setup_profile_macau:[\s\S]*?StrCpy \$R2 "/mc"[\s\S]*?setup_profile_singapore:[\s\S]*?StrCpy \$R2 "/sg"') {
+  throw 'silent upgrade and orphaned recovery must preserve the existing profile with an explicit install command'
+}
+if ($section -notmatch 'setup_profile_legacy:[\s\S]*?StrCpy \$R5 "0"[\s\S]*?ReadRegDWORD \$R5 HKCU "Software\\Rime\\Weasel" "Hant"') {
+  throw 'silent upgrade legacy profile fallback must initialize and read Hant safely'
 }
 
 if ($installer -notmatch '(?s)!macro AbortInitFailure.*?IfSilent \+2.*?MessageBox MB_OK\|MB_ICONSTOP "\$\(SETUPFAILED\)".*?Abort.*?!macroend') {
@@ -362,14 +391,26 @@ if ($installer -notmatch '(?s)!macro AbortInitFailure.*?IfSilent \+2.*?MessageBo
 $initStart = $installer.IndexOf('Function .onInit')
 $initEnd = $installer.IndexOf('FunctionEnd', $initStart)
 $init = $installer.Substring($initStart, $initEnd - $initStart)
+if ($init -notmatch 'StrCpy \$OrphanedPreviousInstall "0"') {
+  throw 'orphaned previous-install state must be reset when the installer starts'
+}
 if ($init.Contains('Abort "$(SETUPFAILED)"')) {
   throw '.onInit must not silently abort with a status-only SETUPFAILED string'
 }
-if (-not $init.Contains('!insertmacro AbortInitFailure')) {
-  throw '.onInit fatal upgrade paths must use the visible failure macro'
-}
 if ($init -match 'WeaselServer\.exe"\s+/quit|WeaselSetup\.exe"\s+/u') {
   throw '.onInit must remain non-destructive; old shutdown/uninstall belongs in PreparePreviousInstall'
+}
+if ($init -notmatch 'previous_invalid:[\s\S]*?StrCpy \$OrphanedPreviousInstall "1"[\s\S]*?StrCpy \$HadPreviousInstall "0"[\s\S]*?GoTo done') {
+  throw 'missing or damaged previous program root must enter orphaned forward recovery instead of aborting'
+}
+$previousInvalidStart = $init.IndexOf('previous_invalid:')
+$doneLabel = $init.IndexOf('done:', $previousInvalidStart)
+if ($previousInvalidStart -lt 0 -or $doneLabel -le $previousInvalidStart) {
+  throw 'unable to isolate orphaned previous-install recovery block'
+}
+$previousInvalid = $init.Substring($previousInvalidStart, $doneLabel - $previousInvalidStart)
+if ($previousInvalid -match 'Abort|Quit|AbortInitFailure') {
+  throw 'orphaned previous installation must remain installable through forward recovery'
 }
 
 # A failed program-tree restore must never be treated as a runnable rollback.
@@ -410,6 +451,37 @@ if ($rollback -match '(?m)^rollback_register_old:\s*$') {
 if ($rollback -notmatch 'rollback_registration_failed:[\s\S]*?StrCpy \$RollbackFailed "1"[\s\S]*?GoTo rollback_restore_base_registry') {
   throw 'failed old-version registration must skip runtime autorun/server restoration'
 }
+if ($rollback -match 'WeaselSetup\.exe" /i') {
+  throw 'rollback must not use ambiguous /i registration that can route to modify-install'
+}
+foreach ($profileRestore in @(
+  'StrCpy $R6 "/s"',
+  'StrCpy $R6 "/t"',
+  'StrCpy $R6 "/hk"',
+  'StrCpy $R6 "/mc"',
+  'StrCpy $R6 "/sg"',
+  'ExecWait ''"$PreviousInstallDir\WeaselSetup.exe" $R6'' $R2'
+)) {
+  if (-not $rollback.Contains($profileRestore)) {
+    throw "rollback must force the restored TSF payload with '$profileRestore'"
+  }
+}
+if ($rollback -notmatch 'StrCmp \$ReplacementStarted "1" rollback_remove_partial_new rollback_restore_program') {
+  throw 'rollback must not unregister the old install again before replacement files exist'
+}
+$partialCleanupStart = $rollback.IndexOf('rollback_remove_partial_new:')
+$partialCleanupEnd = $rollback.IndexOf('rollback_remove_new_files:', $partialCleanupStart)
+if ($partialCleanupStart -lt 0 -or $partialCleanupEnd -le $partialCleanupStart) {
+  throw 'unable to isolate partial-new rollback cleanup'
+}
+$partialCleanup = $rollback.Substring($partialCleanupStart, $partialCleanupEnd - $partialCleanupStart)
+if ($partialCleanup -notmatch 'ExecWait\s+''"\$INSTDIR\\WeaselSetup\.exe" /u''\s+\$R2' -or
+    $partialCleanup -notmatch '\$\{If\}\s+\$R2\s*!=\s*0[\s\S]*?StrCpy \$RollbackFailed "1"[\s\S]*?GoTo rollback_keep_temp') {
+  throw 'partial-new /u failure must stop rollback before deleting or restoring another payload'
+}
+if ($rollback -notmatch 'rollback_profile_legacy:[\s\S]*?StrCpy \$R5 "0"[\s\S]*?ReadRegDWORD \$R5 HKCU') {
+  throw 'legacy rollback profile fallback must initialize Hant before reading it'
+}
 $baseRegistryStart = $rollback.IndexOf('rollback_restore_base_registry:')
 $runtimeRegistryStart = $rollback.IndexOf('rollback_restore_runtime_registry:', $baseRegistryStart)
 $cleanupStart = $rollback.IndexOf('rollback_cleanup_temp:', $baseRegistryStart)
@@ -432,6 +504,21 @@ $machineFailureGuard = $uninstallFlow.IndexOf('if (retval)', $werIndex)
 if ($werIndex -lt 0 -or $machineFailureGuard -lt 0 -or $userDeleteIndex -lt 0 -or
     -not ($werIndex -lt $machineFailureGuard -and $machineFailureGuard -lt $userDeleteIndex)) {
   throw 'per-user PendingUninstall state must survive until all machine cleanup succeeds'
+}
+
+$freshInstallStart = $transaction.IndexOf('inline int InstallFreshTransactional')
+if ($freshInstallStart -lt 0) { throw 'unable to isolate fresh install transaction' }
+$freshInstall = $transaction.Substring($freshInstallStart)
+if ($freshInstall -notmatch 'RegDeleteValueW\(user_handle, L"PendingUninstall"\)[\s\S]*?cleared\s*!=\s*ERROR_SUCCESS[\s\S]*?rollback\(\)[\s\S]*?return\s+1;') {
+  throw 'fresh install must rollback when PendingUninstall cannot be cleared'
+}
+if ($imeSetup -notmatch 'static\s+bool\s+clear_pending_uninstall\(\)' -or
+    $imeSetup -notmatch 'if\s*\(!clear_pending_uninstall\(\)\)\s*return\s+1;[\s\S]*?IDS_STR_INSTALL_SUCCESS_INFO') {
+  throw 'existing install must not report success when PendingUninstall cannot be cleared'
+}
+if ($imeSetup -notmatch 'const\s+HRESULT\s+layout_result\s*=\s*install_layout_or_tip\(profile,\s*LayoutOrTipAction::Install\)' -or
+    $imeSetup -notmatch 'if\s*\(FAILED\(layout_result\)\)[\s\S]*?return\s+1;[\s\S]*?clear_pending_uninstall') {
+  throw 'legacy forced install must fail before success when LayoutOrTip installation fails'
 }
 
 Write-Host 'Setup transaction policy: PASS'

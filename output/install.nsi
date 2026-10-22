@@ -42,9 +42,11 @@ Var PreviousBaseDir
 Var PreviousInstallDir
 Var PreviousProgramBackupDir
 Var HadPreviousInstall
+Var OrphanedPreviousInstall
 Var UpgradeSlotId
 Var RollbackFailed
 Var ProgramRestoreFailed
+Var ReplacementStarted
 Var DeployExitCode
 
 ; The name of the installer
@@ -200,9 +202,27 @@ Function RollbackPreviousInstall
   StrCpy $ProgramRestoreFailed "0"
   StrCmp $HadPreviousInstall "1" 0 rollback_fresh_only
 
-  ; Best effort: remove any partial registration produced by the new Setup.
+  ; Only remove a partial new registration/tree after payload extraction has
+  ; actually started. PreparePreviousInstall can fail after the old /u but
+  ; before any replacement file exists; re-running /u there would mutate the
+  ; old installation a second time while trying to recover it.
+  StrCmp $ReplacementStarted "1" rollback_remove_partial_new rollback_restore_program
+
+rollback_remove_partial_new:
   IfFileExists "$INSTDIR\WeaselSetup.exe" 0 rollback_remove_new_files
-  ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $R2
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_keep_temp
+  ${EndIf}
+  ${If} $R2 != 0
+    ; A failed child /u can mean regsvr32 could not be confirmed stopped.
+    ; Never delete/restore/register another payload while TSF mutation may
+    ; still be in flight. Preserve the backup and fail closed.
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_keep_temp
+  ${EndIf}
 
 rollback_remove_new_files:
   SetOutPath $TEMP
@@ -240,7 +260,44 @@ rollback_after_config:
   StrCmp $ProgramRestoreFailed "1" rollback_restore_base_registry
 
   IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 rollback_registration_failed
-  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /i' $R2
+
+  ; /i can route to modify-install solely because a system weasel.dll still
+  ; exists. Rollback must instead force the restored old program tree to copy
+  ; and register its own TSF payload. Select an explicit profile command from
+  ; the restored HKCU state.
+  StrCpy $R6 "/s"
+  ReadRegStr $R4 HKCU "Software\Rime\Weasel" "Profile"
+  StrCmp $R4 "hant" rollback_profile_hant
+  StrCmp $R4 "hongkong" rollback_profile_hongkong
+  StrCmp $R4 "macau" rollback_profile_macau
+  StrCmp $R4 "singapore" rollback_profile_singapore
+  StrCmp $R4 "" rollback_profile_legacy rollback_profile_ready
+
+rollback_profile_hant:
+  StrCpy $R6 "/t"
+  GoTo rollback_profile_ready
+rollback_profile_hongkong:
+  StrCpy $R6 "/hk"
+  GoTo rollback_profile_ready
+rollback_profile_macau:
+  StrCpy $R6 "/mc"
+  GoTo rollback_profile_ready
+rollback_profile_singapore:
+  StrCpy $R6 "/sg"
+  GoTo rollback_profile_ready
+rollback_profile_legacy:
+  StrCpy $R5 "0"
+  ReadRegDWORD $R5 HKCU "Software\Rime\Weasel" "Hant"
+  StrCmp $R5 "0" rollback_profile_ready
+  StrCpy $R6 "/t"
+
+rollback_profile_ready:
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" $R6' $R2
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_restore_base_registry
+  ${EndIf}
   ${If} $R2 != 0
     StrCpy $RollbackFailed "1"
     GoTo rollback_restore_base_registry
@@ -332,13 +389,35 @@ prepare_backup_verified:
   IfFileExists "$PreviousProgramBackupDir\WeaselSetup.exe" 0 prepare_failed_before_mutation
   IfFileExists "$PreviousProgramBackupDir\WeaselServer.exe" 0 prepare_failed_before_mutation
 
-  ; Stop our own service first. Other applications can still hold TSF DLLs; the
-  ; same-path directory removal below detects that condition without killing
-  ; unrelated user processes.
-  ExecWait '"$PreviousInstallDir\WeaselServer.exe" /quit'
-  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /u' $R2
+  ; Stop our own service first. Do not begin TSF mutation unless the old
+  ; server confirms shutdown; cross-version upgrades do not have same-path
+  ; file locking as a reliable fallback barrier.
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselServer.exe" /quit' $R2
+  ${If} ${Errors}
+    DetailPrint "Previous WeaselServer /quit could not be executed; leaving the old installation in place."
+    Exec '"$PreviousInstallDir\WeaselServer.exe"'
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
   ${If} $R2 != 0
-    DetailPrint "Previous WeaselSetup /u exited with $R2; continuing transactional replacement."
+    DetailPrint "Previous WeaselServer /quit exited with $R2; leaving the old installation in place."
+    Exec '"$PreviousInstallDir\WeaselServer.exe"'
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /u' $R2
+  ${If} ${Errors}
+    DetailPrint "Previous WeaselSetup /u could not be executed; restoring the previous installation."
+    Call RollbackPreviousInstall
+    StrCpy $R9 "1"
+    Return
+  ${EndIf}
+  ${If} $R2 != 0
+    DetailPrint "Previous WeaselSetup /u exited with $R2; restoring the previous installation."
+    Call RollbackPreviousInstall
+    StrCpy $R9 "1"
+    Return
   ${EndIf}
 
   ; Restore preferences for the replacement Setup. Keep the export until commit
@@ -381,12 +460,14 @@ FunctionEnd
 
 Function .onInit
   StrCpy $HadPreviousInstall "0"
+  StrCpy $OrphanedPreviousInstall "0"
   StrCpy $PreviousBaseDir ""
   StrCpy $PreviousInstallDir ""
   StrCpy $PreviousProgramBackupDir ""
   StrCpy $UpgradeSlotId ""
   StrCpy $RollbackFailed "0"
   StrCpy $ProgramRestoreFailed "0"
+  StrCpy $ReplacementStarted "0"
   StrCpy $DeployExitCode "0"
 
 !ifndef WEASEL_HAS_ARM64_PAYLOAD
@@ -452,10 +533,15 @@ uninst:
   GoTo done
 
 previous_invalid:
-  ; The uninstall metadata says an old version exists but its Setup executable
-  ; cannot be found. Aborting is safer than destroying unrecoverable state.
-  SetErrorLevel 1
-  !insertmacro AbortInitFailure
+  ; Windows uninstall metadata survived, but the registered program root is
+  ; missing or no longer contains WeaselSetup.exe. There is no trustworthy old
+  ; transaction to roll back to. Treat this as an orphaned installation and
+  ; converge forward with the current payload while preserving HKCU settings.
+  StrCpy $OrphanedPreviousInstall "1"
+  StrCpy $HadPreviousInstall "0"
+  StrCpy $PreviousInstallDir ""
+  DetailPrint "Previous Weasel installation is incomplete; continuing with forward recovery."
+  GoTo done
 
 done:
 FunctionEnd
@@ -500,6 +586,9 @@ install_target_locked_restored:
   Abort "$(FILESINUSE)"
 
 install_target_ready:
+  ; From this point rollback may need to unregister/remove a partially written
+  ; replacement before restoring the old program tree.
+  StrCpy $ReplacementStarted "1"
   SetOverwrite on
   ; Set output path to the installation directory.
   SetOutPath $INSTDIR
@@ -591,13 +680,51 @@ program_files:
 
   SetOutPath $INSTDIR
 
-  ; test /T flag for zh_TW locale
+  ; Select the Setup profile command. A fresh silent install defaults to hans;
+  ; silent upgrades and orphaned-install recovery preserve the existing HKCU
+  ; profile. Explicit /T still overrides the preserved profile.
   StrCpy $R2 "/i"
   ${GetParameters} $R0
+  ; Orphaned installs must never use /i: a stale system weasel.dll would make
+  ; WeaselSetup misclassify recovery as modify-install. Select the preserved
+  ; profile explicitly so the current payload is copied and registered again.
+  StrCmp $OrphanedPreviousInstall "1" setup_preserve_existing_profile
   ClearErrors
   ${GetOptions} $R0 "/S" $R1
-  IfErrors +2 0
+  IfErrors setup_check_traditional
+  StrCmp $HadPreviousInstall "1" setup_preserve_existing_profile
   StrCpy $R2 "/s"
+  GoTo setup_check_traditional
+
+setup_preserve_existing_profile:
+  StrCpy $R2 "/s"
+  ReadRegStr $R4 HKCU "Software\Rime\Weasel" "Profile"
+  StrCmp $R4 "hant" setup_profile_hant
+  StrCmp $R4 "hongkong" setup_profile_hongkong
+  StrCmp $R4 "macau" setup_profile_macau
+  StrCmp $R4 "singapore" setup_profile_singapore
+  StrCmp $R4 "" setup_profile_legacy setup_check_traditional
+
+setup_profile_hant:
+  StrCpy $R2 "/t"
+  GoTo setup_check_traditional
+setup_profile_hongkong:
+  StrCpy $R2 "/hk"
+  GoTo setup_check_traditional
+setup_profile_macau:
+  StrCpy $R2 "/mc"
+  GoTo setup_check_traditional
+setup_profile_singapore:
+  StrCpy $R2 "/sg"
+  GoTo setup_check_traditional
+setup_profile_legacy:
+  StrCpy $R5 "0"
+  ReadRegDWORD $R5 HKCU "Software\Rime\Weasel" "Hant"
+  StrCmp $R5 "0" setup_check_traditional
+  StrCpy $R2 "/t"
+
+setup_check_traditional:
+  ClearErrors
   ${GetOptions} $R0 "/T" $R1
   IfErrors +2 0
   StrCpy $R2 "/t"
