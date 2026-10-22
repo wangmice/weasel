@@ -33,24 +33,137 @@ struct RuntimeCleanup {
   }
 };
 
-bool OpenRunningServerProcess(HANDLE& process) {
-  process = nullptr;
-  HWND hwnd = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
-  if (!hwnd)
-    return true;
-
-  DWORD process_id = 0;
-  GetWindowThreadProcessId(hwnd, &process_id);
-  if (!process_id)
+bool ReadServerRuntimeState(weasel::ServerRuntimeState& state) noexcept {
+  HANDLE mapping = OpenFileMappingW(
+      FILE_MAP_READ, FALSE, weasel::GetServerRuntimeStateName().c_str());
+  if (!mapping)
     return false;
 
+  const auto* shared =
+      static_cast<const weasel::ServerRuntimeState*>(MapViewOfFile(
+          mapping, FILE_MAP_READ, 0, 0, sizeof(weasel::ServerRuntimeState)));
+  if (!shared) {
+    CloseHandle(mapping);
+    return false;
+  }
+
+  state.version = shared->version;
+  state.process_id = shared->process_id;
+  state.lifecycle = *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
+  state.reserved = shared->reserved;
+  state.process_creation_time = shared->process_creation_time;
+  UnmapViewOfFile(shared);
+  CloseHandle(mapping);
+  return state.version == weasel::kServerRuntimeStateVersion &&
+         state.process_id != 0 && state.process_creation_time != 0;
+}
+
+bool QueryProcessImage(HANDLE process, std::wstring& image) noexcept {
+  wchar_t path[32768] = {};
+  DWORD length = static_cast<DWORD>(_countof(path));
+  if (!QueryFullProcessImageNameW(process, 0, path, &length))
+    return false;
+  image.assign(path, length);
+  return true;
+}
+
+bool IsCurrentSessionServerProcess(HANDLE process,
+                                   DWORD process_id,
+                                   UINT64 expected_creation_time) noexcept {
+  DWORD current_session = 0;
+  DWORD process_session = 0;
+  if (!weasel::GetCurrentWindowsSessionId(current_session) ||
+      !ProcessIdToSessionId(process_id, &process_session) ||
+      process_session != current_session) {
+    return false;
+  }
+
+  if (expected_creation_time) {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(process, &created, &exited, &kernel, &user))
+      return false;
+    ULARGE_INTEGER creation{};
+    creation.LowPart = created.dwLowDateTime;
+    creation.HighPart = created.dwHighDateTime;
+    if (creation.QuadPart != expected_creation_time)
+      return false;
+  }
+
+  std::wstring candidate_image;
+  std::wstring current_image;
+  return QueryProcessImage(process, candidate_image) &&
+         QueryProcessImage(GetCurrentProcess(), current_image) &&
+         _wcsicmp(candidate_image.c_str(), current_image.c_str()) == 0;
+}
+
+HWND FindServerWindowForProcess(DWORD process_id) noexcept {
+  HWND window = nullptr;
+  while ((window = FindWindowExW(nullptr, window, nullptr,
+                                 WEASEL_IPC_WINDOW)) != nullptr) {
+    DWORD window_process_id = 0;
+    if (GetWindowThreadProcessId(window, &window_process_id) &&
+        window_process_id == process_id) {
+      return window;
+    }
+  }
+  return nullptr;
+}
+
+bool OpenValidatedServerProcess(DWORD process_id,
+                                UINT64 expected_creation_time,
+                                HANDLE& process) noexcept {
   process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
                         process_id);
-  if (process)
-    return true;
+  if (!process)
+    return GetLastError() == ERROR_INVALID_PARAMETER;
 
-  // The server may have exited between FindWindowW and OpenProcess.
-  return GetLastError() == ERROR_INVALID_PARAMETER;
+  if (IsCurrentSessionServerProcess(process, process_id,
+                                    expected_creation_time)) {
+    return true;
+  }
+
+  CloseHandle(process);
+  process = nullptr;
+  return false;
+}
+
+bool OpenRunningServerProcess(HANDLE& process, HWND& window) {
+  process = nullptr;
+  window = nullptr;
+
+  weasel::ServerRuntimeState state{};
+  if (ReadServerRuntimeState(state)) {
+    if (!OpenValidatedServerProcess(state.process_id,
+                                    state.process_creation_time, process)) {
+      return false;
+    }
+    if (process)
+      window = FindServerWindowForProcess(state.process_id);
+    return true;
+  }
+
+  // Upgrade compatibility: pre-runtime-state servers are accepted only when
+  // the window belongs to this exact WeaselServer image in the current Windows
+  // session. The title is a discovery hint, never the identity root.
+  HWND candidate = nullptr;
+  while ((candidate = FindWindowExW(nullptr, candidate, nullptr,
+                                    WEASEL_IPC_WINDOW)) != nullptr) {
+    DWORD process_id = 0;
+    if (!GetWindowThreadProcessId(candidate, &process_id) || !process_id)
+      continue;
+
+    HANDLE candidate_process = nullptr;
+    if (!OpenValidatedServerProcess(process_id, 0, candidate_process))
+      continue;
+    if (!candidate_process)
+      continue;
+
+    process = candidate_process;
+    window = candidate;
+    return true;
+  }
+
+  return true;
 }
 
 bool WaitForRunningServerExit(HANDLE process) {
@@ -144,12 +257,11 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   // so pipe disappearance alone is not a safe restart boundary.
   bool quit = !wcscmp(L"/q", lpstrCmdLine) || !wcscmp(L"/quit", lpstrCmdLine);
   HANDLE running_server = nullptr;
-  if (!OpenRunningServerProcess(running_server)) {
-    LOG(ERROR) << "failed to retain the running WeaselServer process";
+  HWND running_window = nullptr;
+  if (!OpenRunningServerProcess(running_server, running_window)) {
+    LOG(ERROR) << "failed to validate the running WeaselServer process";
     return 1;
   }
-  HWND running_window =
-      running_server ? FindWindowW(nullptr, WEASEL_IPC_WINDOW) : nullptr;
 
   // Restart if already running. Lifecycle ownership is needed only when an
   // existing server will be stopped. A recovery-launched replacement with no
@@ -174,13 +286,13 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
       // that happened, capture it now so the restart still has a process-exit
       // barrier rather than reverting to the old pipe-only race.
       if (!running_server) {
-        if (!OpenRunningServerProcess(running_server) || !running_server) {
+        if (!OpenRunningServerProcess(running_server, running_window) ||
+            !running_server) {
           LOG(ERROR)
-              << "connected to WeaselServer but could not retain its process";
+              << "connected to WeaselServer but could not validate its process";
           client.Disconnect();
           return 1;
         }
-        running_window = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
       }
       client.ShutdownServer();
     } else if (running_server) {
@@ -238,10 +350,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     // initialization.
   }
 
-  bool check_updates = !wcscmp(L"/update", lpstrCmdLine);
-  if (check_updates) {
-    WeaselServerApp::check_update();
-  }
+  const bool check_updates = !wcscmp(L"/update", lpstrCmdLine);
 
   CreateDirectory(WeaselUserDataPath().c_str(), NULL);
 
@@ -251,7 +360,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     WeaselServerApp app;
     RegisterApplicationRestart(NULL, 0);
     LOG(INFO) << "starting WeaselServerApp";
-    nRet = app.Run();
+    nRet = app.Run(check_updates);
     LOG(INFO) << "WeaselServerApp::Run returned: " << nRet;
   } catch (DWORD error) {
     LOG(ERROR) << "WeaselServer failed with Win32 error: " << error;

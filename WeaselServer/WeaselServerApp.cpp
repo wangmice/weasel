@@ -2,6 +2,24 @@
 #include "WeaselServerApp.h"
 #include <filesystem>
 
+namespace {
+class WinSparkleScope {
+ public:
+  WinSparkleScope() = default;
+  WinSparkleScope(const WinSparkleScope&) = delete;
+  WinSparkleScope& operator=(const WinSparkleScope&) = delete;
+  ~WinSparkleScope() {
+    if (initialized_)
+      win_sparkle_cleanup();
+  }
+
+  void MarkInitialized() noexcept { initialized_ = true; }
+
+ private:
+  bool initialized_ = false;
+};
+}  // namespace
+
 WeaselServerApp::WeaselServerApp()
     : m_handler(std::make_unique<RimeWithWeaselHandler>(&m_ui)),
       tray_icon(m_ui) {
@@ -13,7 +31,7 @@ WeaselServerApp::WeaselServerApp()
 
 WeaselServerApp::~WeaselServerApp() {}
 
-int WeaselServerApp::Run() {
+int WeaselServerApp::Run(bool check_updates) {
   LOG(INFO) << "starting IPC server window";
   if (!m_server.Start()) {
     LOG(ERROR) << "failed to start IPC server window";
@@ -21,7 +39,7 @@ int WeaselServerApp::Run() {
   }
   LOG(INFO) << "IPC server window started";
 
-  win_sparkle_set_appcast_url(kStableUpdateFeedUrl);
+  win_sparkle_set_appcast_url(update_feed_url());
   win_sparkle_set_registry_path("Software\\Rime\\Weasel\\Updates");
   if (GetThreadUILanguage() ==
       MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL))
@@ -32,6 +50,11 @@ int WeaselServerApp::Run() {
   else
     win_sparkle_set_lang("en");
   win_sparkle_init();
+  WinSparkleScope win_sparkle_scope;
+  win_sparkle_scope.MarkInitialized();
+  if (check_updates)
+    check_update();
+
   LOG(INFO) << "creating candidate UI";
   if (!m_ui.Create(m_server.GetHWnd())) {
     LOG(ERROR) << "failed to create candidate UI";
@@ -60,7 +83,6 @@ int WeaselServerApp::Run() {
   m_handler->Finalize();
   m_ui.Destroy();
   tray_icon.RemoveIcon();
-  win_sparkle_cleanup();
 
   return ret;
 }

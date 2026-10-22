@@ -668,11 +668,10 @@ DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
 
   // Stop() may have published Stopping while EndMaintenance was running.
   // Never let a late maintenance reply move the lifecycle backwards to Ready.
-  _TryTransitionRuntimeLifecycle(ServerLifecycle::Maintenance,
-                                 ServerLifecycle::Ready);
-  // Preserve the historical END_MAINTENANCE scalar response; Client treats
-  // this command as completion-only and does not use an acknowledgement bit.
-  return 0;
+  return _TryTransitionRuntimeLifecycle(ServerLifecycle::Maintenance,
+                                        ServerLifecycle::Ready)
+             ? 1
+             : 0;
 }
 
 DWORD ServerImpl::OnCommitComposition(WEASEL_IPC_COMMAND uMsg,

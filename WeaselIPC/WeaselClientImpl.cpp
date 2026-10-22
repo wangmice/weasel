@@ -39,6 +39,32 @@ DWORD RemainingTransactionTime(ULONGLONG deadline) {
   return static_cast<DWORD>(deadline - now);
 }
 
+bool ServerRuntimeIsReady() noexcept {
+  const std::wstring state_name = GetServerRuntimeStateName();
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, state_name.c_str());
+  if (!mapping)
+    return false;
+
+  void* view =
+      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(ServerRuntimeState));
+  if (!view) {
+    CloseHandle(mapping);
+    return false;
+  }
+
+  const auto* shared = static_cast<const ServerRuntimeState*>(view);
+  const UINT32 version = shared->version;
+  const UINT32 process_id = shared->process_id;
+  const UINT64 creation_time = shared->process_creation_time;
+  const LONG lifecycle =
+      *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
+  UnmapViewOfFile(view);
+  CloseHandle(mapping);
+  return version == kServerRuntimeStateVersion && process_id != 0 &&
+         creation_time != 0 &&
+         lifecycle == static_cast<LONG>(ServerLifecycle::Ready);
+}
+
 bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
                                UINT64 previous_serial) {
   if (channel.ResponseSerial() == previous_serial)
@@ -343,9 +369,16 @@ bool ClientImpl::StartMaintenance() {
   return ret != 0;
 }
 
-void ClientImpl::EndMaintenance() {
-  _SendMessage(WEASEL_IPC_END_MAINTENANCE, 0, 0);
+bool ClientImpl::EndMaintenance() {
+  const LRESULT ret = _SendMessage(WEASEL_IPC_END_MAINTENANCE, 0, 0);
   _InvalidateLogicalSession();
+  if (ret != 0)
+    return true;
+
+  // The immediately-previous server protocol returned 0 even after a
+  // successful resume. Runtime Ready also covers an ACK lost after delivery,
+  // while a genuinely undelivered request remains in Maintenance.
+  return ServerRuntimeIsReady();
 }
 
 bool ClientImpl::Echo() {
@@ -560,8 +593,8 @@ bool Client::StartMaintenance() {
   return m_pImpl->StartMaintenance();
 }
 
-void Client::EndMaintenance() {
-  m_pImpl->EndMaintenance();
+bool Client::EndMaintenance() {
+  return m_pImpl->EndMaintenance();
 }
 
 void Client::TrayCommand(UINT menuId) {
