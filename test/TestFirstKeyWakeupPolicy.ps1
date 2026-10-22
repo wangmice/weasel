@@ -55,8 +55,12 @@ if ($schedule -match 'RegGetStringValue|GetServerInstanceName|GetServerLifecycle
 if ($tsf -match 'GetWeaselRegName\(') {
   throw 'background recovery must not reference the undefined GetWeaselRegName helper'
 }
-if ($tsf -notmatch 'RegGetStringValue\(HKEY_LOCAL_MACHINE,\s*WEASEL_REG_KEY,\s*L"WeaselRoot"') {
-  throw 'background recovery must read WeaselRoot from the canonical HKLM Weasel registry key'
+if ($tsf -notmatch 'FindRecoveryServerDirectory\(\)' -or
+    $tsf -notmatch 'RegOpenKeyExW\(HKEY_LOCAL_MACHINE,\s*subkey,\s*0,' -or
+    $tsf -notmatch 'KEY_WOW64_32KEY' -or
+    $tsf -notmatch 'KEY_WOW64_64KEY' -or
+    $tsf -notmatch 'L"WeaselRoot"\s*:\s*L"WeaselServer"') {
+  throw 'background recovery must resolve the installed server across HKLM registry views'
 }
 if ($recoveryCoordinator -notmatch 'class\s+ServerRecoveryCoordinator' -or
     $recoveryCoordinator -notmatch 'SRWLOCK\s+gate_' -or
@@ -306,6 +310,18 @@ if ($tsfHeader -notmatch 'enum\s+class\s+KeyDispatchResult[\s\S]*?Handled[\s\S]*
 }
 if ($keySink -notmatch 'dispatch\s*==\s*KeyDispatchResult::Unhandled\s*\?\s*FALSE\s*:\s*TRUE') {
   throw 'only definitely unhandled keys may be released back to the host'
+}
+
+ 
+# Test callbacks need message-time identity to avoid dropping repeated keys,
+# but Test/Key callbacks must pair by vkey alone across CUAS/IMM32 bridges.
+$pairHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\KeyEventPairState.h') -Raw
+if ($pairHeader -notmatch 'IsDuplicateTest\(std::uint32_t key,\s*std::uint32_t message_time\)' -or
+    $pairHeader -notmatch 'ConsumePairedKey\(std::uint32_t key\)' -or
+    $pairHeader -match 'ConsumePairedKey\(std::uint32_t key,\s*std::uint32_t message_time\)' -or
+    $keySink -notmatch '_testKeyDownPending\.ConsumePairedKey\(vkey\)' -or
+    $keySink -notmatch '_testKeyUpPending\.ConsumePairedKey\(vkey\)') {
+  throw 'Test/Key pairing must not require identical CUAS bridge timestamps'
 }
 
 Write-Host 'First-key wakeup policy: PASS'

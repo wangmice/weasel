@@ -425,7 +425,7 @@ HWND ServerImpl::Start() {
   // Publish the singleton before waiting for lifecycle ownership. Recovery can
   // observe the launched child without letting initialization overlap deploy.
   if (!m_startupLifecycleLock.Acquire(kServerStartupLifecycleWaitMs,
-                                      sa.get_attr())) {
+                                      sa.get_mutex_attr())) {
     LOG(WARNING) << "Timed out waiting for WeaselServer lifecycle ownership; "
                     "another deploy/recovery operation is still active.";
     CloseHandle(hMutexOneInstance);

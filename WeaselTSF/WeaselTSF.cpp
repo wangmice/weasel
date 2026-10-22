@@ -616,6 +616,130 @@ StopServerResult StopPersistentlyUnavailableServer(
              : StopServerResult::Failed;
 }
 
+struct RecoveryServerDirectory {
+  std::wstring path;
+  DWORD source = 0;  // 0=native root, 32/64=explicit root, 132/164=Run
+  LONG last_error = ERROR_FILE_NOT_FOUND;
+};
+
+bool RecoveryFileExists(const std::wstring& path) noexcept {
+  const DWORD attrs = GetFileAttributesW(path.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES &&
+         (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool RecoveryHasServerFiles(const std::wstring& dir) noexcept {
+  if (dir.empty())
+    return false;
+  return RecoveryFileExists(dir + L"\\WeaselServer.exe") &&
+         RecoveryFileExists(dir + L"\\start_service.bat");
+}
+
+bool ReadRecoveryRegistryString(const wchar_t* subkey,
+                                const wchar_t* name,
+                                REGSAM view_flags,
+                                std::wstring& value,
+                                LONG& status) {
+  // RegGetValue's RRF_SUBKEY_WOW64* flags are not exposed by every supported
+  // Windows SDK configuration. Open the requested registry view explicitly
+  // using the stable KEY_WOW64_* flags, then query the value by handle.
+  HKEY key = nullptr;
+  status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey, 0,
+                         KEY_QUERY_VALUE | view_flags, &key);
+  if (status != ERROR_SUCCESS)
+    return false;
+
+  DWORD bytes = 0;
+  DWORD type = REG_NONE;
+  constexpr DWORD kMaxRegistryStringBytes = 32768 * sizeof(wchar_t);
+  status = RegQueryValueExW(key, name, nullptr, &type, nullptr, &bytes);
+  if (status != ERROR_SUCCESS || type != REG_SZ ||
+      bytes < sizeof(wchar_t) || bytes > kMaxRegistryStringBytes ||
+      bytes % sizeof(wchar_t) != 0) {
+    RegCloseKey(key);
+    if (status == ERROR_SUCCESS)
+      status = ERROR_INVALID_DATA;
+    return false;
+  }
+
+  // RegQueryValueExW does not guarantee a terminating NUL. Allocate one
+  // additional zeroed wchar_t and accept only the reported REG_SZ bytes.
+  std::wstring result(bytes / sizeof(wchar_t) + 1, L'\0');
+  DWORD capacity = static_cast<DWORD>(result.size() * sizeof(wchar_t));
+  status = RegQueryValueExW(key, name, nullptr, &type,
+                            reinterpret_cast<LPBYTE>(result.data()), &capacity);
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS)
+    return false;
+  if (type != REG_SZ || capacity < sizeof(wchar_t) ||
+      capacity > result.size() * sizeof(wchar_t) ||
+      capacity % sizeof(wchar_t) != 0) {
+    status = ERROR_INVALID_DATA;
+    return false;
+  }
+
+  result.resize(capacity / sizeof(wchar_t));
+  const size_t end = result.find(L'\0');
+  if (end != std::wstring::npos)
+    result.resize(end);
+  if (result.empty()) {
+    status = ERROR_INVALID_DATA;
+    return false;
+  }
+  value = std::move(result);
+  return true;
+}
+
+RecoveryServerDirectory FindRecoveryServerDirectory() {
+  RecoveryServerDirectory result;
+  constexpr REGSAM kViews[] = {
+      0, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+  constexpr DWORD kViewIds[] = {0, 32, 64};
+  constexpr wchar_t kMachineRunKey[] =
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+  for (size_t source = 0; source < 2; ++source) {
+    const wchar_t* subkey = source == 0 ? WEASEL_REG_KEY : kMachineRunKey;
+    const wchar_t* name = source == 0 ? L"WeaselRoot" : L"WeaselServer";
+    for (size_t i = 0; i < 3; ++i) {
+      std::wstring candidate;
+      LONG status = ERROR_FILE_NOT_FOUND;
+      if (!ReadRecoveryRegistryString(subkey, name, kViews[i], candidate,
+                                      status)) {
+        // Keep the actual registry error, but don't let an unsupported
+        // alternate view mask the native ERROR_FILE_NOT_FOUND diagnosis.
+        if (status != ERROR_FILE_NOT_FOUND &&
+            status != ERROR_INVALID_PARAMETER)
+          result.last_error = status;
+        continue;
+      }
+
+      if (source == 1) {
+        // The machine autorun value created by NSIS contains a direct
+        // WeaselServer.exe path, not a command shell expression.
+        if (candidate.size() >= 2 && candidate.front() == L'"' &&
+            candidate.back() == L'"')
+          candidate = candidate.substr(1, candidate.size() - 2);
+        const auto slash = candidate.find_last_of(L"\\/");
+        if (slash == std::wstring::npos ||
+            _wcsicmp(candidate.c_str() + slash + 1,
+                     L"WeaselServer.exe") != 0)
+          continue;
+        candidate.resize(slash);
+      }
+
+      if (!RecoveryHasServerFiles(candidate)) {
+        result.last_error = ERROR_FILE_NOT_FOUND;
+        continue;
+      }
+      result.path = std::move(candidate);
+      result.source = kViewIds[i] + (source == 1 ? 100 : 0);
+      return result;
+    }
+  }
+  return result;
+}
+
 void RunServerRecoveryOnce() noexcept {
   try {
     const std::wstring instance_name = weasel::GetServerInstanceName();
@@ -739,16 +863,14 @@ void RunServerRecoveryOnce() noexcept {
       ResetServerUnavailableObservation();
     }
 
-    std::wstring dir;
-    if (RegGetStringValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"WeaselRoot",
-                          dir) != ERROR_SUCCESS ||
-        dir.empty()) {
+    const RecoveryServerDirectory install = FindRecoveryServerDirectory();
+    if (install.path.empty()) {
       FinishServerRecoveryFailure();
       return;
     }
-    const HINSTANCE launched =
-        ShellExecuteW(nullptr, L"open", (dir + L"\\start_service.bat").c_str(),
-                      nullptr, dir.c_str(), SW_HIDE);
+    const HINSTANCE launched = ShellExecuteW(
+        nullptr, L"open", (install.path + L"\\start_service.bat").c_str(),
+        nullptr, install.path.c_str(), SW_HIDE);
     if (reinterpret_cast<INT_PTR>(launched) <= 32) {
       FinishServerRecoveryFailure();
       return;

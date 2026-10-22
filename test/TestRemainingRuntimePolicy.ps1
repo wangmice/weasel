@@ -206,4 +206,22 @@ if ($installer -notmatch 'ExecWait\s+''"\$INSTDIR\\WeaselSetup\.exe" /u''\s+\$R0
   throw 'NSIS uninstaller must stop when WeaselSetup /u reports failure'
 }
 
+# Native process registry views differ: recovering a stopped Server must read
+# both WOW64 views before falling back to the machine Run executable value.
+# Only a directory with a real Server and start_service.bat may launch.
+if ($tsf -notmatch 'FindRecoveryServerDirectory\(' -or
+    $tsf -notmatch 'KEY_WOW64_32KEY' -or
+    $tsf -notmatch 'KEY_WOW64_64KEY' -or
+    $tsf -notmatch 'RegOpenKeyExW\(HKEY_LOCAL_MACHINE,\s*subkey,\s*0,' -or
+    $tsf -notmatch 'RegQueryValueExW\(key,\s*name' -or
+    $tsf -match 'RRF_SUBKEY_WOW6432KEY|RRF_SUBKEY_WOW6464KEY' -or
+    $tsf -notmatch 'kMachineRunKey' -or
+    $tsf -notmatch 'RecoveryHasServerFiles\(candidate\)' -or
+    $tsf -notmatch 'WeaselServer\.exe' -or
+    $tsf -notmatch 'start_service\.bat' -or
+    $tsf -notmatch 'L"WeaselRoot"\s*:\s*L"WeaselServer"' -or
+    $tsf -notmatch 'install\.path\.empty\(\)') {
+  throw 'TSF wakeup must resolve and validate installed server roots across registry views'
+}
+
 Write-Host 'Remaining runtime hardening policy: PASS'
