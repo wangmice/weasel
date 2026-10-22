@@ -87,6 +87,8 @@ STDMETHODIMP WeaselTSF::Activate(ITfThreadMgr* pThreadMgr,
 }
 
 STDMETHODIMP WeaselTSF::Deactivate() {
+  // Invalidate edit sessions from this activation before releasing TSF state.
+  ++_keyboardOpenGeneration;
   _InvalidatePendingUI();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
@@ -124,6 +126,7 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
                                    TfClientId tfClientId,
                                    DWORD dwFlags) {
+  ++_keyboardOpenGeneration;
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;

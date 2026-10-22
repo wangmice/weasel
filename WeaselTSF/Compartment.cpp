@@ -126,7 +126,7 @@ BOOL WeaselTSF::_IsKeyboardDisabled() {
         VARIANT var;
         if (pCompartmentDisabled->GetValue(&var) == S_OK) {
           if (var.vt == VT_I4)  // Even VT_EMPTY, GetValue() can succeed
-            fDisabled = (BOOL)var.lVal;
+            fDisabled = (var.lVal != 0);
         }
       }
     }
@@ -139,7 +139,7 @@ BOOL WeaselTSF::_IsKeyboardDisabled() {
         VARIANT var;
         if (pCompartmentEmptyContext->GetValue(&var) == S_OK) {
           if (var.vt == VT_I4)  // Even VT_EMPTY, GetValue() can succeed
-            fDisabled = (BOOL)var.lVal;
+            fDisabled = fDisabled || (var.lVal != 0);
         }
       }
     }
@@ -227,25 +227,28 @@ HRESULT WeaselTSF::_SetKeyboardOpen(BOOL fOpen) {
 }
 
 namespace {
-// 延迟载体：异步编辑会话在 OnChange 通知调用栈退栈后才执行，此时对
-// OPENCLOSE compartment 的 SetValue 不再被 E_UNEXPECTED 拒绝。
-// 会话只做强制重开，不触碰文档，TF_ES_READ 足够
+// TF_ES_ASYNCDONTCARE may execute synchronously within OnChange, while
+// SetValue on that compartment is still forbidden (E_UNEXPECTED). Force an
+// asynchronous session and reject callbacks from a previous TIP activation.
 class CForceKeyboardOpenEditSession : public CEditSession {
  public:
   CForceKeyboardOpenEditSession(com_ptr<WeaselTSF> pTextService,
-                                com_ptr<ITfContext> pContext)
-      : CEditSession(pTextService, pContext) {}
+                                com_ptr<ITfContext> pContext,
+                                UINT64 generation)
+      : CEditSession(pTextService, pContext), generation_(generation) {}
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) {
-    _pTextService->_ApplyDeferredKeyboardOpen();
-    return S_OK;
+    return _pTextService->_ApplyDeferredKeyboardOpen(generation_);
   }
+
+ private:
+  UINT64 generation_;
 };
 }  // namespace
 
-void WeaselTSF::_RequestKeyboardOpenDeferred() {
+HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
   if (_pThreadMgr == NULL)
-    return;
+    return E_UNEXPECTED;
 
   // 借力的文档上下文：优先焦点文档 top（Ctrl+Space 即发生于焦点应用），
   // 其次最近一次键处理的上下文
@@ -258,27 +261,52 @@ void WeaselTSF::_RequestKeyboardOpenDeferred() {
   if (pContext == NULL)
     pContext = _pEditSessionContext;
   if (pContext == NULL)
-    return;  // 无可借力的上下文：放弃本次强制重开（与原被拒行为一致）
+    return E_FAIL;  // No context to schedule the delayed operation.
 
   com_ptr<CForceKeyboardOpenEditSession> pEditSession;
-  pEditSession.Attach(new CForceKeyboardOpenEditSession(this, pContext));
+  pEditSession.Attach(new CForceKeyboardOpenEditSession(
+      this, pContext, _keyboardOpenGeneration));
   if (pEditSession == NULL)
-    return;
+    return E_OUTOFMEMORY;
+
   HRESULT hrSession = E_FAIL;
-  pContext->RequestEditSession(_tfClientId, pEditSession,
-                               TF_ES_ASYNCDONTCARE | TF_ES_READ, &hrSession);
+  const HRESULT hr = pContext->RequestEditSession(
+      _tfClientId, pEditSession, TF_ES_ASYNC | TF_ES_READ, &hrSession);
+  return FAILED(hr) ? hr : hrSession;
 }
 
-void WeaselTSF::_ApplyDeferredKeyboardOpen() {
-  // 异步会话可能晚于 Deactivate（TSF 会丢弃已停用客户端的排队会话，
-  // 此处再兜底一次）
-  if (_pThreadMgr == NULL)
-    return;
-  // SetValue 的通知是同步派发的：置位让 _HandleCompartment 跳过这次
-  // 自写触发的 OnChange；值未变化（已开）时不触发通知，复位即可
+HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation) {
+  if (_pThreadMgr == NULL || generation != _keyboardOpenGeneration)
+    return S_FALSE;
+
+  // SetValue notifies synchronously. Suppress this self-write only, then
+  // restore the previous flag even when the compartment write fails.
+  const BOOL priorSuppression = _fSuppressOpenCloseSelfWrite;
   _fSuppressOpenCloseSelfWrite = TRUE;
-  _SetKeyboardOpen(TRUE);
-  _fSuppressOpenCloseSelfWrite = FALSE;
+  const HRESULT hr = _SetKeyboardOpen(TRUE);
+  _fSuppressOpenCloseSelfWrite = priorSuppression;
+  if (FAILED(hr)) {
+    LOG(ERROR) << "Deferred keyboard OPENCLOSE recovery failed, hr: "
+               << static_cast<long>(hr);
+    return hr;
+  }
+
+  // Do not publish a mode change until OPENCLOSE has actually reopened.
+  // If the option changed while the edit session was queued, use that new
+  // option and discard the obsolete ASCII toggle.
+  if (_isToOpenClose)
+    return S_OK;
+
+  _status.ascii_mode = !_status.ascii_mode;
+  if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
+    _EnableLanguageBar(true);
+  _HandleLangBarMenuSelect(_status.ascii_mode
+                               ? ID_WEASELTRAY_ENABLE_ASCII
+                               : ID_WEASELTRAY_DISABLE_ASCII);
+  if (_pEditSessionContext)
+    m_client.ClearComposition();
+  _UpdateLanguageBar(_status);
+  return S_OK;
 }
 
 HRESULT WeaselTSF::_GetCompartmentDWORD(DWORD& value, const GUID guid) {
@@ -350,24 +378,15 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       _EnableLanguageBar(isOpen);
       _UpdateLanguageBar(_status);
     } else {
-      // 自写强制重开触发的通知（见 _ApplyDeferredKeyboardOpen）：跳过，
-      // 否则 ascii_mode 会被这次自写翻转回去
-      if (_fSuppressOpenCloseSelfWrite) {
-        _fSuppressOpenCloseSelfWrite = FALSE;
+      // The self-triggered OnChange must not toggle ASCII mode again.
+      if (_fSuppressOpenCloseSelfWrite)
         return S_OK;
-      }
-      _status.ascii_mode = !_status.ascii_mode;
-      // 通知内对同一 compartment 的 SetValue 会被 TSF 以 E_UNEXPECTED
-      // 拒绝，强制重开延迟到通知返回之后执行
-      _RequestKeyboardOpenDeferred();
-      if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
-        _EnableLanguageBar(true);
-      _HandleLangBarMenuSelect(_status.ascii_mode
-                                   ? ID_WEASELTRAY_ENABLE_ASCII
-                                   : ID_WEASELTRAY_DISABLE_ASCII);
-      if (_pEditSessionContext)
-        m_client.ClearComposition();
-      _UpdateLanguageBar(_status);
+      // Commit ASCII/Rime mode only in the genuinely asynchronous callback,
+      // after SetValue succeeds. Never change mode for a failed request.
+      const HRESULT hr = _RequestKeyboardOpenDeferred();
+      if (FAILED(hr))
+        LOG(ERROR) << "Could not queue keyboard OPENCLOSE recovery, hr: "
+                   << static_cast<long>(hr);
     }
   } else if (IsEqualGUID(guidCompartment,
                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)) {

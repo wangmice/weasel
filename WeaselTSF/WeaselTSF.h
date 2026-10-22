@@ -117,8 +117,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // 载体，会话内执行 _ApplyDeferredKeyboardOpen。自写同步触发的下一次
   // OnChange 由 _fSuppressOpenCloseSelfWrite 跳过，避免 ascii_mode 被
   // 强制重开翻转回去
-  void _RequestKeyboardOpenDeferred();
-  void _ApplyDeferredKeyboardOpen();
+  HRESULT _RequestKeyboardOpenDeferred();
+  HRESULT _ApplyDeferredKeyboardOpen(UINT64 generation);
   HRESULT _GetCompartmentDWORD(DWORD& value, const GUID guid);
   HRESULT _SetCompartmentDWORD(const DWORD& value, const GUID guid);
 
@@ -333,6 +333,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // 自写 OPENCLOSE 的抑制标志：_ApplyDeferredKeyboardOpen 置位期间，
   // _HandleCompartment 跳过该次自写触发的通知（见 Compartments 注释）
   BOOL _fSuppressOpenCloseSelfWrite = FALSE;
+  UINT64 _keyboardOpenGeneration = 0;
 
   // 禁用态缓存（K23c）：_pDisabledCacheContext 为空表示不缓存
   com_ptr<CCompartmentEventSink> _pKeyboardDisabledSink;
