@@ -3,7 +3,6 @@
 //	WTL MessageLoop 封装了消息循环. 实现了 getmessage/dispatchmessage....
 
 #include "stdafx.h"
-#include <WeaselDiagnosticTrace.h>
 #include "resource.h"
 #include "WeaselServerApp.h"
 #include <WeaselIPC.h>
@@ -235,7 +234,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
                      HINSTANCE /*hPrevInstance*/,
                      LPTSTR lpstrCmdLine,
                      int nCmdShow) {
-  weasel::diagnostics::Trace("server-main", "process-entry");
   LoadWeaselLogLevelFromRegistry();
   LANGID langId = get_language_id();
   SetThreadUILanguage(langId);
@@ -312,7 +310,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   // disappears before process teardown releases ServerImpl's singleton mutex,
   // so pipe disappearance alone is not a safe restart boundary.
   bool quit = !wcscmp(L"/q", lpstrCmdLine) || !wcscmp(L"/quit", lpstrCmdLine);
-  weasel::diagnostics::Trace("server-main", quit ? "quit" : "start");
   HANDLE running_server = nullptr;
   HWND running_window = nullptr;
   weasel::ServerRuntimeState running_state{};
@@ -332,7 +329,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
 
     weasel::ServerLifecycleLock restart_lifecycle;
     if ((connected || running_server) && !restart_lifecycle.Acquire(0)) {
-      weasel::diagnostics::Trace("server-main.lifecycle", "busy");
       const bool recovered_starting =
           running_server &&
           running_state.lifecycle ==
@@ -431,10 +427,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     }
 
     if (running_server) {
-      weasel::diagnostics::Trace("server-main.shutdown", "wait-begin");
       client.Disconnect();
       if (!WaitForRunningServerExit(running_server)) {
-        weasel::diagnostics::Trace("server-main.shutdown", "wait-failed");
         LOG(ERROR) << "timed out waiting for WeaselServer to exit";
         return 1;
       }

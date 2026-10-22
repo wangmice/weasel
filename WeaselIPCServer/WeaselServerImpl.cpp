@@ -1,5 +1,4 @@
 ﻿#include "stdafx.h"
-#include <WeaselDiagnosticTrace.h>
 #include "WeaselServerImpl.h"
 #include <PipeServer.h>
 #include <cstdlib>
@@ -409,7 +408,6 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
 }
 
 HWND ServerImpl::Start() {
-  weasel::diagnostics::Scope trace("server-impl.start");
   const std::wstring instanceName = GetServerInstanceName();
   HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE, instanceName.c_str());
   const DWORD mutexError = ::GetLastError();
@@ -450,7 +448,6 @@ HWND ServerImpl::Start() {
     return 0;
   }
 
-  weasel::diagnostics::Trace("server-impl.lifecycle", "starting");
   HWND hwnd = Create(NULL);
   if (!hwnd) {
     LOG(ERROR) << "ServerImpl::Create failed, error: " << GetLastError();
@@ -471,7 +468,6 @@ HWND ServerImpl::Start() {
 }
 
 int ServerImpl::_RequestStop() noexcept {
-  weasel::diagnostics::Trace("server-impl.shutdown", "requested");
   // Shutdown is a control-plane transition and must never wait behind a Rime
   // business call holding g_api_mutex. Lifecycle transitions are atomic: if a
   // maintenance transition raced first, Stopping wins and EndMaintenance is
@@ -488,7 +484,6 @@ int ServerImpl::Stop() {
 }
 
 int ServerImpl::Run() {
-  weasel::diagnostics::Scope trace("server-impl.run");
   if (!m_pRequestHandler) {
     LOG(ERROR) << "server request handler is not installed";
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
@@ -585,7 +580,6 @@ int ServerImpl::Run() {
   };
   // Capture the listener by value: a stack reference would dangle as soon
   // as Run() returns while the pipe thread is still draining requests.
-  weasel::diagnostics::Trace("server-impl.pipe", "listener-start");
   pipeThread = std::make_unique<boost::thread>(
       [this, listener]() { channel->Listen(listener); });
 
@@ -594,7 +588,6 @@ int ServerImpl::Run() {
   // data-plane requests while still making this process observable/controlable.
   // Do not expose Ready until both the pipe and backend startup are complete.
   if (!WaitForPrimaryPipeReady()) {
-    weasel::diagnostics::Trace("server-impl.pipe", "ready-failed");
     LOG(ERROR) << "primary IPC pipe did not become ready during server startup";
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     // Startup lifecycle ownership stays held through WeaselServerApp cleanup;
@@ -607,9 +600,7 @@ int ServerImpl::Run() {
   // out of the pre-IPC window: Explorer can already reach this pipe and any
   // START_SESSION attempt is rejected while lifecycle remains Starting, so a
   // taskbar thread waiting on Weasel cannot deadlock server startup.
-  weasel::diagnostics::Trace("server-impl.pipe", "ready");
   if (m_beforeReadyCallback) {
-    weasel::diagnostics::Scope callback_trace("server-impl.before-ready");
     try {
       m_beforeReadyCallback();
     } catch (...) {
@@ -618,7 +609,6 @@ int ServerImpl::Run() {
   }
 
   if (!m_pRequestHandler->IsReadyForSessions()) {
-    weasel::diagnostics::Trace("server-impl.backend", "not-ready");
     LOG(ERROR) << "Rime backend is not ready for input sessions";
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     _StopRuntime();
@@ -631,13 +621,10 @@ int ServerImpl::Run() {
     return -1;
   }
   _UnlockStartupLifecycleLock();
-  weasel::diagnostics::Trace("server-impl.lifecycle", "ready");
 
   CMessageLoop theLoop;
   _Module.AddMessageLoop(&theLoop);
-  weasel::diagnostics::Trace("server-impl.message-loop", "begin");
   int nRet = theLoop.Run();
-  weasel::diagnostics::Trace("server-impl.message-loop", "end", static_cast<DWORD>(nRet));
   _Module.RemoveMessageLoop();
   {
     // A maintenance handler that linearized first may finish cleanly; one that
@@ -668,10 +655,8 @@ void ServerImpl::_StopRuntime() {
     std::abort();
   }
 
-  weasel::diagnostics::Trace("server-impl.shutdown", "drain-begin");
   _StopPipeServer();
   process_tracker.Stop();
-  weasel::diagnostics::Trace("server-impl.shutdown", "drain-end");
   m_runtimeStopped = true;
 }
 
@@ -693,15 +678,11 @@ DWORD ServerImpl::OnEcho(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
 DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
                                  DWORD wParam,
                                  DWORD lParam) {
-  weasel::diagnostics::RateLimitedScope session_trace(
-      "server-impl.start-session");
   // START_SESSION lifecycle admission is acquired by the pipe listener before
   // g_api_mutex. Keep this handler side-effect-free when lifecycle is not
   // Ready.
-  if (!m_pRequestHandler || _RuntimeLifecycle() != ServerLifecycle::Ready) {
-    weasel::diagnostics::TraceRateLimited("server-impl.start-session", "not-ready");
+  if (!m_pRequestHandler || _RuntimeLifecycle() != ServerLifecycle::Ready)
     return 0;
-  }
 
   return m_pRequestHandler->AddSession(
       reinterpret_cast<LPWSTR>(channel->ReceiveBuffer()),
@@ -735,7 +716,6 @@ DWORD ServerImpl::OnKeyEvent(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnShutdownServer(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
                                    DWORD lParam) {
-  weasel::diagnostics::Trace("server-impl.shutdown", "ipc-request");
   _RequestStop();
   return 0;
 }

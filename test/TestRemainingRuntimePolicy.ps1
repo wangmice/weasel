@@ -206,19 +206,6 @@ if ($installer -notmatch 'ExecWait\s+''"\$INSTDIR\\WeaselSetup\.exe" /u''\s+\$R0
   throw 'NSIS uninstaller must stop when WeaselSetup /u reports failure'
 }
 
-# Diagnostic breadcrumbs must expose why server wake-up was rejected or
-# launch failed; no runtime key data or installation path is written.
-if ($tsf -notmatch 'tsf\.recovery-lock' -or
-    $tsf -notmatch 'tsf\.recovery-server' -or
-    $tsf -notmatch 'tsf\.recovery-launch' -or
-    $tsf -notmatch 'script-failed' -or
-    $tsf -notmatch 'root-unavailable' -or
-    $tsf -notmatch 'singleton-timeout' -or
-    $tsf -notmatch 'admission-deferred' -or
-    $tsf -notmatch 'tsf\.recovery-worker-run' -or
-    $tsf -notmatch 'root-resolved') {
-  throw 'TSF background wakeup must emit diagnostics at every launch barrier'
-}
 # Native process registry views differ: recovering a stopped Server must read
 # both WOW64 views before falling back to the machine Run executable value.
 # Only a directory with a real Server and start_service.bat may launch.

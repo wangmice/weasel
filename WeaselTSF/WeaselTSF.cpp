@@ -1,5 +1,4 @@
 ﻿#include "stdafx.h"
-#include <WeaselDiagnosticTrace.h>
 
 #include <WeaselIPCData.h>
 #include <shellapi.h>
@@ -125,7 +124,6 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
                                    TfClientId tfClientId,
                                    DWORD dwFlags) {
-  weasel::diagnostics::Scope activation_trace("tsf.activate");
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;
@@ -618,11 +616,6 @@ StopServerResult StopPersistentlyUnavailableServer(
              : StopServerResult::Failed;
 }
 
-
-// A successful installation can put WeaselRoot in a registry view other than
-// the current TSF host process's view. The installer also publishes the Server
-// executable path in the machine Run key. Resolve either source without ever
-// searching arbitrary directories or recording private installation paths.
 struct RecoveryServerDirectory {
   std::wstring path;
   DWORD source = 0;  // 0=native root, 32/64=explicit root, 132/164=Run
@@ -748,7 +741,6 @@ RecoveryServerDirectory FindRecoveryServerDirectory() {
 }
 
 void RunServerRecoveryOnce() noexcept {
-  weasel::diagnostics::Scope recovery_trace("tsf.recovery-attempt");
   try {
     const std::wstring instance_name = weasel::GetServerInstanceName();
     const std::wstring legacy_instance_name =
@@ -756,8 +748,6 @@ void RunServerRecoveryOnce() noexcept {
 
     weasel::ServerLifecycleLock lifecycle_lock;
     if (!lifecycle_lock.Acquire(0)) {
-      weasel::diagnostics::Trace("tsf.recovery-lock", "unavailable",
-                                 GetLastError());
       // Starting is special: the server publishes this state only after it
       // acquires the startup lifecycle mutex, and it keeps that mutex until
       // Ready. Therefore a marked Starting generation that exceeded the hard
@@ -771,8 +761,6 @@ void RunServerRecoveryOnce() noexcept {
               static_cast<LONG>(weasel::ServerLifecycle::Starting) &&
           NonReadyLifecycleHardTimeoutExpired(state);
       if (!timed_out_starting) {
-        weasel::diagnostics::Trace("tsf.recovery-lock", "busy-backoff",
-                                   state.lifecycle);
         ResetServerRecoveryFailureStreak();
         ResetServerUnavailableObservation();
         FinishServerRecoveryBackoff(kServerLifecycleBusyBackoffMs);
@@ -783,12 +771,10 @@ void RunServerRecoveryOnce() noexcept {
       const StopServerResult stop_result = StopPersistentlyUnavailableServer(
           state, health_revision, weasel::ServerLifecycle::Starting, false);
       if (stop_result == StopServerResult::SupersededByHealth) {
-        weasel::diagnostics::Trace("tsf.recovery-starting", "health-revoked");
         FinishServerRecoveryHealthy();
         return;
       }
       if (stop_result != StopServerResult::Stopped) {
-        weasel::diagnostics::Trace("tsf.recovery-starting", "stop-failed");
         FinishServerRecoveryFailure();
         return;
       }
@@ -796,8 +782,6 @@ void RunServerRecoveryOnce() noexcept {
       ResetServerUnavailableObservation();
       ResetServerRecoveryFailureStreak();
       if (!lifecycle_lock.Acquire(kServerForcedExitTimeoutMs)) {
-        weasel::diagnostics::Trace("tsf.recovery-lock", "reacquire-failed",
-                                   GetLastError());
         FinishServerRecoveryBackoff(kServerLifecycleBusyBackoffMs);
         return;
       }
@@ -807,21 +791,15 @@ void RunServerRecoveryOnce() noexcept {
         IsServerInstancePresent(instance_name, legacy_instance_name);
     const ULONGLONG health_revision = g_serverRecovery.HealthRevision();
 
-    weasel::diagnostics::Trace("tsf.recovery-server", server_present
-                                   ? "singleton-present" : "singleton-absent");
     if (server_present) {
       weasel::ServerRuntimeState state{};
       if (!ReadServerRuntimeState(state)) {
-        weasel::diagnostics::Trace("tsf.recovery-server",
-                                   "runtime-state-missing", GetLastError());
         ResetServerRecoveryFailureStreak();
         ResetServerUnavailableObservation();
         FinishServerRecoveryBackoff(kServerPresentBackoffMs);
         return;
       }
 
-      weasel::diagnostics::Trace("tsf.recovery-server", "lifecycle",
-                                 static_cast<DWORD>(state.lifecycle));
       if (state.lifecycle !=
           static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
         // At this point recovery owns the lifecycle mutex. A legitimate
@@ -829,8 +807,6 @@ void RunServerRecoveryOnce() noexcept {
         // waiting for ordinary non-Ready transitions, but place a hard upper
         // bound on a generation that never reaches Ready.
         if (!NonReadyLifecycleHardTimeoutExpired(state)) {
-          weasel::diagnostics::Trace("tsf.recovery-server",
-                                     "non-ready-backoff");
           ResetServerRecoveryFailureStreak();
           ResetServerUnavailableObservation();
           FinishServerRecoveryBackoff(kServerPresentBackoffMs);
@@ -857,7 +833,6 @@ void RunServerRecoveryOnce() noexcept {
           return;
         }
         if (ProbeServerResponsive()) {
-          weasel::diagnostics::Trace("tsf.recovery-server", "probe-healthy");
           FinishServerRecoveryHealthy();
           return;
         }
@@ -867,8 +842,6 @@ void RunServerRecoveryOnce() noexcept {
             !SameServerGeneration(latest_state, state) ||
             latest_state.lifecycle !=
                 static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
-          weasel::diagnostics::Trace("tsf.recovery-server",
-                                     "generation-changed");
           ResetServerRecoveryFailureStreak();
           ResetServerUnavailableObservation();
           FinishServerRecoveryBackoff(kServerPresentBackoffMs);
@@ -892,37 +865,25 @@ void RunServerRecoveryOnce() noexcept {
 
     const RecoveryServerDirectory install = FindRecoveryServerDirectory();
     if (install.path.empty()) {
-      weasel::diagnostics::Trace("tsf.recovery-launch", "root-unavailable",
-                                 static_cast<DWORD>(install.last_error));
       FinishServerRecoveryFailure();
       return;
     }
-    weasel::diagnostics::Trace("tsf.recovery-launch", "root-resolved",
-                               install.source);
-    weasel::diagnostics::Trace("tsf.recovery-launch", "script-begin");
     const HINSTANCE launched = ShellExecuteW(
         nullptr, L"open", (install.path + L"\\start_service.bat").c_str(),
         nullptr, install.path.c_str(), SW_HIDE);
-    const auto launch_status = reinterpret_cast<INT_PTR>(launched);
-    if (launch_status <= 32) {
-      weasel::diagnostics::Trace("tsf.recovery-launch", "script-failed",
-                                 static_cast<DWORD>(launch_status));
+    if (reinterpret_cast<INT_PTR>(launched) <= 32) {
       FinishServerRecoveryFailure();
       return;
     }
-    weasel::diagnostics::Trace("tsf.recovery-launch", "script-dispatched");
     if (WaitForServerInstanceState(instance_name, legacy_instance_name, true,
                                    kServerLaunchObservationTimeoutMs)) {
-      weasel::diagnostics::Trace("tsf.recovery-launch", "singleton-observed");
       ResetServerRecoveryFailureStreak();
       ResetServerUnavailableObservation();
       FinishServerRecoveryBackoff(kServerPresentBackoffMs);
       return;
     }
-    weasel::diagnostics::Trace("tsf.recovery-launch", "singleton-timeout");
     FinishServerRecoveryFailure();
   } catch (...) {
-    weasel::diagnostics::Trace("tsf.recovery-attempt", "exception");
     FinishServerRecoveryFailure();
   }
 }
@@ -934,7 +895,6 @@ void RunServerRecoveryWorker() noexcept {
   // once the bounded budget is exhausted.
   const ULONGLONG deadline =
       GetTickCount64() + kServerRecoveryWorkerRetryBudgetMs;
-  weasel::diagnostics::Scope worker_trace("tsf.recovery-worker-run");
 
   for (;;) {
     RunServerRecoveryOnce();
@@ -943,17 +903,12 @@ void RunServerRecoveryWorker() noexcept {
     // sleep because foreground health or another worker can clear/replace it.
     for (;;) {
       const ULONGLONG retry_after = g_serverRecovery.RetryAfter();
-      if (!retry_after) {
-        weasel::diagnostics::Trace("tsf.recovery-worker-run", "no-retry");
+      if (!retry_after)
         return;
-      }
 
       const ULONGLONG now = GetTickCount64();
-      if (now >= deadline || retry_after > deadline) {
-        weasel::diagnostics::Trace("tsf.recovery-worker-run", "budget-exhausted",
-                                   static_cast<DWORD>(g_serverRecovery.FailureStreak()));
+      if (now >= deadline || retry_after > deadline)
         return;
-      }
 
       if (now < retry_after) {
         Sleep(static_cast<DWORD>(retry_after - now));
@@ -965,10 +920,8 @@ void RunServerRecoveryWorker() noexcept {
 
       // Another callback may have won admission. If so it owns progress; if
       // not, loop and observe the deadline it just published.
-      if (g_serverRecovery.WorkerInflight()) {
-        weasel::diagnostics::Trace("tsf.recovery-worker-run", "handoff");
+      if (g_serverRecovery.WorkerInflight())
         return;
-      }
     }
   }
 }
@@ -977,11 +930,8 @@ void RunServerRecoveryWorker() noexcept {
 
 void WeaselTSF::_ScheduleServerRecovery() noexcept {
 #if !defined(WEASEL_TEST_DISABLE_SERVER_LAUNCH)
-  if (!TryBeginServerRecovery()) {
-    weasel::diagnostics::TraceRateLimited("tsf.recovery-worker",
-                                          "admission-deferred");
+  if (!TryBeginServerRecovery())
     return;
-  }
 
   bool queued = false;
   try {
@@ -990,17 +940,12 @@ void WeaselTSF::_ScheduleServerRecovery() noexcept {
     // Scheduling is best-effort and must never escape through a TSF callback.
   }
 
-  if (!queued) {
-    weasel::diagnostics::TraceRateLimited("tsf.recovery-worker", "queue-failed");
+  if (!queued)
     FinishServerRecoveryBackoff(kServerQueueFailureBackoffMs);
-  } else {
-    weasel::diagnostics::TraceRateLimited("tsf.recovery-worker", "queued");
-  }
 #endif
 }
 
 bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
-  weasel::diagnostics::TraceRateLimited("tsf.recovery", "attempt");
   if (m_client.IsSessionActive())
     return true;
 
@@ -1008,20 +953,13 @@ bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
     m_client.Disconnect();
 
     DWORD remaining = RemainingRecoveryTime(deadline);
-    if (!remaining || !m_client.Connect(remaining)) {
-      weasel::diagnostics::TraceRateLimited("tsf.connect", "failed", remaining);
+    if (!remaining || !m_client.Connect(remaining))
       return false;
-    }
-    weasel::diagnostics::TraceRateLimited("tsf.connect", "connected");
 
     // Pipe reachability and Rime session creation have different latency
     // characteristics. Once the pipe is reachable, do not squeeze AddSession
     // into the few milliseconds left from the transport deadline.
-    {
-      weasel::diagnostics::RateLimitedScope session_trace(
-          "tsf.start-session");
-      m_client.StartSession(kSessionEstablishmentTimeoutMs);
-    }
+    m_client.StartSession(kSessionEstablishmentTimeoutMs);
     _ConsumeResponseIfFresh();
     return m_client.IsSessionActive();
   };
@@ -1051,7 +989,6 @@ bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
     }
   }
 
-  weasel::diagnostics::TraceRateLimited("tsf.recovery", "not-established");
   _reconnectRetry = 0;
   return false;
 }

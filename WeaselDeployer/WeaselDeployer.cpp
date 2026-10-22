@@ -1,7 +1,6 @@
 // WeaselDeployer.cpp : Defines the entry point for the application.
 //
 #include "stdafx.h"
-#include <WeaselDiagnosticTrace.h>
 #include <WeaselUtility.h>
 #include <WeaselIPC.h>
 #include <fstream>
@@ -220,7 +219,6 @@ static void DetachGuiConsole() {
 }
 
 int wmain(int argc, wchar_t* argv[]) {
-  weasel::diagnostics::Scope process_trace("deployer.process");
   const bool internal_sync_worker = IsInternalSyncWorker(argc, argv);
   RuntimeCleanup cleanup;
   if (internal_sync_worker && !cleanup.watchdog.Arm()) {
@@ -273,26 +271,21 @@ int wmain(int argc, wchar_t* argv[]) {
   }
 
   int ret = 0;
-  weasel::diagnostics::Trace("deployer.singleton", "begin");
   HANDLE hMutex = CreateMutex(NULL, TRUE, weasel::kDeployerExclusiveMutexName);
   if (!hMutex) {
     LOG(ERROR) << "Error creating WeaselDeployerExclusiveMutex.";
     ret = 1;
   } else if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    weasel::diagnostics::Trace("deployer.singleton", "already-exists");
     // 部署器可能被脚本/计划任务静默调用，只记日志不弹框，避免破坏无人值守
     LOG(WARNING) << "another deployer process is running; aborting operation.";
     ret = 1;
   } else {
-    weasel::diagnostics::Trace("deployer.singleton", "acquired");
     ret = Run(argc, argv);
   }
 
   if (hMutex) {
     CloseHandle(hMutex);
   }
-  weasel::diagnostics::Trace("deployer.process", "result",
-                             static_cast<DWORD>(ret));
   return ret;
 }
 
@@ -321,9 +314,7 @@ static int Run(int argc, wchar_t* argv[]) {
       LOG(ERROR) << "Could not arm Rime initialization watchdog.";
       return 1;
     }
-    weasel::diagnostics::Trace("deployer.initialize", "begin");
     configurator.Initialize();
-    weasel::diagnostics::Trace("deployer.initialize", "end");
   }
 
   if (args.empty()) {
