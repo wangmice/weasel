@@ -375,6 +375,19 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
         }
       }
       client.ShutdownServer();
+
+      // The pipe shutdown request can queue behind a worker stuck in librime
+      // under g_api_mutex. The server window is authenticated to this exact
+      // process generation above, so also request control-plane shutdown via
+      // the message thread. New servers handle WM_CLOSE without waiting on the
+      // API mutex; older servers still fall back to the bounded process wait.
+      DWORD window_process_id = 0;
+      const DWORD server_process_id = GetProcessId(running_server);
+      if (running_window && server_process_id &&
+          GetWindowThreadProcessId(running_window, &window_process_id) &&
+          window_process_id == server_process_id) {
+        PostMessageW(running_window, WM_CLOSE, 0, 0);
+      }
     } else if (running_server) {
       const DWORD process_state = WaitForSingleObject(running_server, 0);
       if (process_state == WAIT_OBJECT_0) {

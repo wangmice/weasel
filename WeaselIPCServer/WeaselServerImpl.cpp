@@ -468,19 +468,20 @@ HWND ServerImpl::Start() {
   return hwnd;
 }
 
-int ServerImpl::_RequestStopUnderApiLock() noexcept {
+int ServerImpl::_RequestStop() noexcept {
+  // Shutdown is a control-plane transition and must never wait behind a Rime
+  // business call holding g_api_mutex. Lifecycle transitions are atomic: if a
+  // maintenance transition raced first, Stopping wins and EndMaintenance is
+  // already forbidden from publishing Ready again.
   _SetRuntimeLifecycle(ServerLifecycle::Stopping);
-  // DO NOT exit process or finalize here. Let WeaselServer unwind Run().
+  // DO NOT exit process or finalize here. Let WeaselServer unwind Run(); its
+  // teardown watchdog bounds any worker still stuck inside librime.
   PostMessage(WM_QUIT);
   return 0;
 }
 
 int ServerImpl::Stop() {
-  // Lifecycle publication must linearize with pipe handlers that can enter or
-  // leave maintenance. OnShutdownServer already runs under this lock and calls
-  // the lock-held helper directly.
-  std::lock_guard guard(g_api_mutex);
-  return _RequestStopUnderApiLock();
+  return _RequestStop();
 }
 
 int ServerImpl::Run() {
@@ -687,8 +688,7 @@ DWORD ServerImpl::OnKeyEvent(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnShutdownServer(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
                                    DWORD lParam) {
-  // Pipe dispatch already owns g_api_mutex here.
-  _RequestStopUnderApiLock();
+  _RequestStop();
   return 0;
 }
 

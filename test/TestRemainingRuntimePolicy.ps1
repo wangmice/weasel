@@ -43,9 +43,11 @@ if ($ipc -notmatch 'kServerLifecycleTickMarker\s*=\s*0x80000000u' -or
     $serverImpl -notmatch '_TryTransitionRuntimeLifecycle[\s\S]*?EncodeServerLifecycleTick\(GetTickCount\(\)\)[\s\S]*?InterlockedCompareExchange') {
   throw 'server runtime state must publish a backward-compatible monotonic lifecycle-start tick before lifecycle changes'
 }
-if ($tsf -notmatch 'kServerNonReadyHardTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000' -or
+if ($tsf -notmatch 'kServerStartingHardTimeoutMs\s*=\s*30\s*\*\s*1000' -or
+    $tsf -notmatch 'kServerMaintenanceHardTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000' -or
+    $tsf -notmatch 'kServerStoppingHardTimeoutMs\s*=\s*30\s*\*\s*1000' -or
     $tsf -notmatch 'NonReadyLifecycleHardTimeoutExpired\s*\(') {
-  throw 'non-Ready server recovery must retain the conservative fifteen-minute hard deadline'
+  throw 'non-Ready recovery must bound Starting/Stopping while preserving the deploy maintenance deadline'
 }
 $recoveryOnceStart = $tsf.IndexOf('void RunServerRecoveryOnce() noexcept')
 $recoveryWorkerStart = $tsf.IndexOf('void RunServerRecoveryWorker() noexcept', $recoveryOnceStart)
@@ -114,9 +116,16 @@ if ($rimeHandler -notmatch 'RimeWithWeaselHandler::AddSession[\s\S]*?if\s*\(m_di
     $rimeHandler -match 'RimeWithWeaselHandler::AddSession[\s\S]{0,300}?EndMaintenance\(\)') {
   throw 'START_SESSION must never end maintenance or reinitialize disabled librime'
 }
-if ($serverImpl -notmatch 'int\s+ServerImpl::Stop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?_RequestStopUnderApiLock\(\)' -or
-    $serverImpl -notmatch 'OnShutdownServer[\s\S]*?_RequestStopUnderApiLock\(\)') {
-  throw 'server stop and maintenance transitions must share the API serialization boundary'
+$stopStart = $serverImpl.IndexOf('int ServerImpl::Stop()')
+$runStart = $serverImpl.IndexOf('int ServerImpl::Run()', $stopStart)
+if ($stopStart -lt 0 -or $runStart -le $stopStart) {
+  throw 'unable to isolate ServerImpl::Stop'
+}
+$stopBody = $serverImpl.Substring($stopStart, $runStart - $stopStart)
+if ($stopBody -match 'g_api_mutex' -or
+    $stopBody -notmatch '_RequestStop\(\)' -or
+    $serverImpl -notmatch 'OnShutdownServer[\s\S]*?_RequestStop\(\)') {
+  throw 'server stop must remain independent of the Rime API serialization lock'
 }
 $listenerStart = $serverImpl.IndexOf('auto listener = [this]')
 $listenerEnd = $serverImpl.IndexOf('pipeThread = std::make_unique<boost::thread>', $listenerStart)

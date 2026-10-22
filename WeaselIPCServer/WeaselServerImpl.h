@@ -122,7 +122,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   void _StopRuntime();
   /* Interrupt and join the pipe listener and its workers; idempotent. */
   void _StopPipeServer();
-  int _RequestStopUnderApiLock() noexcept;
+  int _RequestStop() noexcept;
   void _SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept;
   ServerLifecycle _RuntimeLifecycle() const noexcept;
   bool _TryTransitionRuntimeLifecycle(ServerLifecycle expected,
