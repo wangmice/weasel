@@ -300,9 +300,8 @@ HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation) {
   _status.ascii_mode = !_status.ascii_mode;
   if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
     _EnableLanguageBar(true);
-  _HandleLangBarMenuSelect(_status.ascii_mode
-                               ? ID_WEASELTRAY_ENABLE_ASCII
-                               : ID_WEASELTRAY_DISABLE_ASCII);
+  _HandleLangBarMenuSelect(_status.ascii_mode ? ID_WEASELTRAY_ENABLE_ASCII
+                                              : ID_WEASELTRAY_DISABLE_ASCII);
   if (_pEditSessionContext)
     m_client.ClearComposition();
   _UpdateLanguageBar(_status);
