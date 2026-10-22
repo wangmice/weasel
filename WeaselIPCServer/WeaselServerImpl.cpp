@@ -693,7 +693,8 @@ DWORD ServerImpl::OnEcho(WEASEL_IPC_COMMAND uMsg, DWORD wParam, DWORD lParam) {
 DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
                                  DWORD wParam,
                                  DWORD lParam) {
-  weasel::diagnostics::Scope session_trace("server-impl.start-session");
+  weasel::diagnostics::RateLimitedScope session_trace(
+      "server-impl.start-session");
   // START_SESSION lifecycle admission is acquired by the pipe listener before
   // g_api_mutex. Keep this handler side-effect-free when lifecycle is not
   // Ready.

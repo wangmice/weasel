@@ -86,6 +86,36 @@ inline void TraceRateLimited(const char* stage,
     Trace(stage, event, value, extra);
 }
 
+
+class RateLimitedScope {
+ public:
+  explicit RateLimitedScope(const char* stage) noexcept
+      : stage_(stage), begin_(GetTickCount64()), enabled_(false) {
+    if (!Enabled())
+      return;
+    static std::atomic<ULONGLONG> previous{0};
+    ULONGLONG observed = previous.load(std::memory_order_relaxed);
+    if (observed != 0 && begin_ - observed < 2000)
+      return;
+    enabled_ = previous.compare_exchange_strong(
+        observed, begin_, std::memory_order_relaxed);
+    if (enabled_)
+      Trace(stage_, "begin");
+  }
+  RateLimitedScope(const RateLimitedScope&) = delete;
+  RateLimitedScope& operator=(const RateLimitedScope&) = delete;
+  ~RateLimitedScope() {
+    if (enabled_)
+      Trace(stage_, "end",
+            static_cast<DWORD>(GetTickCount64() - begin_));
+  }
+
+ private:
+  const char* stage_;
+  ULONGLONG begin_;
+  bool enabled_;
+};
+
 class Scope {
  public:
   explicit Scope(const char* stage) noexcept

@@ -206,7 +206,8 @@ DWORD RimeWithWeaselHandler::FindSession(WeaselSessionId ipc_id) {
 }
 
 DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
-  weasel::diagnostics::Scope session_trace("rime-handler.add-session");
+  weasel::diagnostics::RateLimitedScope session_trace(
+      "rime-handler.add-session");
   // Maintenance is an explicit server lifecycle. A stale START_SESSION must
   // never reinitialize librime behind the deployer's START/END_MAINTENANCE
   // ownership.
@@ -216,7 +217,8 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
   }
   RimeSessionId session_id = 0;
   {
-    weasel::diagnostics::Scope create_trace("rime-api.create-session");
+    weasel::diagnostics::RateLimitedScope create_trace(
+        "rime-api.create-session");
     session_id = (RimeSessionId)rime_api->create_session();
   }
   if (!session_id) {
@@ -275,7 +277,8 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
   }
   add_session = true;
   {
-    weasel::diagnostics::Scope ui_trace("rime-handler.session-ui");
+    weasel::diagnostics::RateLimitedScope ui_trace(
+        "rime-handler.session-ui");
     _UpdateUI(ipc_id);
   }
   add_session = false;

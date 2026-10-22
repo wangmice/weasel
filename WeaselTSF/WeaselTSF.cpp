@@ -848,7 +848,8 @@ bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
     // characteristics. Once the pipe is reachable, do not squeeze AddSession
     // into the few milliseconds left from the transport deadline.
     {
-      weasel::diagnostics::Scope session_trace("tsf.start-session");
+      weasel::diagnostics::RateLimitedScope session_trace(
+          "tsf.start-session");
       m_client.StartSession(kSessionEstablishmentTimeoutMs);
     }
     _ConsumeResponseIfFresh();
