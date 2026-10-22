@@ -58,6 +58,8 @@ jobs:
           .\test\TestRestartRollbackRegressionPolicy.ps1
           .\test\TestRemainingRuntimePolicy.ps1
           .\test\TestFirstKeyWakeupPolicy.ps1
+          .\test\TestKeyboardCompartmentPolicy.ps1
+          .\test\TestServerShutdownPolicy.ps1
           .\test\TestPipeDeadlinePolicy.ps1
           .\test\TestSessionLifecycleBuildPolicy.ps1
           .\test\TestSetupTransactionPolicy.ps1
