@@ -12,7 +12,7 @@ inline bool Enabled() noexcept {
   static const bool enabled = []() noexcept {
     DWORD value = 0;
     DWORD size = sizeof(value);
-    return RegGetValueW(HKEY_CURRENT_USER, L"Software\Rime\Weasel",
+    return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
                         L"DiagnosticTrace", RRF_RT_REG_DWORD, nullptr,
                         &value, &size) == ERROR_SUCCESS &&
            value == 1;
@@ -34,13 +34,13 @@ inline void Trace(const char* stage,
   if (wcscat_s(path, L"rime.weasel") != 0)
     return;
   CreateDirectoryW(path, nullptr);
-  if (wcscat_s(path, L"\diagnostics") != 0)
+  if (wcscat_s(path, L"\\diagnostics") != 0)
     return;
   CreateDirectoryW(path, nullptr);
 
   wchar_t suffix[64] = {};
   _snwprintf_s(suffix, _countof(suffix), _TRUNCATE,
-               L"\weasel-diagnostic-%lu.log", GetCurrentProcessId());
+               L"\\weasel-diagnostic-%lu.log", GetCurrentProcessId());
   if (wcscat_s(path, suffix) != 0)
     return;
 
