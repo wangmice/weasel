@@ -328,10 +328,19 @@ void WeaselTSF::_HandleLangBarMenuSelect(UINT wID) {
       if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
                             L"WeaselRoot", dir) == ERROR_SUCCESS) {
         if (wID == ID_WEASELTRAY_RERUN_SERVICE) {
-          QueueDllBackgroundTask([dir]() {
-            ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
-                          NULL, dir.c_str(), SW_HIDE);
+          const bool queued = QueueDllBackgroundTask([dir]() {
+            const auto server = dir + L"\\WeaselServer.exe";
+            const HINSTANCE launched = ShellExecuteW(
+                NULL, L"open", server.c_str(), NULL, dir.c_str(), SW_HIDE);
+            if (reinterpret_cast<INT_PTR>(launched) <= 32) {
+              LOG(ERROR) << "Could not launch WeaselServer from language bar, "
+                            "ShellExecute error: "
+                         << reinterpret_cast<INT_PTR>(launched);
+            }
           });
+          if (!queued)
+            LOG(ERROR) << "Could not queue WeaselServer restart from language "
+                          "bar.";
         } else
           open(dir);
       }

@@ -67,13 +67,15 @@ int WeaselServerApp::Run(bool check_updates) {
   LOG(INFO) << "Rime handler initialized";
   m_handler->OnUpdateUI([this]() { tray_icon.RequestRefresh(); });
 
-  LOG(INFO) << "creating tray icon";
-  if (!tray_icon.Create(m_server.GetHWnd()))
-    LOG(ERROR) << "failed to create tray icon";
-  else
-    LOG(INFO) << "tray icon created";
   m_server.SetTrayRefreshCallback([this]() { tray_icon.ApplyRefresh(); });
-  tray_icon.RequestRefresh();
+  m_server.SetBeforeReadyCallback([this]() {
+    LOG(INFO) << "creating tray icon after IPC listener startup";
+    if (!tray_icon.Create(m_server.GetHWnd()))
+      LOG(ERROR) << "failed to create tray icon";
+    else
+      LOG(INFO) << "tray icon created";
+    tray_icon.RequestRefresh();
+  });
 
   LOG(INFO) << "entering IPC message loop";
   int ret = m_server.Run();

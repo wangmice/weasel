@@ -587,6 +587,18 @@ int ServerImpl::Run() {
     return -1;
   }
 
+  // Shell_NotifyIcon may synchronously interact with Explorer. Keep that work
+  // out of the pre-IPC window: Explorer can already reach this pipe and any
+  // START_SESSION attempt is rejected while lifecycle remains Starting, so a
+  // taskbar thread waiting on Weasel cannot deadlock server startup.
+  if (m_beforeReadyCallback) {
+    try {
+      m_beforeReadyCallback();
+    } catch (...) {
+      LOG(ERROR) << "before-Ready server startup callback failed";
+    }
+  }
+
   if (!_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,
                                       ServerLifecycle::Ready)) {
     _StopRuntime();
@@ -1212,6 +1224,10 @@ void Server::AddMenuHandler(UINT uID, CommandHandler handler) {
 
 void Server::SetTrayRefreshCallback(std::function<void()> callback) {
   m_pImpl->SetTrayRefreshCallback(callback);
+}
+
+void Server::SetBeforeReadyCallback(std::function<void()> callback) {
+  m_pImpl->SetBeforeReadyCallback(std::move(callback));
 }
 
 HWND Server::GetHWnd() {

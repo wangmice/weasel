@@ -12,6 +12,7 @@ $serverApp = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServe
 $systemTray = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\SystemTraySDK.cpp') -Raw
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
+$languageBar = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\LanguageBar.cpp') -Raw
 $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
 $registerCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Register.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
@@ -321,6 +322,34 @@ if ($feedSetup -lt 0 -or $initSparkle -le $feedSetup -or
     $serverApp -notmatch 'class\s+WinSparkleScope' -or
     $serverApp -notmatch '~WinSparkleScope\(\)[\s\S]*?win_sparkle_cleanup\(\)') {
   throw 'WinSparkle feed/setup must precede init, manual checks must follow init, and cleanup must be scoped'
+}
+
+# The server must expose its primary pipe before initial tray publication. Shell_NotifyIcon
+# can synchronously call into Explorer, whose UI thread may already be waiting on TSF IPC.
+if ($serverImplHeader -notmatch 'SetBeforeReadyCallback\(std::function<void\(\)> callback\)' -or
+    $ipcHeader -notmatch 'SetBeforeReadyCallback\(std::function<void\(\)> callback\)') {
+  throw 'server API must expose a before-Ready callback for post-listener shell startup work'
+}
+$runImplStart = $serverImpl.IndexOf('int ServerImpl::Run()')
+$stopRuntimeStart = $serverImpl.IndexOf('void ServerImpl::_StopRuntime()', $runImplStart)
+if ($runImplStart -lt 0 -or $stopRuntimeStart -le $runImplStart) {
+  throw 'unable to isolate ServerImpl::Run startup ordering'
+}
+$runImpl = $serverImpl.Substring($runImplStart, $stopRuntimeStart - $runImplStart)
+$pipeReady = $runImpl.IndexOf('WaitForPrimaryPipeReady()')
+$beforeReady = $runImpl.IndexOf('m_beforeReadyCallback()')
+$publishReady = $runImpl.IndexOf('_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,')
+if ($pipeReady -lt 0 -or $beforeReady -lt 0 -or $publishReady -lt 0 -or
+    -not ($pipeReady -lt $beforeReady -and $beforeReady -lt $publishReady)) {
+  throw 'shell startup callback must run after pipe readiness and before Ready publication'
+}
+if (([regex]::Matches($serverApp, 'tray_icon\.Create\(')).Count -ne 1 -or
+    $serverApp -notmatch 'SetBeforeReadyCallback\(\[this\]\(\)[\s\S]*?tray_icon\.Create\(m_server\.GetHWnd\(\)\)[\s\S]*?tray_icon\.RequestRefresh\(\)') {
+  throw 'initial tray Shell_NotifyIcon path must run only after the pipe listener is live'
+}
+if ($languageBar -match 'start_service\.bat' -or
+    $languageBar -notmatch 'ID_WEASELTRAY_RERUN_SERVICE[\s\S]*?QueueDllBackgroundTask[\s\S]*?WeaselServer\.exe') {
+  throw 'language-bar restart must launch WeaselServer directly instead of relying on a batch shell layer'
 }
 
 # A restart must wait for the old process, not merely for its pipe to vanish:

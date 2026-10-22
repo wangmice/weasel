@@ -265,6 +265,9 @@ class Server {
   // Callback invoked on the server message thread when a tray icon refresh is
   // requested from a pipe worker thread.
   void SetTrayRefreshCallback(std::function<void()> callback);
+  // Runs after the primary pipe listener is live but before Starting -> Ready.
+  // Use it for shell/UI startup work that must never block IPC availability.
+  void SetBeforeReadyCallback(std::function<void()> callback);
 
  private:
   ServerImpl* m_pImpl;
