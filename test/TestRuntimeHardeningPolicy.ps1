@@ -324,11 +324,11 @@ if ($feedSetup -lt 0 -or $initSparkle -le $feedSetup -or
   throw 'WinSparkle feed/setup must precede init, manual checks must follow init, and cleanup must be scoped'
 }
 
-# The server must expose its primary pipe before initial tray publication. Shell_NotifyIcon
-# can synchronously call into Explorer, whose UI thread may already be waiting on TSF IPC.
+# Once singleton/Starting is published, make the control pipe reachable before
+# every potentially blocking Rime/UI/shell startup operation.
 if ($serverImplHeader -notmatch 'SetBeforeReadyCallback\(std::function<void\(\)> callback\)' -or
     $ipcHeader -notmatch 'SetBeforeReadyCallback\(std::function<void\(\)> callback\)') {
-  throw 'server API must expose a before-Ready callback for post-listener shell startup work'
+  throw 'server API must expose a before-Ready callback for post-listener startup work'
 }
 $runImplStart = $serverImpl.IndexOf('int ServerImpl::Run()')
 $stopRuntimeStart = $serverImpl.IndexOf('void ServerImpl::_StopRuntime()', $runImplStart)
@@ -336,16 +336,25 @@ if ($runImplStart -lt 0 -or $stopRuntimeStart -le $runImplStart) {
   throw 'unable to isolate ServerImpl::Run startup ordering'
 }
 $runImpl = $serverImpl.Substring($runImplStart, $stopRuntimeStart - $runImplStart)
+$listenerStart = $runImpl.IndexOf('pipeThread = std::make_unique<boost::thread>')
 $pipeReady = $runImpl.IndexOf('WaitForPrimaryPipeReady()')
 $beforeReady = $runImpl.IndexOf('m_beforeReadyCallback()')
+$backendReady = $runImpl.IndexOf('m_pRequestHandler->IsReadyForSessions()', $beforeReady)
 $publishReady = $runImpl.IndexOf('_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,')
-if ($pipeReady -lt 0 -or $beforeReady -lt 0 -or $publishReady -lt 0 -or
-    -not ($pipeReady -lt $beforeReady -and $beforeReady -lt $publishReady)) {
-  throw 'shell startup callback must run after pipe readiness and before Ready publication'
+if ($listenerStart -lt 0 -or $pipeReady -lt 0 -or $beforeReady -lt 0 -or
+    $backendReady -lt 0 -or $publishReady -lt 0 -or
+    -not ($listenerStart -lt $pipeReady -and $pipeReady -lt $beforeReady -and
+          $beforeReady -lt $backendReady -and $backendReady -lt $publishReady)) {
+  throw 'pipe must precede application startup and backend readiness must precede Ready publication'
 }
-if (([regex]::Matches($serverApp, 'tray_icon\.Create\(')).Count -ne 1 -or
-    $serverApp -notmatch 'SetBeforeReadyCallback\(\[this\]\(\)[\s\S]*?tray_icon\.Create\(m_server\.GetHWnd\(\)\)[\s\S]*?tray_icon\.RequestRefresh\(\)') {
-  throw 'initial tray Shell_NotifyIcon path must run only after the pipe listener is live'
+if ($runImpl -notmatch '_RuntimeLifecycle\(\)\s*==\s*ServerLifecycle::Starting[\s\S]*?msg\.Msg\s*!=\s*WEASEL_IPC_SHUTDOWN_SERVER[\s\S]*?dispatch\s*=\s*false') {
+  throw 'Starting listener must reject every data-plane command while retaining shutdown control'
+}
+if (([regex]::Matches($serverApp, 'm_handler->Initialize\(\)')).Count -ne 1 -or
+    ([regex]::Matches($serverApp, 'm_ui\.Create\(')).Count -ne 1 -or
+    ([regex]::Matches($serverApp, 'tray_icon\.Create\(')).Count -ne 1 -or
+    $serverApp -notmatch 'SetBeforeReadyCallback\([\s\S]*?win_sparkle_init\(\)[\s\S]*?m_ui\.Create\(m_server\.GetHWnd\(\)\)[\s\S]*?m_handler->Initialize\(\)[\s\S]*?tray_icon\.Create\(m_server\.GetHWnd\(\)\)[\s\S]*?m_server\.Run\(\)') {
+  throw 'WinSparkle UI Rime and tray startup must all execute only after the primary pipe is listening'
 }
 if ($languageBar -match 'start_service\.bat' -or
     $languageBar -notmatch 'ID_WEASELTRAY_RERUN_SERVICE[\s\S]*?QueueDllBackgroundTask[\s\S]*?WeaselServer\.exe') {

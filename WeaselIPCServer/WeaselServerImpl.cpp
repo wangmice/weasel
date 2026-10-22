@@ -485,8 +485,8 @@ int ServerImpl::Stop() {
 }
 
 int ServerImpl::Run() {
-  if (!m_pRequestHandler || !m_pRequestHandler->IsReadyForSessions()) {
-    LOG(ERROR) << "Rime backend is not ready for input sessions";
+  if (!m_pRequestHandler) {
+    LOG(ERROR) << "server request handler is not installed";
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     return -1;
   }
@@ -526,6 +526,16 @@ int ServerImpl::Run() {
     {
       std::lock_guard guard(g_api_mutex);
       bool dispatch = lifecycle_admitted;
+
+      // The primary pipe intentionally becomes reachable before Rime/UI/shell
+      // startup work completes. While lifecycle is still Starting, keep that
+      // backend completely private: only shutdown belongs to the control plane
+      // and is safe before initialization has finished.
+      if (_RuntimeLifecycle() == ServerLifecycle::Starting &&
+          msg.Msg != WEASEL_IPC_SHUTDOWN_SERVER) {
+        dispatch = false;
+      }
+
       if (starting && dispatch) {
         // Lifecycle may have reached Stopping before this request acquired the
         // API lock. Recheck under serialization before creating any session.
@@ -574,10 +584,10 @@ int ServerImpl::Run() {
   pipeThread = std::make_unique<boost::thread>(
       [this, listener]() { channel->Listen(listener); });
 
-  // WeaselServerApp calls Run() only after Rime initialization has completed.
-  // Do not expose Ready until the primary pipe instance actually exists:
-  // deployers interpret a failed Connect while owning the lifecycle lock as
-  // "no live server" and may otherwise start local Rime maintenance beside us.
+  // Bring up the control pipe before any potentially blocking application
+  // startup callback. Lifecycle remains Starting, so the listener can reject
+  // data-plane requests while still making this process observable/controlable.
+  // Do not expose Ready until both the pipe and backend startup are complete.
   if (!WaitForPrimaryPipeReady()) {
     LOG(ERROR) << "primary IPC pipe did not become ready during server startup";
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
@@ -597,6 +607,13 @@ int ServerImpl::Run() {
     } catch (...) {
       LOG(ERROR) << "before-Ready server startup callback failed";
     }
+  }
+
+  if (!m_pRequestHandler->IsReadyForSessions()) {
+    LOG(ERROR) << "Rime backend is not ready for input sessions";
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
+    _StopRuntime();
+    return -1;
   }
 
   if (!_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,

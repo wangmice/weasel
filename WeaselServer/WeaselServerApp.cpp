@@ -39,43 +39,48 @@ int WeaselServerApp::Run(bool check_updates) {
   }
   LOG(INFO) << "IPC server window started";
 
-  win_sparkle_set_appcast_url(update_feed_url());
-  win_sparkle_set_registry_path("Software\\Rime\\Weasel\\Updates");
-  if (GetThreadUILanguage() ==
-      MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL))
-    win_sparkle_set_lang("zh-TW");
-  else if (GetThreadUILanguage() ==
-           MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED))
-    win_sparkle_set_lang("zh-CN");
-  else
-    win_sparkle_set_lang("en");
-  win_sparkle_init();
   WinSparkleScope win_sparkle_scope;
-  win_sparkle_scope.MarkInitialized();
-  if (check_updates)
-    check_update();
-
-  LOG(INFO) << "creating candidate UI";
-  if (!m_ui.Create(m_server.GetHWnd())) {
-    LOG(ERROR) << "failed to create candidate UI";
-    return -1;
-  }
-  LOG(INFO) << "candidate UI created";
-
-  LOG(INFO) << "initializing Rime handler";
-  m_handler->Initialize();
-  LOG(INFO) << "Rime handler initialized";
-  m_handler->OnUpdateUI([this]() { tray_icon.RequestRefresh(); });
-
   m_server.SetTrayRefreshCallback([this]() { tray_icon.ApplyRefresh(); });
-  m_server.SetBeforeReadyCallback([this]() {
-    LOG(INFO) << "creating tray icon after IPC listener startup";
-    if (!tray_icon.Create(m_server.GetHWnd()))
-      LOG(ERROR) << "failed to create tray icon";
-    else
-      LOG(INFO) << "tray icon created";
-    tray_icon.RequestRefresh();
-  });
+  m_server.SetBeforeReadyCallback(
+      [this, check_updates, &win_sparkle_scope]() {
+        // From this point onward the primary pipe is already listening while
+        // lifecycle remains Starting. Any slow shell/UI/librime startup work
+        // therefore cannot make the published server generation invisible to
+        // restart, uninstall, or TSF recovery.
+        win_sparkle_set_appcast_url(update_feed_url());
+        win_sparkle_set_registry_path("Software\\Rime\\Weasel\\Updates");
+        if (GetThreadUILanguage() ==
+            MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL))
+          win_sparkle_set_lang("zh-TW");
+        else if (GetThreadUILanguage() ==
+                 MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED))
+          win_sparkle_set_lang("zh-CN");
+        else
+          win_sparkle_set_lang("en");
+        win_sparkle_init();
+        win_sparkle_scope.MarkInitialized();
+        if (check_updates)
+          check_update();
+
+        LOG(INFO) << "creating candidate UI";
+        if (!m_ui.Create(m_server.GetHWnd())) {
+          LOG(ERROR) << "failed to create candidate UI";
+          return;
+        }
+        LOG(INFO) << "candidate UI created";
+
+        LOG(INFO) << "initializing Rime handler";
+        m_handler->Initialize();
+        LOG(INFO) << "Rime handler initialized";
+        m_handler->OnUpdateUI([this]() { tray_icon.RequestRefresh(); });
+
+        LOG(INFO) << "creating tray icon after IPC listener startup";
+        if (!tray_icon.Create(m_server.GetHWnd()))
+          LOG(ERROR) << "failed to create tray icon";
+        else
+          LOG(INFO) << "tray icon created";
+        tray_icon.RequestRefresh();
+      });
 
   LOG(INFO) << "entering IPC message loop";
   int ret = m_server.Run();
