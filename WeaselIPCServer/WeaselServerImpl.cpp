@@ -395,11 +395,10 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
                             DWORD wParam,
                             DWORD lParam) {
   const UINT command = LOWORD(wParam);
-  // Run() already holds g_api_mutex for every pipe command. The quit menu
-  // handler calls Stop(), which would try to acquire the same non-recursive
-  // mutex again on this worker thread. Use the lock-held stop helper directly.
+  // Pipe dispatch already owns g_api_mutex. Stop requests only publish
+  // Stopping and post WM_QUIT, so use the non-blocking control-plane helper.
   if (command == ID_WEASELTRAY_QUIT) {
-    _RequestStopUnderApiLock();
+    _RequestStop();
     return 1;
   }
 

@@ -180,6 +180,15 @@ if ($serverImpl -notmatch 'IsReadyForSessions\(\)' -or
   throw 'server Ready and Maintenance states must be backend-ready and process-generation owned'
 }
 
+# Tray quit from a pipe worker must use the active stop-control API name.
+# This prevents an old helper name surviving a shutdown refactor and breaking
+# the entire Windows build with C3861.
+if ($serverImpl -match '_RequestStopUnderApiLock' -or
+    $serverImplHeader -notmatch 'int\s+_RequestStop\(\)\s+noexcept\s*;' -or
+    $serverImpl -notmatch 'ServerImpl::OnCommand\(WEASEL_IPC_COMMAND[\s\S]*?ID_WEASELTRAY_QUIT\)[\s\S]*?_RequestStop\(\);') {
+  throw 'IPC tray quit must call the current non-blocking _RequestStop helper'
+}
+
 $switcherStart = $configurator.IndexOf('static ConfigureResult configure_switcher')
 $uiStart = $configurator.IndexOf('static ConfigureResult configure_ui', $switcherStart)
 $runStart = $configurator.IndexOf('int Configurator::Run', $uiStart)
