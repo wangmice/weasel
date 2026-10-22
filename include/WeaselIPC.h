@@ -95,6 +95,9 @@ struct RequestHandler {
   virtual ~RequestHandler() {}
   virtual void Initialize() {}
   virtual void Finalize() {}
+  // Ready means the backend can actually create an input session. ServerImpl
+  // must never publish its Ready lifecycle state while this is false.
+  virtual bool IsReadyForSessions() const { return true; }
   virtual DWORD FindSession(DWORD session_id) { return 0; }
   virtual DWORD AddSession(LPWSTR buffer, EatLine eat = 0) { return 0; }
   // Re-emit the current response for an already-created logical session. The

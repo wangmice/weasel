@@ -274,6 +274,7 @@ constexpr DWORD kServerGracefulShutdownTimeoutMs = 1500;
 constexpr DWORD kServerForceTerminateThresholdMs = 5000;
 constexpr DWORD kServerForcedExitTimeoutMs = 1000;
 constexpr DWORD kServerLivenessProbeTimeoutMs = 100;
+constexpr DWORD kServerRecoveryWorkerRetryBudgetMs = 2500;
 constexpr DWORD kFirstKeyRecoveryPollMs = 5;
 
 DWORD RemainingRecoveryTime(ULONGLONG deadline) {
@@ -309,9 +310,9 @@ void NoteServerRecoveryHealthy() noexcept {
   g_serverRecovery.NoteHealthy();
 }
 void FinishServerRecoveryFailure() noexcept {
-  g_serverRecovery.FinishFailure(
-      GetTickCount64(), kServerLaunchFailureBaseBackoffMs,
-      kServerLaunchFailureMaxBackoffMs);
+  g_serverRecovery.FinishFailure(GetTickCount64(),
+                                 kServerLaunchFailureBaseBackoffMs,
+                                 kServerLaunchFailureMaxBackoffMs);
 }
 bool TryBeginServerRecovery() noexcept {
   return g_serverRecovery.TryBegin(GetTickCount64());
@@ -327,21 +328,20 @@ bool IsNamedMutexPresent(const std::wstring& mutex_name) noexcept {
 }
 
 bool ReadServerRuntimeState(weasel::ServerRuntimeState& state) noexcept {
-  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE,
-                                    weasel::GetServerRuntimeStateName().c_str());
+  HANDLE mapping = OpenFileMappingW(
+      FILE_MAP_READ, FALSE, weasel::GetServerRuntimeStateName().c_str());
   if (!mapping)
     return false;
-  const auto* shared = static_cast<const weasel::ServerRuntimeState*>(
-      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0,
-                    sizeof(weasel::ServerRuntimeState)));
+  const auto* shared =
+      static_cast<const weasel::ServerRuntimeState*>(MapViewOfFile(
+          mapping, FILE_MAP_READ, 0, 0, sizeof(weasel::ServerRuntimeState)));
   if (!shared) {
     CloseHandle(mapping);
     return false;
   }
   state.version = shared->version;
   state.process_id = shared->process_id;
-  state.lifecycle =
-      *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
+  state.lifecycle = *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
   state.reserved = shared->reserved;
   state.process_creation_time = shared->process_creation_time;
   UnmapViewOfFile(shared);
@@ -356,8 +356,9 @@ bool SameServerGeneration(const weasel::ServerRuntimeState& lhs,
          lhs.process_creation_time == rhs.process_creation_time;
 }
 
-bool IsServerInstancePresent(const std::wstring& instance_name,
-                             const std::wstring& legacy_instance_name) noexcept {
+bool IsServerInstancePresent(
+    const std::wstring& instance_name,
+    const std::wstring& legacy_instance_name) noexcept {
   if (IsNamedMutexPresent(instance_name))
     return true;
   return legacy_instance_name != instance_name &&
@@ -393,8 +394,8 @@ struct RunningServerTarget {
 
 HWND FindServerWindowForProcess(DWORD process_id) noexcept {
   HWND window = nullptr;
-  while ((window = FindWindowExW(nullptr, window, nullptr, WEASEL_IPC_WINDOW)) !=
-         nullptr) {
+  while ((window = FindWindowExW(nullptr, window, nullptr,
+                                 WEASEL_IPC_WINDOW)) != nullptr) {
     DWORD window_process_id = 0;
     if (GetWindowThreadProcessId(window, &window_process_id) &&
         window_process_id == process_id)
@@ -454,48 +455,81 @@ bool ProbeServerResponsive() noexcept {
   }
 }
 
-bool StopPersistentlyUnavailableServer(
-    const weasel::ServerRuntimeState& expected_state) noexcept {
+enum class StopServerResult {
+  Stopped,
+  SupersededByHealth,
+  Failed,
+};
+
+StopServerResult StopPersistentlyUnavailableServer(
+    const weasel::ServerRuntimeState& expected_state,
+    ULONGLONG health_revision) noexcept {
   RunningServerTarget target;
   if (!OpenCurrentSessionServerTarget(expected_state, target))
-    return false;
+    return StopServerResult::Failed;
 
   weasel::ServerRuntimeState current_state{};
   if (!ReadServerRuntimeState(current_state) ||
       !SameServerGeneration(current_state, expected_state) ||
       current_state.lifecycle !=
-          static_cast<LONG>(weasel::ServerLifecycle::Ready))
-    return false;
+          static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+    return StopServerResult::Failed;
+  }
 
-  if (!PostMessageW(target.window, WM_CLOSE, 0, 0))
-    return false;
+  // Keep the potentially 100 ms IPC probe outside the coordinator lock.
+  // ServerLifecycleLock is already owned by the worker, so no new START_SESSION
+  // can commit while this final liveness observation is in flight.
+  if (ProbeServerResponsive())
+    return StopServerResult::SupersededByHealth;
+
+  // Linearize only the irreversible graceful-shutdown decision against a
+  // same-process foreground reconnect that completed before lifecycle
+  // ownership was acquired. Cross-process START_SESSION is excluded by the
+  // lifecycle lock above.
+  const bool close_posted =
+      g_serverRecovery.RunIfHealthUnchanged(health_revision, [&]() noexcept {
+        weasel::ServerRuntimeState latest_state{};
+        if (!ReadServerRuntimeState(latest_state) ||
+            !SameServerGeneration(latest_state, expected_state) ||
+            latest_state.lifecycle !=
+                static_cast<LONG>(weasel::ServerLifecycle::Ready)) {
+          return false;
+        }
+        return !!PostMessageW(target.window, WM_CLOSE, 0, 0);
+      });
+  if (!close_posted) {
+    return g_serverRecovery.HealthRevision() != health_revision
+               ? StopServerResult::SupersededByHealth
+               : StopServerResult::Failed;
+  }
+
   DWORD wait_result =
       WaitForSingleObject(target.process, kServerGracefulShutdownTimeoutMs);
   if (wait_result == WAIT_OBJECT_0)
-    return true;
+    return StopServerResult::Stopped;
   if (wait_result == WAIT_FAILED)
-    return false;
+    return StopServerResult::Failed;
 
   const ULONGLONG duration = ServerUnavailableDurationMs();
   if (duration < kServerForceTerminateThresholdMs) {
-    const ULONGLONG remaining =
-        kServerForceTerminateThresholdMs - duration;
+    const ULONGLONG remaining = kServerForceTerminateThresholdMs - duration;
     wait_result =
         WaitForSingleObject(target.process, static_cast<DWORD>(remaining));
     if (wait_result == WAIT_OBJECT_0)
-      return true;
+      return StopServerResult::Stopped;
     if (wait_result == WAIT_FAILED)
-      return false;
+      return StopServerResult::Failed;
   }
 
-  // target.process is an already-open handle to the exact process object that
-  // passed PID/session/image/creation-time validation above. It cannot be
-  // redirected by PID reuse, and teardown may legitimately remove the shared
-  // runtime mapping before the process object itself exits.
+  // WM_CLOSE is the destructive-recovery commit point. Once it was posted,
+  // complete the shutdown instead of letting a late health hint leave a
+  // half-stopped generation alive without launching its replacement.
   if (!TerminateProcess(target.process, ERROR_TIMEOUT))
-    return false;
+    return StopServerResult::Failed;
   return WaitForSingleObject(target.process, kServerForcedExitTimeoutMs) ==
-         WAIT_OBJECT_0;
+                 WAIT_OBJECT_0
+             ? StopServerResult::Stopped
+             : StopServerResult::Failed;
 }
 
 void RunServerRecoveryOnce() noexcept {
@@ -513,6 +547,8 @@ void RunServerRecoveryOnce() noexcept {
         weasel::GetLegacyServerInstanceName();
     const bool server_present =
         IsServerInstancePresent(instance_name, legacy_instance_name);
+
+    const ULONGLONG health_revision = g_serverRecovery.HealthRevision();
 
     if (server_present) {
       weasel::ServerRuntimeState state{};
@@ -544,7 +580,13 @@ void RunServerRecoveryOnce() noexcept {
         FinishServerRecoveryBackoff(kServerPresentBackoffMs);
         return;
       }
-      if (!StopPersistentlyUnavailableServer(latest_state)) {
+      const StopServerResult stop_result =
+          StopPersistentlyUnavailableServer(latest_state, health_revision);
+      if (stop_result == StopServerResult::SupersededByHealth) {
+        FinishServerRecoveryHealthy();
+        return;
+      }
+      if (stop_result != StopServerResult::Stopped) {
         FinishServerRecoveryFailure();
         return;
       }
@@ -579,6 +621,44 @@ void RunServerRecoveryOnce() noexcept {
     FinishServerRecoveryFailure();
   }
 }
+
+void RunServerRecoveryWorker() noexcept {
+  // One failed key must be enough to carry transient recovery through the
+  // sustained-unavailability threshold even if the user types nothing else.
+  // Keep the retry lease short: this callback is background-only and exits
+  // once the bounded budget is exhausted.
+  const ULONGLONG deadline =
+      GetTickCount64() + kServerRecoveryWorkerRetryBudgetMs;
+
+  for (;;) {
+    RunServerRecoveryOnce();
+
+    // Wait until the coordinator's current deadline, re-reading it after every
+    // sleep because foreground health or another worker can clear/replace it.
+    for (;;) {
+      const ULONGLONG retry_after = g_serverRecovery.RetryAfter();
+      if (!retry_after)
+        return;
+
+      const ULONGLONG now = GetTickCount64();
+      if (now >= deadline || retry_after > deadline)
+        return;
+
+      if (now < retry_after) {
+        Sleep(static_cast<DWORD>(retry_after - now));
+        continue;
+      }
+
+      if (TryBeginServerRecovery())
+        break;
+
+      // Another callback may have won admission. If so it owns progress; if
+      // not, loop and observe the deadline it just published.
+      if (g_serverRecovery.WorkerInflight())
+        return;
+    }
+  }
+}
 #endif
 }  // namespace
 
@@ -589,7 +669,7 @@ void WeaselTSF::_ScheduleServerRecovery() noexcept {
 
   bool queued = false;
   try {
-    queued = QueueDllBackgroundTask([]() { RunServerRecoveryOnce(); });
+    queued = QueueDllBackgroundTask([]() { RunServerRecoveryWorker(); });
   } catch (...) {
     // Scheduling is best-effort and must never escape through a TSF callback.
   }

@@ -86,8 +86,8 @@ static void test_server_recovery_coordinator_state_machine() {
     check(coordinator.TryBegin(1000),
           "recovery coordinator starts an initial worker");
     coordinator.FinishBackoff(100, 1000);
-    check(coordinator.RetryAfter() == 1100 &&
-              !coordinator.TryBegin(1099) && coordinator.TryBegin(1100),
+    check(coordinator.RetryAfter() == 1100 && !coordinator.TryBegin(1099) &&
+              coordinator.TryBegin(1100),
           "Backoff rejects early workers and admits one at the deadline");
     coordinator.FinishHealthy();
   }
@@ -120,18 +120,15 @@ static void test_server_recovery_coordinator_state_machine() {
     check(coordinator.TryBegin(1000),
           "failure backoff test acquires the first worker");
     coordinator.FinishFailure(1000, 250, 2000);
-    check(coordinator.FailureStreak() == 1 &&
-              coordinator.RetryAfter() == 1250,
+    check(coordinator.FailureStreak() == 1 && coordinator.RetryAfter() == 1250,
           "first recovery failure uses the base backoff");
     check(coordinator.TryBegin(1250),
           "failure backoff expires at its deadline");
     coordinator.FinishFailure(1250, 250, 2000);
-    check(coordinator.FailureStreak() == 2 &&
-              coordinator.RetryAfter() == 1750,
+    check(coordinator.FailureStreak() == 2 && coordinator.RetryAfter() == 1750,
           "consecutive recovery failures back off exponentially");
     coordinator.NoteHealthy();
-    check(coordinator.FailureStreak() == 0 &&
-              coordinator.RetryAfter() == 0 &&
+    check(coordinator.FailureStreak() == 0 && coordinator.RetryAfter() == 0 &&
               coordinator.UnavailableSince() == 0,
           "healthy idle recovery resets failure and unavailable state");
   }
@@ -141,14 +138,27 @@ static void test_server_recovery_coordinator_state_machine() {
     coordinator.ObserveUnavailableLongEnough(1000, 1500);
     check(coordinator.TryBegin(2500),
           "in-flight health ownership test starts a worker");
+    const ULONGLONG revision = coordinator.HealthRevision();
+    bool destructive_action_ran = false;
     coordinator.NoteHealthy();
     check(coordinator.WorkerInflight() &&
-              coordinator.UnavailableSince() == 1000,
-          "foreground health hints do not revoke an in-flight recovery owner");
-    coordinator.FinishHealthy();
-    check(!coordinator.WorkerInflight() &&
+              coordinator.HealthRevision() != revision &&
+              coordinator.FailureStreak() == 0 &&
+              coordinator.RetryAfter() == 0 &&
               coordinator.UnavailableSince() == 0,
-          "the recovery owner clears state after a healthy fresh probe");
+          "foreground health resets stale failure history without admitting "
+          "another worker");
+    check(!coordinator.RunIfHealthUnchanged(revision,
+                                            [&]() noexcept {
+                                              destructive_action_ran = true;
+                                              return true;
+                                            }) &&
+              !destructive_action_ran,
+          "stale recovery cannot authorize destructive work after foreground "
+          "health");
+    coordinator.FinishHealthy();
+    check(!coordinator.WorkerInflight() && coordinator.UnavailableSince() == 0,
+          "the recovery owner clears state after cancellation");
   }
 }
 
@@ -339,18 +349,68 @@ static void test_server_runtime_state_tracks_maintenance() {
   server.SetRequestHandler(&handler);
   weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
 
-  server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0);
-  check(handler.maintaining &&
+  const weasel::ClientProcessToken owner{101};
+  const weasel::ClientProcessToken intruder{202};
+
+  check(server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0) == 0 &&
+            !handler.maintaining,
+        "unowned START_MAINTENANCE is rejected");
+
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
+  check(server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0) == 1 &&
+            handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Maintenance) &&
+            weasel::ServerImplTestAccess::MaintenanceOwner(server) == owner,
+        "maintenance is published with the calling process generation");
+
+  const int sessions_before = handler.sessions_created;
+  check(server.OnStartSession(WEASEL_IPC_START_SESSION, 0, 0) == 0 &&
+            handler.sessions_created == sessions_before,
+        "START_SESSION is rejected while maintenance owns the server");
+
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, intruder);
+  check(server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0) == 0 &&
+            handler.maintaining &&
             runtime.lifecycle ==
                 static_cast<LONG>(weasel::ServerLifecycle::Maintenance),
-        "maintenance is published before backend teardown");
+        "foreign process generation cannot release maintenance");
 
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
   server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
   check(!handler.maintaining &&
             runtime.lifecycle ==
-                static_cast<LONG>(weasel::ServerLifecycle::Ready),
-        "maintenance completion republishes Ready");
+                static_cast<LONG>(weasel::ServerLifecycle::Ready) &&
+            !weasel::ServerImplTestAccess::MaintenanceOwner(server),
+        "maintenance owner can resume the server");
 
+  // Re-enter maintenance and simulate abrupt owner termination. The process
+  // tracker callback must recover Rime without a timeout or TSF intervention.
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
+  check(server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0) == 1 &&
+            handler.maintaining,
+        "maintenance owner can enter a second maintenance generation");
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, std::nullopt);
+  weasel::ServerImplTestAccess::NotifyClientProcessExit(server, owner);
+  check(!handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Ready) &&
+            !weasel::ServerImplTestAccess::MaintenanceOwner(server),
+        "owner death recovers orphaned maintenance immediately");
+
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Stopping);
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, owner);
+  server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0);
+  check(!handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+        "Stopping rejects stale START_MAINTENANCE without lifecycle rollback");
+  server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
+  check(
+      runtime.lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+      "Stopping rejects stale END_MAINTENANCE without returning to Ready");
+
+  weasel::ServerImplTestAccess::SetDispatchProcessOwner(server, std::nullopt);
   weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
@@ -479,8 +539,14 @@ static void test_client_lifecycle_timeout_budgets() {
 
 static void test_maintenance_session_recovery() {
   SessionHandler handler;
+  weasel::ServerRuntimeState runtime{};
+  runtime.version = weasel::kServerRuntimeStateVersion;
+  runtime.process_id = GetCurrentProcessId();
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Ready);
+  runtime.process_creation_time = 1;
   weasel::ServerImpl server;
   server.SetRequestHandler(&handler);
+  weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
   std::wstring pipe_name = weasel::GetPipeName() + L"_SessionRecoveryTest_" +
                            std::to_wstring(GetCurrentProcessId());
   auto& server_channel = weasel::ServerImplTestAccess::Channel(server);
@@ -501,8 +567,15 @@ static void test_maintenance_session_recovery() {
               DWORD result = 0;
               {
                 std::lock_guard guard(g_api_mutex);
+                if (msg.Msg == WEASEL_IPC_START_MAINTENANCE ||
+                    msg.Msg == WEASEL_IPC_END_MAINTENANCE) {
+                  weasel::ServerImplTestAccess::SetDispatchProcessOwner(
+                      server, weasel::ClientProcessToken{303});
+                }
                 weasel::ServerImplTestAccess::HandlePipeMessage(
                     server, msg, [&](DWORD reply) { result = reply; });
+                weasel::ServerImplTestAccess::SetDispatchProcessOwner(
+                    server, std::nullopt);
               }
               respond(result);
             });
@@ -584,8 +657,8 @@ static void test_maintenance_session_recovery() {
   accepted_before = handler.accepted_keys;
   handler.delay_key_reply = true;
   const ULONGLONG started = GetTickCount64();
-  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
-            tsf, weasel::KeyEvent('c')),
+  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(tsf,
+                                                         weasel::KeyEvent('c')),
         "ambiguous response timeout is consumed locally without replay");
   check(GetTickCount64() - started < 400,
         "TSF bounds a wedged healthy key transaction well below one second");
@@ -593,6 +666,8 @@ static void test_maintenance_session_recovery() {
         "response timeout does not rebuild the session");
   check(handler.accepted_keys == accepted_before + 1,
         "response timeout delivers the physical key at most once");
+
+  weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
 int main() {

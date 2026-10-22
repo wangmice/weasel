@@ -16,6 +16,7 @@ $serverCommandsTest = Get-Content -LiteralPath (Join-Path $repo 'test\TestServer
 $serverCommandsXmake = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\xmake.lua') -Raw
 $weaselTsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
 $serverImplHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.h') -Raw
+$rimeWithWeasel = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\RimeWithWeasel.cpp') -Raw
 
 foreach ($sink in @(
   '_pKeyboardCompartmentSink',
@@ -110,6 +111,29 @@ if ($updateBody -notmatch 'return\s+retval\s*;') {
 
 if ($configurator -notmatch 'enum\s+class\s+ConfigureResult\s*\{\s*Cancelled\s*,\s*Unchanged\s*,\s*Saved\s*,\s*Failed\s*\}') {
   throw 'deployer settings steps must distinguish cancelled, unchanged, saved, and failed outcomes'
+}
+
+if ($rimeWithWeasel -notmatch 'void\s+RimeWithWeaselHandler::_Initialize\(bool\s+detect_deployer\)' -or
+    $rimeWithWeasel -notmatch 'm_disabled\s*=\s*true[\s\S]*?detect_deployer\s*&&\s*_IsDeployerRunning\(\)') {
+  throw 'Rime initialization must separate startup deployer detection from maintenance resume'
+}
+if ($rimeWithWeasel -notmatch 'join_maintenance_thread\(\)' -or
+    $rimeWithWeasel -notmatch 'readiness_session[\s\S]*?create_session\(\)[\s\S]*?destroy_session\(readiness_session\)[\s\S]*?m_disabled\s*=\s*false') {
+  throw 'Rime must remain disabled until startup maintenance ends and a real session probe succeeds'
+}
+$endMaintenance = [regex]::Match(
+  $rimeWithWeasel,
+  'void\s+RimeWithWeaselHandler::EndMaintenance\(\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $endMaintenance.Success -or
+    $endMaintenance.Groups['body'].Value -notmatch '_Initialize\(false\)') {
+  throw 'external END_MAINTENANCE must bypass the startup deployer probe'
+}
+if ($serverImpl -notmatch 'IsReadyForSessions\(\)' -or
+    $serverImplHeader -notmatch 'm_maintenanceOwner' -or
+    $serverImpl -notmatch 'maintenance owner exited; recovering WeaselServer' -or
+    $serverImpl -notmatch '\*m_dispatchProcessOwner\s*!=\s*\*m_maintenanceOwner') {
+  throw 'server Ready and Maintenance states must be backend-ready and process-generation owned'
 }
 
 $switcherStart = $configurator.IndexOf('static ConfigureResult configure_switcher')
