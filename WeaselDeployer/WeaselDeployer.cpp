@@ -271,8 +271,7 @@ int wmain(int argc, wchar_t* argv[]) {
   }
 
   int ret = 0;
-  HANDLE hMutex =
-      CreateMutex(NULL, TRUE, weasel::kDeployerExclusiveMutexName);
+  HANDLE hMutex = CreateMutex(NULL, TRUE, weasel::kDeployerExclusiveMutexName);
   if (!hMutex) {
     LOG(ERROR) << "Error creating WeaselDeployerExclusiveMutex.";
     ret = 1;
