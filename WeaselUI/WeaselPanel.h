@@ -24,16 +24,7 @@ enum class PanelVisibility : WPARAM { Hide, Show, ShowWithTimeout };
 class WeaselPanel {
  public:
   WeaselPanel(UI& ui);
-  ~WeaselPanel() {
-    if (!m_current_zhung_icon.empty())
-      DestroyIcon(m_iconEnabled);
-    if (!m_current_ascii_icon.empty())
-      DestroyIcon(m_iconAlpha);
-    if (!m_current_half_icon.empty())
-      DestroyIcon(m_iconHalf);
-    if (!m_current_full_icon.empty())
-      DestroyIcon(m_iconFull);
-  }
+  ~WeaselPanel();
   void MoveTo(RECT rc);
   void Refresh();
   void ApplyUpdate(const Context& ctx, const Status& status);
@@ -61,6 +52,10 @@ class WeaselPanel {
   HWND hwnd() const;
 
  private:
+  // A local window class belongs to this Panel's actual code module, never
+  // to the hosting EXE. Keep that module referenced until class unregistration.
+  bool _RegisterWindowClass();
+  void _UnregisterWindowClass();
   void RedrawWindow();
   bool _IsUiThread() const;
   void _Refresh();
@@ -151,6 +146,9 @@ class WeaselPanel {
   UICallbackFunc& m_uiCallback;
   // window handle and per-instance click timer
   HWND m_hWnd;
+  std::wstring m_windowClassName;
+  HMODULE m_windowClassModule = nullptr;
+  ATOM m_windowClassAtom = 0;
   HWND m_parent = nullptr;
   bool m_preview_mode = false;
   bool m_preview_positioned = false;

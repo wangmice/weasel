@@ -4,6 +4,7 @@
 #include "VHorizontalLayout.h"
 #include "VerticalLayout.h"
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <resource.h>
@@ -110,6 +111,72 @@ WeaselPanel::WeaselPanel(UI& ui)
   m_iconDisabled =
       (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_RELOAD), IMAGE_ICON,
                        STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
+}
+
+WeaselPanel::~WeaselPanel() {
+  if (m_hWnd && ::IsWindow(m_hWnd))
+    DestroyWindow();
+  _UnregisterWindowClass();
+
+  if (!m_current_zhung_icon.empty())
+    DestroyIcon(m_iconEnabled);
+  if (!m_current_ascii_icon.empty())
+    DestroyIcon(m_iconAlpha);
+  if (!m_current_half_icon.empty())
+    DestroyIcon(m_iconHalf);
+  if (!m_current_full_icon.empty())
+    DestroyIcon(m_iconFull);
+}
+
+bool WeaselPanel::_RegisterWindowClass() {
+  if (m_windowClassAtom)
+    return true;
+
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(
+          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+          reinterpret_cast<LPCWSTR>(&WeaselPanel::WindowProc), &module))
+    return false;
+
+  // A per-panel class cannot alias an earlier module generation's WNDPROC,
+  // or a class registered by another WeaselUI copy inside the host process.
+  const auto address = reinterpret_cast<std::uintptr_t>(this);
+  m_windowClassName = L"WeaselPanel." + std::to_wstring(address);
+
+  WNDCLASSW wc = {};
+  wc.lpfnWndProc = WeaselPanel::WindowProc;
+  wc.hInstance = module;
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.lpszClassName = m_windowClassName.c_str();
+  const ATOM atom = RegisterClassW(&wc);
+  if (!atom) {
+    // Unlike the old shared-name registration, CLASS_ALREADY_EXISTS cannot
+    // be accepted: it may refer to a stale callback from another DLL.
+    m_windowClassName.clear();
+    FreeLibrary(module);
+    return false;
+  }
+
+  m_windowClassModule = module;
+  m_windowClassAtom = atom;
+  return true;
+}
+
+void WeaselPanel::_UnregisterWindowClass() {
+  if (!m_windowClassAtom)
+    return;
+  if (!UnregisterClassW(MAKEINTATOM(m_windowClassAtom),
+                        m_windowClassModule)) {
+    // A surviving window can still invoke our WNDPROC. Fail closed by
+    // intentionally retaining the loader reference rather than unloading
+    // code reachable from the registered class.
+    DEBUG << "WeaselPanel: window class still in use at panel teardown";
+    return;
+  }
+  m_windowClassAtom = 0;
+  m_windowClassName.clear();
+  FreeLibrary(m_windowClassModule);
+  m_windowClassModule = nullptr;
 }
 
 BOOL WeaselPanel::IsWindow() const {
@@ -516,23 +583,16 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
   } else {
     m_lastCursorPos = CPoint(-1, -1);
   }
-  HINSTANCE hInstance = GetModuleHandle(nullptr);
-  WNDCLASS wc = {};
-  wc.lpfnWndProc = WeaselPanel::WindowProc;
-  wc.hInstance = hInstance;
-  wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-  wc.lpszClassName = L"WeaselPanel";
-  ATOM atom = RegisterClass(&wc);
-  if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+  if (!_RegisterWindowClass())
     return FALSE;
-  }
   ThreadDpiAwarenessScope dpi_scope;
   const DWORD ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
                          (m_preview_mode ? 0 : WS_EX_TOPMOST) |
                          WS_EX_NOREDIRECTIONBITMAP;
-  m_hWnd = CreateWindowEx(
-      ex_style, L"WeaselPanel", L"WeaselPanel", WS_POPUP | WS_CLIPSIBLINGS,
-      CW_USEDEFAULT, CW_USEDEFAULT, 10, 10, parent, nullptr, hInstance, this);
+  m_hWnd = CreateWindowExW(
+      ex_style, MAKEINTATOM(m_windowClassAtom), L"WeaselPanel",
+      WS_POPUP | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 10, 10, parent,
+      nullptr, m_windowClassModule, this);
   if (m_hWnd) {
     m_fullscreen_font_active = false;
     m_fullscreen_font_snapshot = {};

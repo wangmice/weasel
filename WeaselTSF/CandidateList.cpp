@@ -10,12 +10,30 @@
 using namespace std;
 using namespace weasel;
 
+CCandidateList::DllLifetimeLease::DllLifetimeLease() { DllAddRef(); }
+
+CCandidateList::DllLifetimeLease::~DllLifetimeLease() { DllRelease(); }
+
 CCandidateList::CCandidateList(WeaselTSF* pTextService)
     : _ui(make_unique<UI>()), _tsf(pTextService), _pbShow(TRUE) {
   _cRef = 1;
 }
 
-CCandidateList::~CCandidateList() {}
+CCandidateList::~CCandidateList() { DetachOwner(); }
+
+void CCandidateList::DetachOwner() {
+  if (!_tsf)
+    return;
+  // EndUIElement while the original TIP/thread manager still exists, then
+  // dispose the panel before severing the final back-reference.
+  DestroyAll();
+  _ui->SetUICallBack({});
+  _pContextDocument = nullptr;
+  _tsf = nullptr;
+  // External UIElement consumers may still call this COM interface.
+  _ui->ctx() = Context{};
+  _ui->status() = Status{};
+}
 
 STDMETHODIMP CCandidateList::QueryInterface(REFIID riid, void** ppvObj) {
   if (ppvObj == nullptr) {
@@ -78,6 +96,8 @@ STDMETHODIMP CCandidateList::GetGUID(GUID* pguid) {
 }
 
 STDMETHODIMP CCandidateList::Show(BOOL showCandidateWindow) {
+  if (!_tsf)
+    return E_UNEXPECTED;
   if (showCandidateWindow)
     _ui->Show();
   else
@@ -86,7 +106,9 @@ STDMETHODIMP CCandidateList::Show(BOOL showCandidateWindow) {
 }
 
 STDMETHODIMP CCandidateList::IsShown(BOOL* pIsShow) {
-  *pIsShow = _ui->IsShown();
+  if (!pIsShow)
+    return E_POINTER;
+  *pIsShow = _tsf && _ui->IsShown();
   return S_OK;
 }
 
@@ -109,17 +131,26 @@ STDMETHODIMP CCandidateList::GetDocumentMgr(ITfDocumentMgr** ppdim) {
 }
 
 STDMETHODIMP CCandidateList::GetCount(UINT* pCandidateCount) {
-  *pCandidateCount = static_cast<UINT>(_ui->ctx().cinfo.candies.size());
+  if (!pCandidateCount)
+    return E_POINTER;
+  *pCandidateCount =
+      _tsf ? static_cast<UINT>(_ui->ctx().cinfo.candies.size()) : 0;
   return S_OK;
 }
 
 STDMETHODIMP CCandidateList::GetSelection(UINT* pSelectedCandidateIndex) {
-  *pSelectedCandidateIndex = _ui->ctx().cinfo.highlighted;
+  if (!pSelectedCandidateIndex)
+    return E_POINTER;
+  *pSelectedCandidateIndex = _tsf ? _ui->ctx().cinfo.highlighted : 0;
   return S_OK;
 }
 
 STDMETHODIMP CCandidateList::GetString(UINT uIndex, BSTR* pbstr) {
+  if (!pbstr)
+    return E_POINTER;
   *pbstr = nullptr;
+  if (!_tsf)
+    return E_UNEXPECTED;
   auto& cinfo = _ui->ctx().cinfo;
   if (uIndex >= cinfo.candies.size())
     return E_INVALIDARG;
@@ -157,6 +188,8 @@ STDMETHODIMP CCandidateList::GetCurrentPage(UINT* puPage) {
 }
 
 STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
+  if (!_tsf)
+    return E_UNEXPECTED;
   auto& cinfo = _ui->ctx().cinfo;
   // Reject indices without a candidate: highlighted feeds fixed-size arrays
   // downstream (GetCandidateRect). Leaving the previous selection intact on
@@ -173,6 +206,8 @@ STDMETHODIMP CCandidateList::Finalize(void) {
 }
 
 STDMETHODIMP CCandidateList::Abort(void) {
+  if (!_tsf)
+    return E_UNEXPECTED;
   _tsf->_AbortComposition(true);
   Destroy();
   return S_OK;
@@ -191,7 +226,11 @@ STDMETHODIMP CCandidateList::GetSelectionStyle(
 STDMETHODIMP CCandidateList::OnKeyDown(WPARAM wParam,
                                        LPARAM lParam,
                                        BOOL* pIsEaten) {
-  *pIsEaten = TRUE;
+  if (!pIsEaten)
+    return E_POINTER;
+  *pIsEaten = _tsf != nullptr;
+  if (!_tsf)
+    return E_UNEXPECTED;
   return S_OK;
 }
 
@@ -201,11 +240,15 @@ STDMETHODIMP CCandidateList::ShowCandidateNumbers(BOOL* pIsShow) {
 }
 
 STDMETHODIMP CCandidateList::FinalizeExactCompositionString() {
+  if (!_tsf)
+    return E_UNEXPECTED;
   _tsf->_AbortComposition(false);
   return E_NOTIMPL;
 }
 
 void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
+  if (!_tsf)
+    return;
   if (_ui->style().inline_preedit) {
     _ui->style().client_caps |= weasel::INLINE_PREEDIT_CAPABLE;
   } else {
@@ -232,7 +275,8 @@ void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
 }
 
 void CCandidateList::UpdateInputPosition(RECT const& rc) {
-  _ui->UpdateInputPosition(rc);
+  if (_tsf)
+    _ui->UpdateInputPosition(rc);
 }
 
 // Candidate UI lifecycle (state machine):
@@ -271,6 +315,8 @@ UIStyle& CCandidateList::style() {
 }
 
 HWND CCandidateList::_GetActiveWnd() {
+  if (!_tsf)
+    return nullptr;
   com_ptr<ITfContextView> pContextView;
   HWND w = NULL;
 
@@ -296,6 +342,8 @@ HWND CCandidateList::_GetActiveWnd() {
 }
 
 HRESULT CCandidateList::_UpdateUIElement() {
+  if (!_tsf)
+    return E_UNEXPECTED;
   // No element registered: uiid is not valid (never begun, or already ended).
   // UpdateUI runs on every keystroke, including the ones before StartUI and
   // after EndUI/Destroy.
@@ -319,7 +367,7 @@ HRESULT CCandidateList::_UpdateUIElement() {
 }
 
 void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
-  if (_uiStarted)
+  if (!_tsf || _uiStarted)
     return;
 
   com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
@@ -337,7 +385,8 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
   if (!_ui->uiCallback())
     _ui->SetUICallBack([this](size_t* const sel, size_t* const hov,
                               bool* const next, bool* const scroll_next) {
-      _tsf->HandleUICallback(sel, hov, next, scroll_next);
+      if (_tsf)
+        _tsf->HandleUICallback(sel, hov, next, scroll_next);
     });
 
   // BeginUIElement may synchronously query GetDocumentMgr, so bind the exact
@@ -372,7 +421,8 @@ void CCandidateList::EndUI() {
   // Host unregistration is best effort. Even if the UIElementMgr disappears
   // during a context/profile transition, the local lifetime must end so the
   // next composition can register a fresh element and owner window.
-  com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
+  com_ptr<ITfThreadMgr> pThreadMgr =
+      _tsf ? _tsf->_GetThreadMgr() : nullptr;
   if (pThreadMgr) {
     com_ptr<ITfUIElementMgr> emgr;
     if (SUCCEEDED(pThreadMgr->QueryInterface(&emgr)) && emgr != NULL)

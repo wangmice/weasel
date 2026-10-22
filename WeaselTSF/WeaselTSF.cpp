@@ -28,6 +28,10 @@ WeaselTSF::WeaselTSF() {
 }
 
 WeaselTSF::~WeaselTSF() {
+  // Even hosts that omit Deactivate() must never leave the candidate with a
+  // dangling raw TIP pointer. Candidate holds a separate DLL lease.
+  if (_cand)
+    _cand->DetachOwner();
   DllRelease();
 }
 
@@ -109,9 +113,10 @@ STDMETHODIMP WeaselTSF::Deactivate() {
   // 上次写入值缓存不再可信
   _conversionFlagsValid = false;
 
-  // While the thread manager is still valid: DestroyAll ends the UIElement,
-  // which makes the UIElementMgr drop its reference to the candidate list.
-  _cand->DestroyAll();
+  // External UIElement references may outlive Deactivate. Terminate the
+  // registered UI and sever its weak TIP pointer before clearing thread mgr.
+  if (_cand)
+    _cand->DetachOwner();
   _pCandidateUIContext = nullptr;
 
   _pThreadMgr = NULL;
@@ -124,6 +129,12 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
                                    TfClientId tfClientId,
                                    DWORD dwFlags) {
+  // Each activation needs a fresh candidate. A prior generation may still be
+  // held by the host, and must never be rebound to this TIP instance.
+  if (!_cand || !_cand->HasOwner()) {
+    _cand.Release();
+    _cand.Attach(new CCandidateList(this));
+  }
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;
