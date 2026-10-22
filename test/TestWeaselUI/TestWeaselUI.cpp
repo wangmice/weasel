@@ -104,8 +104,8 @@ class UiThread {
     HINSTANCE registered_module = nullptr;
     if (created) {
       const HWND panel = ui.hwnd();
-      if (panel && GetClassNameW(panel, registered_class,
-                                 _countof(registered_class))) {
+      if (panel &&
+          GetClassNameW(panel, registered_class, _countof(registered_class))) {
         registered_module =
             reinterpret_cast<HINSTANCE>(GetClassLongPtrW(panel, GCLP_HMODULE));
         WNDCLASSEXW wc = {};
@@ -113,10 +113,10 @@ class UiThread {
         HMODULE proc_module = nullptr;
         registered_class_uses_proc_module =
             GetClassInfoExW(registered_module, registered_class, &wc) &&
-            GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(wc.lpfnWndProc), &proc_module) &&
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(wc.lpfnWndProc),
+                               &proc_module) &&
             proc_module == registered_module;
       }
     }

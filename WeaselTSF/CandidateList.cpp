@@ -10,16 +10,22 @@
 using namespace std;
 using namespace weasel;
 
-CCandidateList::DllLifetimeLease::DllLifetimeLease() { DllAddRef(); }
+CCandidateList::DllLifetimeLease::DllLifetimeLease() {
+  DllAddRef();
+}
 
-CCandidateList::DllLifetimeLease::~DllLifetimeLease() { DllRelease(); }
+CCandidateList::DllLifetimeLease::~DllLifetimeLease() {
+  DllRelease();
+}
 
 CCandidateList::CCandidateList(WeaselTSF* pTextService)
     : _ui(make_unique<UI>()), _tsf(pTextService), _pbShow(TRUE) {
   _cRef = 1;
 }
 
-CCandidateList::~CCandidateList() { DetachOwner(); }
+CCandidateList::~CCandidateList() {
+  DetachOwner();
+}
 
 void CCandidateList::DetachOwner() {
   if (!_tsf)
@@ -421,8 +427,7 @@ void CCandidateList::EndUI() {
   // Host unregistration is best effort. Even if the UIElementMgr disappears
   // during a context/profile transition, the local lifetime must end so the
   // next composition can register a fresh element and owner window.
-  com_ptr<ITfThreadMgr> pThreadMgr =
-      _tsf ? _tsf->_GetThreadMgr() : nullptr;
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf ? _tsf->_GetThreadMgr() : nullptr;
   if (pThreadMgr) {
     com_ptr<ITfUIElementMgr> emgr;
     if (SUCCEEDED(pThreadMgr->QueryInterface(&emgr)) && emgr != NULL)

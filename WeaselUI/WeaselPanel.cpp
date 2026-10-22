@@ -133,9 +133,9 @@ bool WeaselPanel::_RegisterWindowClass() {
     return true;
 
   HMODULE module = nullptr;
-  if (!GetModuleHandleExW(
-          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-          reinterpret_cast<LPCWSTR>(&WeaselPanel::WindowProc), &module))
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(&WeaselPanel::WindowProc),
+                          &module))
     return false;
 
   // A per-panel class cannot alias an earlier module generation's WNDPROC,
@@ -165,8 +165,7 @@ bool WeaselPanel::_RegisterWindowClass() {
 void WeaselPanel::_UnregisterWindowClass() {
   if (!m_windowClassAtom)
     return;
-  if (!UnregisterClassW(MAKEINTATOM(m_windowClassAtom),
-                        m_windowClassModule)) {
+  if (!UnregisterClassW(MAKEINTATOM(m_windowClassAtom), m_windowClassModule)) {
     // A surviving window can still invoke our WNDPROC. Fail closed by
     // intentionally retaining the loader reference rather than unloading
     // code reachable from the registered class.
@@ -589,10 +588,10 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
   const DWORD ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
                          (m_preview_mode ? 0 : WS_EX_TOPMOST) |
                          WS_EX_NOREDIRECTIONBITMAP;
-  m_hWnd = CreateWindowExW(
-      ex_style, MAKEINTATOM(m_windowClassAtom), L"WeaselPanel",
-      WS_POPUP | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 10, 10, parent,
-      nullptr, m_windowClassModule, this);
+  m_hWnd =
+      CreateWindowExW(ex_style, MAKEINTATOM(m_windowClassAtom), L"WeaselPanel",
+                      WS_POPUP | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT,
+                      10, 10, parent, nullptr, m_windowClassModule, this);
   if (m_hWnd) {
     m_fullscreen_font_active = false;
     m_fullscreen_font_snapshot = {};
