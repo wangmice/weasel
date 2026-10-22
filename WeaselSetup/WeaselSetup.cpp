@@ -2,6 +2,7 @@
 //
 
 #include "stdafx.h"
+#include <WeaselDiagnosticTrace.h>
 
 #include "resource.h"
 #include "WeaselUtility.h"
@@ -167,12 +168,14 @@ bool RestartServer(const std::wstring& dir) {
   if (!OpenRunningServerProcess(old_server))
     return false;
   if (old_server) {
+    weasel::diagnostics::Trace("setup.restart", "quit-begin");
     DWORD quit_exit_code = 0;
     const bool quit_ok =
         RunProcessAndWait(server, L"/q", kServerTransitionTimeoutMs,
                           quit_exit_code) &&
         quit_exit_code == 0;
     if (!quit_ok) {
+      weasel::diagnostics::Trace("setup.restart", "quit-failed");
       CloseHandle(old_server);
       return false;
     }
@@ -451,8 +454,12 @@ static int Run(LPTSTR lpCmdLine) {
   }
   bool uninstalling = !wcscmp(L"/u", lpCmdLine);
   if (uninstalling) {
+    weasel::diagnostics::Trace("setup.uninstall", "requested");
     if (IsProcAdmin()) {
+      weasel::diagnostics::Trace("setup.uninstall", "core-begin");
       const int result = uninstall(silent);
+      weasel::diagnostics::Trace("setup.uninstall", "core-end",
+                                 static_cast<DWORD>(result));
       if (result != 0)
         return result;
       // Core uninstall has committed by this point. Exact CLSID/TIP cleanup

@@ -1,4 +1,5 @@
 ﻿#include "stdafx.h"
+#include <WeaselDiagnosticTrace.h>
 #include "WeaselClientImpl.h"
 #include <StringAlgorithm.hpp>
 #include <WeaselInteractionPolicy.h>
@@ -325,6 +326,7 @@ void ClientImpl::StartSession(DWORD timeout_ms) {
 
   std::uint64_t generation = 0;
   if (!_WriteClientInfo(&generation)) {
+    weasel::diagnostics::TraceRateLimited("client.start-session", "write-failed");
     const UINT current = _SessionId();
     _ClearSessionIdIf(current);
     return;
@@ -338,8 +340,12 @@ void ClientImpl::StartSession(DWORD timeout_ms) {
 
   const UINT ret = static_cast<UINT>(
       _SendMessage(WEASEL_IPC_START_SESSION, 0, 0, remaining));
-  if (!ret)
+  if (!ret) {
+    weasel::diagnostics::TraceRateLimited("client.start-session", "no-ack",
+                                          timeout_ms);
     return;
+  }
+  weasel::diagnostics::Trace("client.start-session", "ack");
 
   bool published = false;
   {

@@ -1,4 +1,5 @@
 ﻿#include "stdafx.h"
+#include <WeaselDiagnosticTrace.h>
 
 #include <WeaselIPCData.h>
 #include <shellapi.h>
@@ -124,6 +125,7 @@ STDMETHODIMP WeaselTSF::Deactivate() {
 STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
                                    TfClientId tfClientId,
                                    DWORD dwFlags) {
+  weasel::diagnostics::Scope activation_trace("tsf.activate");
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;
@@ -818,12 +820,17 @@ void WeaselTSF::_ScheduleServerRecovery() noexcept {
     // Scheduling is best-effort and must never escape through a TSF callback.
   }
 
-  if (!queued)
+  if (!queued) {
+    weasel::diagnostics::TraceRateLimited("tsf.recovery-worker", "queue-failed");
     FinishServerRecoveryBackoff(kServerQueueFailureBackoffMs);
+  } else {
+    weasel::diagnostics::TraceRateLimited("tsf.recovery-worker", "queued");
+  }
 #endif
 }
 
 bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
+  weasel::diagnostics::TraceRateLimited("tsf.recovery", "attempt");
   if (m_client.IsSessionActive())
     return true;
 
@@ -831,13 +838,19 @@ bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
     m_client.Disconnect();
 
     DWORD remaining = RemainingRecoveryTime(deadline);
-    if (!remaining || !m_client.Connect(remaining))
+    if (!remaining || !m_client.Connect(remaining)) {
+      weasel::diagnostics::TraceRateLimited("tsf.connect", "failed", remaining);
       return false;
+    }
+    weasel::diagnostics::TraceRateLimited("tsf.connect", "connected");
 
     // Pipe reachability and Rime session creation have different latency
     // characteristics. Once the pipe is reachable, do not squeeze AddSession
     // into the few milliseconds left from the transport deadline.
-    m_client.StartSession(kSessionEstablishmentTimeoutMs);
+    {
+      weasel::diagnostics::Scope session_trace("tsf.start-session");
+      m_client.StartSession(kSessionEstablishmentTimeoutMs);
+    }
     _ConsumeResponseIfFresh();
     return m_client.IsSessionActive();
   };
@@ -867,6 +880,7 @@ bool WeaselTSF::_EnsureServerConnectedUntil(ULONGLONG recovery_deadline) {
     }
   }
 
+  weasel::diagnostics::TraceRateLimited("tsf.recovery", "not-established");
   _reconnectRetry = 0;
   return false;
 }
