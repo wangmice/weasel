@@ -253,6 +253,7 @@ inline int InstallFreshTransactional(const std::wstring& profile,
       {per_user_root(), user_key, L"Profile"},
       {per_user_root(), user_key, L"Hant"},
       {per_user_root(), user_key, L"RimeUserDir"},
+      {per_user_root(), user_key, L"PendingUninstall"},
   };
   for (auto& snapshot : registry) {
     if (!snapshot.Capture())
@@ -321,6 +322,17 @@ inline int InstallFreshTransactional(const std::wstring& profile,
   if (FAILED(detail::ChangeLayout(profile, LayoutRestoreAction::Install))) {
     rollback();
     return 1;
+  }
+
+  // A successful fresh install supersedes any deferred uninstall request.
+  // PendingUninstall was snapshotted above, so rollback still restores it.
+  {
+    HKEY user_handle = nullptr;
+    if (RegOpenKeyExW(per_user_root(), user_key.c_str(), 0, KEY_SET_VALUE,
+                      &user_handle) == ERROR_SUCCESS) {
+      RegDeleteValueW(user_handle, L"PendingUninstall");
+      RegCloseKey(user_handle);
+    }
   }
 
   // WER diagnostics are optional and intentionally outside the transaction.
