@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "SecurityAttribute.h"
 #include <PipeSecurityPolicy.h>
+#include <LifecycleMutexSecurityPolicy.h>
 #include <Sddl.h>
 #include <stdexcept>
 #include <string>
@@ -62,14 +63,37 @@ void SecurityAttribute::_Init() {
   sa.nLength = sizeof(SECURITY_ATTRIBUTES);
   sa.lpSecurityDescriptor = pd;
   sa.bInheritHandle = TRUE;
+
+  // Pipe rights (GRGW) do not imply the synchronize rights required to
+  // reopen a mutex. Use a separate type-specific descriptor, without
+  // broadening access to the named pipe.
+  const std::wstring mutex_sddl =
+      lifecycle_security::BuildLifecycleMutexSecuritySddl(logon_sid);
+  if (mutex_sddl.empty() ||
+      !::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          mutex_sddl.c_str(), SDDL_REVISION_1, &mutex_pd, nullptr)) {
+    ::LocalFree(pd);
+    pd = nullptr;
+    throw std::runtime_error(
+        "failed to create the Weasel lifecycle mutex security descriptor");
+  }
+  mutex_sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+  mutex_sa.lpSecurityDescriptor = mutex_pd;
+  mutex_sa.bInheritHandle = FALSE;
 }
 
 SecurityAttribute::~SecurityAttribute() {
+  if (mutex_pd)
+    ::LocalFree(mutex_pd);
   if (pd)
     ::LocalFree(pd);
 }
 
 SECURITY_ATTRIBUTES* SecurityAttribute::get_attr() {
   return &sa;
+}
+
+SECURITY_ATTRIBUTES* SecurityAttribute::get_mutex_attr() {
+  return &mutex_sa;
 }
 };  // namespace weasel

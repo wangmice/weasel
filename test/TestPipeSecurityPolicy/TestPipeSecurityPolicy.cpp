@@ -1,4 +1,5 @@
 #include <PipeSecurityPolicy.h>
+#include <LifecycleMutexSecurityPolicy.h>
 
 #include <iostream>
 
@@ -20,9 +21,9 @@ static void check(bool ok, const char* what) {
 #include <sddl.h>
 #include <vector>
 
-// Regression for the real security mismatch: the production pipe-derived DACL
-// grants GRGW to the current logon SID, not MUTEX_ALL_ACCESS. Reopening that
-// mutex needs only SYNCHRONIZE | MUTEX_MODIFY_STATE.
+// Regression using the exact lifecycle-mutex SDDL created by WeaselServer,
+// distinct from the named-pipe ACL. The second open must have synchronize
+// rights even if the first creator is a different process.
 static std::wstring current_logon_sid() {
   HANDLE token = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
@@ -59,7 +60,8 @@ static void test_lifecycle_mutex_access() {
   if (sid.empty())
     return;
 
-  const std::wstring sddl = weasel::pipe_security::BuildPipeSecuritySddl(sid);
+  const std::wstring sddl =
+      weasel::lifecycle_security::BuildLifecycleMutexSecuritySddl(sid);
   PSECURITY_DESCRIPTOR descriptor = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
           sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) {
@@ -80,6 +82,9 @@ static void test_lifecycle_mutex_access() {
   check(creator != nullptr, "creator can create mutex with logon-session DACL");
   if (creator) {
     HANDLE other = CreateMutexExW(nullptr, name.c_str(), 0, rights);
+    if (!other)
+      std::cerr << "[debug] lifecycle mutex reopen GetLastError="
+                << GetLastError() << std::endl;
     check(other != nullptr, "another handle can reopen with required rights");
     if (other) {
       check(WaitForSingleObject(other, 0) == WAIT_OBJECT_0,
@@ -110,6 +115,17 @@ int main() {
         "security descriptor does not grant Everyone");
   check(BuildPipeSecuritySddl(L"").empty(),
         "missing logon SID fails closed at policy construction");
+
+  const std::wstring mutex_sddl =
+      weasel::lifecycle_security::BuildLifecycleMutexSecuritySddl(logon_sid);
+  check(mutex_sddl.find(logon_sid) != std::wstring::npos,
+        "lifecycle mutex DACL grants current logon session");
+  check(mutex_sddl.find(L"0x00100001") != std::wstring::npos,
+        "lifecycle mutex grants explicit sync and modify-state access");
+  check(mutex_sddl.find(L";;;WD)") == std::wstring::npos,
+        "lifecycle mutex never grants access to Everyone");
+  check(weasel::lifecycle_security::BuildLifecycleMutexSecuritySddl(L"").empty(),
+        "lifecycle mutex policy fails closed without a logon SID");
 
 #if defined(_WIN32)
   test_lifecycle_mutex_access();

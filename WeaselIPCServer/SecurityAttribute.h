@@ -6,7 +6,9 @@ namespace weasel {
 class SecurityAttribute {
  private:
   PSECURITY_DESCRIPTOR pd = nullptr;
+  PSECURITY_DESCRIPTOR mutex_pd = nullptr;
   SECURITY_ATTRIBUTES sa{};
+  SECURITY_ATTRIBUTES mutex_sa{};
   void _Init();
 
  public:
@@ -16,5 +18,6 @@ class SecurityAttribute {
   SecurityAttribute& operator=(const SecurityAttribute&) = delete;
 
   SECURITY_ATTRIBUTES* get_attr();
+  SECURITY_ATTRIBUTES* get_mutex_attr();
 };
 };  // namespace weasel
