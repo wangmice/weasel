@@ -644,26 +644,48 @@ bool RecoveryHasServerFiles(const std::wstring& dir) noexcept {
 
 bool ReadRecoveryRegistryString(const wchar_t* subkey,
                                 const wchar_t* name,
-                                DWORD view_flags,
+                                REGSAM view_flags,
                                 std::wstring& value,
                                 LONG& status) {
-  DWORD bytes = 0;
-  constexpr DWORD kMaxRegistryStringBytes = 32768 * sizeof(wchar_t);
-  status = RegGetValueW(HKEY_LOCAL_MACHINE, subkey, name,
-                        RRF_RT_REG_SZ | view_flags, nullptr, nullptr, &bytes);
+  // RegGetValue's RRF_SUBKEY_WOW64* flags are not exposed by every supported
+  // Windows SDK configuration. Open the requested registry view explicitly
+  // using the stable KEY_WOW64_* flags, then query the value by handle.
+  HKEY key = nullptr;
+  status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey, 0,
+                         KEY_QUERY_VALUE | view_flags, &key);
   if (status != ERROR_SUCCESS)
     return false;
-  if (bytes < sizeof(wchar_t) || bytes > kMaxRegistryStringBytes) {
+
+  DWORD bytes = 0;
+  DWORD type = REG_NONE;
+  constexpr DWORD kMaxRegistryStringBytes = 32768 * sizeof(wchar_t);
+  status = RegQueryValueExW(key, name, nullptr, &type, nullptr, &bytes);
+  if (status != ERROR_SUCCESS || type != REG_SZ ||
+      bytes < sizeof(wchar_t) || bytes > kMaxRegistryStringBytes ||
+      bytes % sizeof(wchar_t) != 0) {
+    RegCloseKey(key);
+    if (status == ERROR_SUCCESS)
+      status = ERROR_INVALID_DATA;
+    return false;
+  }
+
+  // RegQueryValueExW does not guarantee a terminating NUL. Allocate one
+  // additional zeroed wchar_t and accept only the reported REG_SZ bytes.
+  std::wstring result(bytes / sizeof(wchar_t) + 1, L'\0');
+  DWORD capacity = static_cast<DWORD>(result.size() * sizeof(wchar_t));
+  status = RegQueryValueExW(key, name, nullptr, &type,
+                            reinterpret_cast<LPBYTE>(result.data()), &capacity);
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS)
+    return false;
+  if (type != REG_SZ || capacity < sizeof(wchar_t) ||
+      capacity > result.size() * sizeof(wchar_t) ||
+      capacity % sizeof(wchar_t) != 0) {
     status = ERROR_INVALID_DATA;
     return false;
   }
 
-  std::wstring result(bytes / sizeof(wchar_t), L'\0');
-  status = RegGetValueW(HKEY_LOCAL_MACHINE, subkey, name,
-                        RRF_RT_REG_SZ | view_flags, nullptr, result.data(),
-                        &bytes);
-  if (status != ERROR_SUCCESS)
-    return false;
+  result.resize(capacity / sizeof(wchar_t));
   const size_t end = result.find(L'\0');
   if (end != std::wstring::npos)
     result.resize(end);
@@ -677,8 +699,8 @@ bool ReadRecoveryRegistryString(const wchar_t* subkey,
 
 RecoveryServerDirectory FindRecoveryServerDirectory() {
   RecoveryServerDirectory result;
-  constexpr DWORD kViews[] = {
-      0, RRF_SUBKEY_WOW6432KEY, RRF_SUBKEY_WOW6464KEY};
+  constexpr REGSAM kViews[] = {
+      0, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
   constexpr DWORD kViewIds[] = {0, 32, 64};
   constexpr wchar_t kMachineRunKey[] =
       L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";

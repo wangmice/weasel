@@ -223,8 +223,11 @@ if ($tsf -notmatch 'tsf\.recovery-lock' -or
 # both WOW64 views before falling back to the machine Run executable value.
 # Only a directory with a real Server and start_service.bat may launch.
 if ($tsf -notmatch 'FindRecoveryServerDirectory\(' -or
-    $tsf -notmatch 'RRF_SUBKEY_WOW6432KEY' -or
-    $tsf -notmatch 'RRF_SUBKEY_WOW6464KEY' -or
+    $tsf -notmatch 'KEY_WOW64_32KEY' -or
+    $tsf -notmatch 'KEY_WOW64_64KEY' -or
+    $tsf -notmatch 'RegOpenKeyExW\(HKEY_LOCAL_MACHINE,\s*subkey,\s*0,' -or
+    $tsf -notmatch 'RegQueryValueExW\(key,\s*name' -or
+    $tsf -match 'RRF_SUBKEY_WOW6432KEY|RRF_SUBKEY_WOW6464KEY' -or
     $tsf -notmatch 'kMachineRunKey' -or
     $tsf -notmatch 'RecoveryHasServerFiles\(candidate\)' -or
     $tsf -notmatch 'WeaselServer\.exe' -or
