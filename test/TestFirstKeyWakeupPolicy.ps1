@@ -308,9 +308,7 @@ if ($keySink -notmatch 'dispatch\s*==\s*KeyDispatchResult::Unhandled\s*\?\s*FALS
   throw 'only definitely unhandled keys may be released back to the host'
 }
 
-Write-Host 'First-key wakeup policy: PASS'
-
-
+ 
 # Test callbacks need message-time identity to avoid dropping repeated keys,
 # but Test/Key callbacks must pair by vkey alone across CUAS/IMM32 bridges.
 $pairHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\KeyEventPairState.h') -Raw
@@ -321,3 +319,5 @@ if ($pairHeader -notmatch 'IsDuplicateTest\(std::uint32_t key,\s*std::uint32_t m
     $keySink -notmatch '_testKeyUpPending\.ConsumePairedKey\(vkey\)') {
   throw 'Test/Key pairing must not require identical CUAS bridge timestamps'
 }
+
+Write-Host 'First-key wakeup policy: PASS'
