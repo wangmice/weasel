@@ -304,6 +304,9 @@ void WeaselPanel::_CancelAutoHide() {
 }
 
 void WeaselPanel::DestroyWindow() {
+  const HWND hwnd = m_hWnd;
+  if (!hwnd)
+    return;
   // clear timers before releasing window resources
   _ClearTimers();
 
@@ -312,7 +315,14 @@ void WeaselPanel::DestroyWindow() {
     // mark D2D as detached from any window
     m_pD2D->m_hWnd = nullptr;
   }
-  ::DestroyWindow(m_hWnd);
+  if (!::DestroyWindow(hwnd) && ::IsWindow(hwnd)) {
+    // DestroyWindow can fail on a non-owning thread. If the panel is then
+    // released, the still-live window must never dispatch into freed 'this'.
+    // UnregisterClass will fail with this HWND alive, keeping its callback
+    // module referenced until the process exits.
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    DEBUG << "WeaselPanel: window destruction failed; detached user data";
+  }
   m_hWnd = nullptr;
 }
 

@@ -44,6 +44,9 @@ if ($panel -notmatch 'GetModuleHandleExW\([\s\S]*?GET_MODULE_HANDLE_EX_FLAG_FROM
     $panelHeader -notmatch 'HMODULE\s+m_windowClassModule') {
   throw 'window class must be module-owned and unregistered before unloading callback code'
 }
+if ($panel -notmatch 'DestroyWindow\(\)[\s\S]*?if\s*\(!::DestroyWindow\(hwnd\)\s*&&\s*::IsWindow\(hwnd\)\)[\s\S]*?SetWindowLongPtrW\(hwnd,\s*GWLP_USERDATA,\s*0\)') {
+  throw 'failed window destruction must remove stale panel user data'
+}
 if ($panel -match 'GetModuleHandle\(nullptr\);\s*WNDCLASS' -or
     $panel -match 'ERROR_CLASS_ALREADY_EXISTS\)') {
   throw 'window class must not silently reuse an EXE-owned or stale callback'
