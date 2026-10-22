@@ -33,6 +33,7 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
       m_global_ascii_mode(false),
       m_show_notifications_time(1200),
       _UpdateUICallback(NULL) {
+  weasel::diagnostics::Scope constructor_trace("rime-handler.constructor");
   LOG(INFO) << "constructing RimeWithWeaselHandler";
   m_ui->InServer() = true;
   rime_api = rime_get_api();
@@ -48,7 +49,10 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
   m_pid = (m_pid << (31 - msbit));
   m_next_ipc_session_id = m_pid + 1;
   LOG(INFO) << "setting up Rime traits";
-  _Setup();
+  {
+    weasel::diagnostics::Scope setup_trace("rime-handler.setup");
+    _Setup();
+  }
   LOG(INFO) << "RimeWithWeaselHandler constructed";
 }
 

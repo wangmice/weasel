@@ -1,4 +1,5 @@
 ﻿#include "stdafx.h"
+#include <WeaselDiagnosticTrace.h>
 #include "WeaselDeployer.h"
 #include "Configurator.h"
 #include "SwitcherSettingsDialog.h"
@@ -255,6 +256,7 @@ int Configurator::Run(bool installing) {
 
 int Configurator::UpdateWorkspace(bool report_errors,
                                   bool wait_for_install_startup) {
+  weasel::diagnostics::Scope deploy_trace("deployer.workspace");
   RimeOperationWatchdog deploy_watchdog;
   if (!deploy_watchdog.Arm()) {
     LOG(ERROR) << "Could not arm Rime workspace deployment watchdog.";
@@ -264,7 +266,9 @@ int Configurator::UpdateWorkspace(bool report_errors,
   weasel::ServerLifecycleLock lifecycle_lock;
   const DWORD lifecycle_wait_ms =
       wait_for_install_startup ? kInstallLifecycleWaitMs : 0;
+  weasel::diagnostics::Trace("deployer.lifecycle", "wait-begin", lifecycle_wait_ms);
   if (!lifecycle_lock.Acquire(lifecycle_wait_ms)) {
+    weasel::diagnostics::Trace("deployer.lifecycle", "busy", lifecycle_wait_ms);
     LOG(WARNING) << "another server lifecycle operation is running; aborting "
                     "deployment operation after "
                  << lifecycle_wait_ms << " ms.";
@@ -278,31 +282,45 @@ int Configurator::UpdateWorkspace(bool report_errors,
     return 1;
   }
 
+  weasel::diagnostics::Trace("deployer.lifecycle", "acquired");
   weasel::Client client;
   bool maintenance_started = false;
+  weasel::diagnostics::Trace("deployer.maintenance", "begin");
   if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
+    weasel::diagnostics::Trace("deployer.maintenance", "failed");
     return 1;
   }
 
+  weasel::diagnostics::Trace("deployer.maintenance", "ready",
+                             maintenance_started ? 1 : 0);
   int retval = 0;
   MaintenanceReleaser releaser(client, maintenance_started);
   {
     RimeApi* rime = rime_get_api();
     // initialize default config, preset schemas
+    weasel::diagnostics::Trace("deployer.rime-deploy", "begin");
     if (!rime->deploy()) {
       LOG(ERROR) << "Error deploying Rime workspace.";
       retval = 1;
     }
+    weasel::diagnostics::Trace("deployer.rime-deploy", "end",
+                               static_cast<DWORD>(retval));
     // initialize weasel config
+    weasel::diagnostics::Trace("deployer.weasel-config", "begin");
     if (!rime->deploy_config_file("weasel.yaml", "config_version")) {
       LOG(ERROR) << "Error deploying weasel.yaml.";
       retval = 1;
     }
+    weasel::diagnostics::Trace("deployer.weasel-config", "end",
+                               static_cast<DWORD>(retval));
     // deploy() and deploy_config_file() are synchronous librime RunTask()
     // calls; there is no asynchronous maintenance future to join here.
   }
+  weasel::diagnostics::Trace("deployer.maintenance", "finish-begin");
   if (!releaser.Finish())
     retval = 1;
+  weasel::diagnostics::Trace("deployer.maintenance", "finish-end",
+                             static_cast<DWORD>(retval));
   return retval;
 }
 
