@@ -490,3 +490,28 @@ if ($ipcHeader -notmatch 'GetServerLifecycleMutexName\(\)[\s\S]*?session-' -or
 }
 
 Write-Host 'Runtime hardening policy: PASS'
+
+
+# Opt-in file-backed breadcrumbs must cover the pre-IPC and session failure path.
+$traceHeader = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselDiagnosticTrace.h') -Raw
+$traceClient = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
+foreach ($required in @(
+  'DiagnosticTrace', 'FILE_APPEND_DATA', 'GetCurrentProcessId',
+  'weasel-diagnostic-', 'TraceRateLimited', 'RateLimitedScope'
+)) {
+  if (-not $traceHeader.Contains($required)) {
+    throw "missing diagnostic trace safeguard: $required"
+  }
+}
+if ($serverApp -notmatch 'server-app\.before-ready' -or
+    $serverImpl -notmatch 'server-impl\.pipe' -or
+    $serverImpl -notmatch 'server-impl\.lifecycle' -or
+    $rimeWithWeasel -notmatch 'rime-api\.create-session' -or
+    $tsf -notmatch 'tsf\.recovery' -or
+    $traceClient -notmatch 'client\.start-session') {
+  throw 'diagnostics must cover server startup Rime session and TSF recovery stages'
+}
+if ($rimeWithWeasel -notmatch 'RateLimitedScope create_trace' -or
+    $tsf -notmatch 'RateLimitedScope session_trace') {
+  throw 'diagnostic traces must not write one session record per failed physical key'
+}
