@@ -10,6 +10,7 @@ class WeaselTSFTestAccess {
 
   static bool ProcessKeyEventWithRecovery(WeaselTSF& tsf,
                                           const weasel::KeyEvent& key_event) {
-    return tsf._ProcessKeyEventWithRecovery(key_event);
+    return tsf._ProcessKeyEventWithRecovery(key_event) !=
+           WeaselTSF::KeyDispatchResult::Unhandled;
   }
 };

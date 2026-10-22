@@ -34,6 +34,7 @@
 #include "../../WeaselTSF/CandidateList.h"
 #include "../../WeaselTSF/LanguageBar.h"
 #include "../../WeaselTSF/Compartment.h"
+#include "../../WeaselTSF/ServerRecoveryCoordinator.h"
 // g_api_mutex and HandlePipeMessage's template definition are private to this
 // translation unit in production; include the implementation to exercise both.
 #include "../../WeaselIPCServer/WeaselServerImpl.cpp"
@@ -54,6 +55,101 @@ static void check(bool ok, const char* what) {
   std::printf("[%s] %s\n", ok ? "ok" : "FAIL", what);
   if (!ok)
     ++g_failures;
+}
+
+static void test_server_recovery_coordinator_state_machine() {
+  using Coordinator = weasel::tsf::ServerRecoveryCoordinator;
+
+  {
+    Coordinator coordinator;
+    std::atomic<bool> go{false};
+    std::atomic<int> winners{0};
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 20; ++i) {
+      workers.emplace_back([&] {
+        while (!go.load(std::memory_order_acquire))
+          std::this_thread::yield();
+        if (coordinator.TryBegin(1000))
+          ++winners;
+      });
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& worker : workers)
+      worker.join();
+    check(winners == 1 && coordinator.WorkerInflight(),
+          "recovery coordinator grants ownership to exactly one worker");
+    coordinator.FinishBackoff(100, 1000);
+  }
+
+  {
+    Coordinator coordinator;
+    check(coordinator.TryBegin(1000),
+          "recovery coordinator starts an initial worker");
+    coordinator.FinishBackoff(100, 1000);
+    check(coordinator.RetryAfter() == 1100 &&
+              !coordinator.TryBegin(1099) && coordinator.TryBegin(1100),
+          "Backoff rejects early workers and admits one at the deadline");
+    coordinator.FinishHealthy();
+  }
+
+  {
+    Coordinator coordinator;
+    check(coordinator.TryBegin(1000),
+          "backoff publication test acquires the owner");
+    coordinator.FinishBackoff(100, 1000);
+    check(!coordinator.TryBegin(1001) && coordinator.RetryAfter() == 1100,
+          "new recovery cannot bypass a published Backoff");
+  }
+
+  {
+    Coordinator coordinator;
+    check(!coordinator.ObserveUnavailableLongEnough(1000, 1500) &&
+              !coordinator.ObserveUnavailableLongEnough(2499, 1500) &&
+              coordinator.ObserveUnavailableLongEnough(2500, 1500),
+          "restart threshold measures one continuous unavailable interval");
+    coordinator.ResetUnavailableObservation();
+    check(coordinator.UnavailableDuration(5000) == 0 &&
+              !coordinator.ObserveUnavailableLongEnough(5000, 1500) &&
+              !coordinator.ObserveUnavailableLongEnough(6499, 1500) &&
+              coordinator.ObserveUnavailableLongEnough(6500, 1500),
+          "lifecycle reset starts a fresh unavailable interval");
+  }
+
+  {
+    Coordinator coordinator;
+    check(coordinator.TryBegin(1000),
+          "failure backoff test acquires the first worker");
+    coordinator.FinishFailure(1000, 250, 2000);
+    check(coordinator.FailureStreak() == 1 &&
+              coordinator.RetryAfter() == 1250,
+          "first recovery failure uses the base backoff");
+    check(coordinator.TryBegin(1250),
+          "failure backoff expires at its deadline");
+    coordinator.FinishFailure(1250, 250, 2000);
+    check(coordinator.FailureStreak() == 2 &&
+              coordinator.RetryAfter() == 1750,
+          "consecutive recovery failures back off exponentially");
+    coordinator.NoteHealthy();
+    check(coordinator.FailureStreak() == 0 &&
+              coordinator.RetryAfter() == 0 &&
+              coordinator.UnavailableSince() == 0,
+          "healthy idle recovery resets failure and unavailable state");
+  }
+
+  {
+    Coordinator coordinator;
+    coordinator.ObserveUnavailableLongEnough(1000, 1500);
+    check(coordinator.TryBegin(2500),
+          "in-flight health ownership test starts a worker");
+    coordinator.NoteHealthy();
+    check(coordinator.WorkerInflight() &&
+              coordinator.UnavailableSince() == 1000,
+          "foreground health hints do not revoke an in-flight recovery owner");
+    coordinator.FinishHealthy();
+    check(!coordinator.WorkerInflight() &&
+              coordinator.UnavailableSince() == 0,
+          "the recovery owner clears state after a healthy fresh probe");
+  }
 }
 
 static void test_session_id_allocator_survives_maintenance_clear() {
@@ -231,6 +327,33 @@ class SessionHandler : public weasel::RequestHandler {
   bool last_value = false;
 };
 
+static void test_server_runtime_state_tracks_maintenance() {
+  SessionHandler handler;
+  weasel::ServerRuntimeState runtime{};
+  runtime.version = weasel::kServerRuntimeStateVersion;
+  runtime.process_id = GetCurrentProcessId();
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Ready);
+  runtime.process_creation_time = 1;
+
+  weasel::ServerImpl server;
+  server.SetRequestHandler(&handler);
+  weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
+
+  server.OnStartMaintenance(WEASEL_IPC_START_MAINTENANCE, 0, 0);
+  check(handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Maintenance),
+        "maintenance is published before backend teardown");
+
+  server.OnEndMaintenance(WEASEL_IPC_END_MAINTENANCE, 0, 0);
+  check(!handler.maintaining &&
+            runtime.lifecycle ==
+                static_cast<LONG>(weasel::ServerLifecycle::Ready),
+        "maintenance completion republishes Ready");
+
+  weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
+}
+
 static void test_pipe_ascii_commands() {
   SessionHandler handler;
   weasel::ServerImpl server;
@@ -309,9 +432,12 @@ static void test_unavailable_private_server_stays_isolated() {
                             L"_UnavailablePrivateTest_" +
                             std::to_wstring(GetCurrentProcessId());
   TestChannelAccess::SetName(weasel::ClientTestAccess::Channel(client), name);
+  const ULONGLONG started = GetTickCount64();
   check(!tsf._EnsureServerConnected(),
         "missing private server fails recovery without launching the real "
         "service");
+  check(GetTickCount64() - started < 250,
+        "missing server recovery returns promptly instead of stalling input");
   check(!client.IsSessionActive(),
         "missing private server leaves the test client inactive");
 }
@@ -452,16 +578,17 @@ static void test_maintenance_session_recovery() {
         "recovered key reaches the input engine exactly once");
 
   // A request accepted by the engine whose reply exceeds the deadline is
-  // ambiguous: TSF must release it without rebuilding or replaying this key.
+  // ambiguous: TSF must consume it locally without rebuilding or replaying it,
+  // otherwise the host could process the same physical key a second time.
   start_before = start_session_messages;
   accepted_before = handler.accepted_keys;
   handler.delay_key_reply = true;
   const ULONGLONG started = GetTickCount64();
-  check(!WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
+  check(WeaselTSFTestAccess::ProcessKeyEventWithRecovery(
             tsf, weasel::KeyEvent('c')),
-        "response timeout is released instead of replayed");
-  check(GetTickCount64() - started < 1400,
-        "TSF returns before the slow engine reply");
+        "ambiguous response timeout is consumed locally without replay");
+  check(GetTickCount64() - started < 400,
+        "TSF bounds a wedged healthy key transaction well below one second");
   check(start_session_messages == start_before && !tsf_client.IsSessionActive(),
         "response timeout does not rebuild the session");
   check(handler.accepted_keys == accepted_before + 1,
@@ -473,8 +600,10 @@ int main() {
   if (FAILED(hr))
     return 1;
   g_hInst = GetModuleHandle(nullptr);
+  test_server_recovery_coordinator_state_machine();
   test_session_id_allocator_survives_maintenance_clear();
   test_pending_ui_generation_rejects_stale_extent();
+  test_server_runtime_state_tracks_maintenance();
   test_pipe_ascii_commands();
   test_window_ascii_commands();
   test_unavailable_private_server_stays_isolated();

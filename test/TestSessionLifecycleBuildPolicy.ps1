@@ -8,6 +8,7 @@ $sessionKeySource = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselS
 $pipeServer = Get-Content -LiteralPath (Join-Path $repo 'include\PipeServer.h') -Raw
 $rimeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\RimeWithWeasel.h') -Raw
 $rimeUtility = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\WeaselUtility.cpp') -Raw
+$rimeHandler = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\RimeWithWeasel.cpp') -Raw
 
 # WeaselIPC contains function-local non-trivial statics (for example the
 # Deserializer factory registry). C++11 requires those initializers to be
@@ -91,6 +92,21 @@ if ($destroyBody -notmatch 'if\s*\(m_active_session\s*==\s*ipc_id\)[\s\S]*?m_ui-
 }
 if ($destroyBody -notmatch 'destroy_session\(session_id\)') {
   throw 'lifecycle destruction must still release the underlying Rime session'
+}
+
+$removeStart = $rimeHandler.IndexOf('DWORD RimeWithWeaselHandler::RemoveSession(WeaselSessionId ipc_id)')
+$removeEnd = $rimeHandler.IndexOf('void RimeWithWeaselHandler::UpdateColorTheme', $removeStart)
+if ($removeStart -lt 0 -or $removeEnd -le $removeStart) {
+  throw 'unable to isolate RimeWithWeaselHandler::RemoveSession'
+}
+$removeBody = $rimeHandler.Substring($removeStart, $removeEnd - $removeStart)
+if ($removeBody -notmatch 'if\s*\(m_active_session\s*==\s*ipc_id\)[\s\S]*?m_ui->Hide\(\)[\s\S]*?m_active_session\s*=\s*0') {
+  throw 'RemoveSession must hide and clear state only when removing the active session'
+}
+$activeGuardEnd = $removeBody.IndexOf('}', $removeBody.IndexOf('if (m_active_session == ipc_id)'))
+$erasePos = $removeBody.IndexOf('m_session_status_map.erase(ipc_id)')
+if ($activeGuardEnd -lt 0 -or $erasePos -le $activeGuardEnd) {
+  throw 'RemoveSession must still erase inactive sessions outside the active-session guard'
 }
 
 Write-Host 'Session lifecycle build/hot-path policy: PASS'

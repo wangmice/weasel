@@ -4,35 +4,82 @@
 #include <KeyEvent.h>
 #include "CandidateList.h"
 
-namespace {
-constexpr DWORD kInvalidSessionRecoveryTimeoutMs = 1000;
-}  // namespace
+WeaselTSF::KeyDispatchResult WeaselTSF::_ProcessKeyEventWithRecovery(
+    const weasel::KeyEvent& keyEvent,
+    ULONGLONG recovery_deadline) {
+  const auto ensure_recovery_deadline = [&]() {
+    if (!recovery_deadline) {
+      recovery_deadline = GetTickCount64() + kFastSessionRecoveryBudgetMs;
+    }
+    return recovery_deadline;
+  };
+  const auto remaining_recovery_time = [&](ULONGLONG deadline) {
+    const ULONGLONG now = GetTickCount64();
+    if (now >= deadline)
+      return static_cast<DWORD>(0);
+    return static_cast<DWORD>(deadline - now);
+  };
+  const auto process_key_bounded = [&]() {
+    return m_client.ProcessKeyEventEx(keyEvent, kKeyEventTransactionTimeoutMs);
+  };
 
-bool WeaselTSF::_ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent) {
-  auto result = m_client.ProcessKeyEventEx(keyEvent);
+  // The successful hot path remains one IPC transaction, but a wedged server
+  // can hold the TSF callback for at most 100 ms instead of the pipe default
+  // of one second.
+  auto result = process_key_bounded();
 
   if (result == weasel::KeyEventResult::TransportNotDelivered) {
-    // The pipe write never completed, so the server definitely did not see
-    // this key. Recover the server/session and replay this physical key once.
-    // Ambiguous TransportError is intentionally excluded: after a successful
-    // write the server may already have processed the key.
-    if (!_EnsureServerConnected())
-      return false;
-    result = m_client.ProcessKeyEventEx(keyEvent);
+    // The request definitely did not reach the server. Reconnect and session
+    // establishment share the 20 ms recovery budget. Once recovered, the
+    // actual key transaction gets its own bounded 100 ms response window;
+    // squeezing it into the leftover recovery milliseconds would turn a fast
+    // 15-20 ms recovery into a spurious ambiguous key timeout.
+    const ULONGLONG deadline = ensure_recovery_deadline();
+    if (!_EnsureServerConnectedUntil(deadline))
+      return KeyDispatchResult::Unhandled;
+    result = process_key_bounded();
   }
 
   if (result == weasel::KeyEventResult::InvalidSession) {
-    // The server rejected the stale session before librime saw this key.
-    // Start a replacement session on the still-live pipe and retry once.
-    m_client.StartSession(kInvalidSessionRecoveryTimeoutMs);
-    _ConsumeResponseIfFresh();
-    if (!m_client.IsSessionActive())
-      return false;
+    // InvalidSession is emitted before librime receives the key, so one retry
+    // is safe. Session rebuild is limited to the 20 ms recovery budget; the
+    // replay itself still uses the bounded 100 ms physical-key IPC timeout.
+    const ULONGLONG deadline = ensure_recovery_deadline();
+    const DWORD remaining = remaining_recovery_time(deadline);
+    if (!remaining) {
+      _ScheduleServerRecovery();
+      return KeyDispatchResult::Unhandled;
+    }
 
-    result = m_client.ProcessKeyEventEx(keyEvent);
+    m_client.StartSession(remaining);
+    _ConsumeResponseIfFresh();
+    if (!m_client.IsSessionActive()) {
+      _ScheduleServerRecovery();
+      return KeyDispatchResult::Unhandled;
+    }
+
+    result = process_key_bounded();
   }
 
-  return result == weasel::KeyEventResult::Handled;
+  // The request may have reached the server, so never replay an ambiguous
+  // transport failure. Since the same physical key must not then be processed
+  // by the host as well, report it as locally consumed while background
+  // recovery repairs the transport/session for the next key.
+  if (result == weasel::KeyEventResult::TransportError) {
+    _ScheduleServerRecovery();
+    return KeyDispatchResult::AmbiguousConsumed;
+  }
+
+  // A replay that is still definitely undelivered is safe to release to the
+  // host; no server-side input engine has observed it.
+  if (result == weasel::KeyEventResult::TransportNotDelivered) {
+    _ScheduleServerRecovery();
+    return KeyDispatchResult::Unhandled;
+  }
+
+  return result == weasel::KeyEventResult::Handled
+             ? KeyDispatchResult::Handled
+             : KeyDispatchResult::Unhandled;
 }
 
 void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
@@ -43,10 +90,16 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     return;
   }
 
-  // if server connection is Not OK, don't eat it.
-  if (!_EnsureServerConnected()) {
-    *pfEaten = FALSE;
-    return;
+  // Allocate the recovery deadline only on the inactive-session path. Healthy
+  // typing keeps the same local IsSessionActive() check and never reads a
+  // clock.
+  ULONGLONG recovery_deadline = 0;
+  if (!m_client.IsSessionActive()) {
+    recovery_deadline = GetTickCount64() + kFastSessionRecoveryBudgetMs;
+    if (!_EnsureServerConnectedUntil(recovery_deadline)) {
+      *pfEaten = FALSE;
+      return;
+    }
   }
   weasel::KeyEvent ke;
   if (!GetKeyboardState(_lpbKeyState)) {
@@ -67,29 +120,48 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
       else if (ke.keycode == ibus::Down)
         ke.keycode = ibus::Up;
     }
-    // 模拟期间的键不转发服务器，但 *pfEaten 必须有确定值
-    // （下文无条件存入 _prevfEaten，且要上报 TSF）
+    // Only callbacks that were already expected on entry may consume the
+    // CapsLock simulation budget. The real CapsLock release that schedules
+    // SendInput must not immediately consume one of the callbacks it just
+    // queued.
+    const bool suppress_simulated_caps =
+        _keyCountToSimulate > 0 && ke.keycode == ibus::Caps_Lock;
+
+    // Chrome and other hosts can drop injected callbacks. If a real
+    // non-CapsLock key arrives first, discard the stale simulation budget and
+    // process that same key normally instead of bypassing Rime indefinitely.
+    if (_keyCountToSimulate && !suppress_simulated_caps)
+      _keyCountToSimulate = 0;
+
+    // Simulated CapsLock callbacks are local bookkeeping only; every other
+    // key follows the normal server path.
     *pfEaten = FALSE;
-    if (!_keyCountToSimulate)
-      *pfEaten = _ProcessKeyEventWithRecovery(ke) ? TRUE : FALSE;
+    if (!suppress_simulated_caps) {
+      const KeyDispatchResult dispatch =
+          _ProcessKeyEventWithRecovery(ke, recovery_deadline);
+      *pfEaten = dispatch == KeyDispatchResult::Unhandled ? FALSE : TRUE;
+    }
 
     if (ke.keycode == ibus::Caps_Lock) {
       if (_prevKeyEvent.keycode == ibus::Caps_Lock && _prevfEaten == TRUE &&
-          (ke.mask & ibus::RELEASE_MASK) && (!_keyCountToSimulate)) {
+          (ke.mask & ibus::RELEASE_MASK) && !suppress_simulated_caps) {
         if ((GetKeyState(VK_CAPITAL) & 0x01)) {
           if (_committed || (!*pfEaten && _status.composing)) {
-            _keyCountToSimulate = 2;
             INPUT inputs[2];
             inputs[0].type = INPUT_KEYBOARD;
             inputs[0].ki = {VK_CAPITAL, 0, 0, 0, 0};
             inputs[1].type = INPUT_KEYBOARD;
             inputs[1].ki = {VK_CAPITAL, 0, KEYEVENTF_KEYUP, 0, 0};
-            ::SendInput(sizeof(inputs) / sizeof(INPUT), inputs, sizeof(INPUT));
+            // Track exactly the callbacks Windows accepted. This assignment
+            // happens after suppress_simulated_caps was captured, so the
+            // current real CapsLock release does not consume the new budget.
+            _keyCountToSimulate = static_cast<int>(::SendInput(
+                sizeof(inputs) / sizeof(INPUT), inputs, sizeof(INPUT)));
           }
         }
         *pfEaten = TRUE;
       }
-      if (_keyCountToSimulate)
+      if (suppress_simulated_caps && _keyCountToSimulate)
         _keyCountToSimulate--;
     }
 
@@ -99,9 +171,13 @@ void WeaselTSF::_ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
 }
 
 STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
-  // 焦点切换后，任何等待配对回调的 pending 状态都已失效
+  // 焦点切换后，任何等待配对回调和 CapsLock 模拟的瞬态状态都已失效。
+  // Chrome 可在 DocumentMgr/renderer 之间切换焦点而不回送注入事件。
   _testKeyDownPending.Clear();
   _testKeyUpPending.Clear();
+  _keyCountToSimulate = 0;
+  _prevKeyEvent = weasel::KeyEvent();
+  _prevfEaten = FALSE;
   if (fForeground)
     m_client.FocusIn();
   else {

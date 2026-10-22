@@ -70,6 +70,24 @@ struct IPCMetadata {
   WCHAR server_window_class[WINDOW_CLASS_LENGTH];
 };
 
+enum class ServerLifecycle : LONG {
+  Starting = 1,
+  Ready = 2,
+  Maintenance = 3,
+  Stopping = 4,
+};
+
+struct ServerRuntimeState {
+  UINT32 version;
+  UINT32 process_id;
+  LONG lifecycle;
+  UINT32 reserved;
+  UINT64 process_creation_time;
+};
+static_assert(sizeof(ServerRuntimeState) == 24,
+              "ServerRuntimeState must be cross-architecture stable");
+constexpr UINT32 kServerRuntimeStateVersion = 1;
+
 // 處理請求之物件
 struct RequestHandler {
   using EatLine = std::function<bool(std::wstring&)>;
@@ -154,12 +172,16 @@ class Client {
   bool StartMaintenance();
   // 退出維護模式
   void EndMaintenance();
-  // 测试连接
+  // 测试当前逻辑会话
   bool Echo();
+  // 仅测试服务端 IPC 往返，不创建/销毁 Rime 会话，也不改变活动会话
+  bool ProbeServer(DWORD timeout_ms);
   // 会话已建立在活连接上（失败后为 false，直到重新建立会话）
   bool IsSessionActive();
   // 保留未吃键、失效会话与传输失败之间的区别；TSF 用它决定是否可安全重试
   KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
+  // 使用调用方给定的有限预算处理按键；TSF 物理键路径用它限制宿主阻塞
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent, DWORD timeout_ms);
   // 请求服务处理按键消息
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   // 上屏正在編輯的文字
@@ -241,9 +263,14 @@ inline std::wstring GetPipeName() {
   return pipe_name;
 }
 
-inline std::wstring GetServerInstanceName() {
+inline std::wstring GetLegacyServerInstanceName() {
   std::wstring name = L"(WEASEL)Furandōru-Sukāretto-";
   name += getUsername();
+  return name;
+}
+
+inline std::wstring GetServerInstanceName() {
+  std::wstring name = GetLegacyServerInstanceName();
   DWORD session_id = 0;
   if (GetCurrentWindowsSessionId(session_id)) {
     name += L"-session-";
@@ -252,7 +279,9 @@ inline std::wstring GetServerInstanceName() {
   return name;
 }
 
-inline std::wstring GetServerLaunchMutexName() {
+inline std::wstring GetServerLifecycleMutexName() {
+  // Preserve the historical launch-mutex object name so already-loaded older
+  // TSF processes still serialize launch against the new lifecycle protocol.
   std::wstring name = L"WeaselServerLaunch-";
   name += getUsername();
   DWORD session_id = 0;
@@ -262,4 +291,63 @@ inline std::wstring GetServerLaunchMutexName() {
   }
   return name;
 }
+
+inline std::wstring GetServerRuntimeStateName() {
+  std::wstring name = L"WeaselServerState-";
+  name += getUsername();
+  DWORD session_id = 0;
+  if (GetCurrentWindowsSessionId(session_id)) {
+    name += L"-session-";
+    name += std::to_wstring(session_id);
+  }
+  return name;
+}
+
+class ServerLifecycleLock {
+ public:
+  ServerLifecycleLock() = default;
+  ~ServerLifecycleLock() { Release(); }
+  ServerLifecycleLock(const ServerLifecycleLock&) = delete;
+  ServerLifecycleLock& operator=(const ServerLifecycleLock&) = delete;
+
+  bool Acquire(DWORD timeout_ms,
+               SECURITY_ATTRIBUTES* security_attributes = nullptr) noexcept {
+    if (owned_)
+      return true;
+    if (!handle_) {
+      handle_ = CreateMutexW(security_attributes, FALSE,
+                             GetServerLifecycleMutexName().c_str());
+      if (!handle_)
+        return false;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(handle_, timeout_ms);
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+      owned_ = true;
+      return true;
+    }
+    return false;
+  }
+
+  void Unlock() noexcept {
+    if (!handle_ || !owned_)
+      return;
+    ReleaseMutex(handle_);
+    owned_ = false;
+  }
+
+  void Release() noexcept {
+    if (!handle_)
+      return;
+    Unlock();
+    CloseHandle(handle_);
+    handle_ = nullptr;
+  }
+
+  bool owned() const noexcept { return owned_; }
+
+ private:
+  HANDLE handle_ = nullptr;
+  bool owned_ = false;
+};
 }  // namespace weasel

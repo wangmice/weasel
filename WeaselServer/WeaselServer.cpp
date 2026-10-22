@@ -151,13 +151,24 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   HWND running_window =
       running_server ? FindWindowW(nullptr, WEASEL_IPC_WINDOW) : nullptr;
 
-  // Restart if already running. If the old window already exists while the
-  // pipe listener is still starting, request shutdown through that exact
-  // process's window before waiting for process exit; never wait on a live
-  // process that has not actually been asked to stop.
+  // Restart if already running. Lifecycle ownership is needed only when an
+  // existing server will be stopped. A recovery-launched replacement with no
+  // old server must remain free to reach ServerImpl::Start(), where it creates
+  // its singleton before waiting for the recovery worker's lifecycle lock.
   {
     weasel::Client client;
     const bool connected = client.Connect();
+
+    weasel::ServerLifecycleLock restart_lifecycle;
+    if ((connected || running_server) && !restart_lifecycle.Acquire(0)) {
+      LOG(WARNING) << "another server lifecycle operation is active; refusing "
+                      "to restart or quit WeaselServer";
+      client.Disconnect();
+      if (running_server)
+        CloseHandle(running_server);
+      return 1;
+    }
+
     if (connected) {
       // A server can appear between the first window probe and Connect(). If
       // that happened, capture it now so the restart still has a process-exit
@@ -193,9 +204,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
             GetWindowThreadProcessId(running_window, &window_process_id) &&
             window_process_id == server_process_id;
         if (!owns_window || !PostMessageW(running_window, WM_CLOSE, 0, 0)) {
-          // The old process may have exited between the zero-time wait and the
-          // window operation. Treat that race as a successful shutdown rather
-          // than failing a perfectly safe replacement.
           if (WaitForSingleObject(running_server, 0) == WAIT_OBJECT_0) {
             CloseHandle(running_server);
             running_server = nullptr;
@@ -214,8 +222,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     }
 
     if (running_server) {
-      // Release our pipe before waiting: server teardown drains pipe workers,
-      // so keeping this client connected would only delay shutdown.
       client.Disconnect();
       if (!WaitForRunningServerExit(running_server)) {
         LOG(ERROR) << "timed out waiting for WeaselServer to exit";
@@ -226,6 +232,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
     } else if (quit) {
       return 0;
     }
+    // restart_lifecycle is released before constructing the replacement.
+    // ServerImpl immediately publishes its singleton before reacquiring the
+    // same lifecycle mutex, so deploy/recovery cannot overlap its initialization.
   }
 
   bool check_updates = !wcscmp(L"/update", lpstrCmdLine);

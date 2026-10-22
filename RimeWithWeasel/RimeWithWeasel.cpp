@@ -250,15 +250,22 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
 }
 
 DWORD RimeWithWeaselHandler::RemoveSession(WeaselSessionId ipc_id) {
-  if (m_ui)
-    m_ui->Hide();
   if (m_disabled)
     return 0;
+
   DLOG(INFO) << "Remove session: session_id = " << to_session_id(ipc_id);
+
+  // Ending a background or stale session must not hide the candidate UI or
+  // clear the routing identity of another session that is still active.
+  if (m_active_session == ipc_id) {
+    if (m_ui)
+      m_ui->Hide();
+    m_active_session = 0;
+  }
+
   // TODO: force committing? otherwise current composition would be lost
   rime_api->destroy_session(to_session_id(ipc_id));
   m_session_status_map.erase(ipc_id);
-  m_active_session = 0;
   return 0;
 }
 

@@ -48,6 +48,22 @@ class MaintenanceReleaser {
   bool active_;
 };
 
+static bool NamedMutexPresent(const std::wstring& name) {
+  HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, name.c_str());
+  if (mutex) {
+    CloseHandle(mutex);
+    return true;
+  }
+  return GetLastError() == ERROR_ACCESS_DENIED;
+}
+
+static bool ServerSingletonPresent() {
+  const std::wstring current = weasel::GetServerInstanceName();
+  const std::wstring legacy = weasel::GetLegacyServerInstanceName();
+  return NamedMutexPresent(current) ||
+         (legacy != current && NamedMutexPresent(legacy));
+}
+
 // Enter maintenance only when a server is already present. A failed
 // acknowledgement is ambiguous because the request may have reached the server
 // and only the response may have been lost, so send one best-effort resume
@@ -55,8 +71,17 @@ class MaintenanceReleaser {
 static bool BeginMaintenanceIfConnected(weasel::Client& client,
                                         bool& maintenance_started) {
   maintenance_started = false;
-  if (!client.Connect())
+  if (!client.Connect()) {
+    // A starting/stopping or wedged server still owns its singleton even when
+    // the pipe is temporarily unavailable. Never run local librime maintenance
+    // beside that process; only a truly absent server permits local-only work.
+    if (ServerSingletonPresent()) {
+      LOG(WARNING) << "WeaselServer exists but IPC is unavailable; aborting "
+                      "maintenance operation.";
+      return false;
+    }
     return true;
+  }
 
   LOG(INFO) << "Turning WeaselServer into maintenance mode.";
   if (client.StartMaintenance()) {
@@ -175,14 +200,10 @@ int Configurator::Run(bool installing) {
 }
 
 int Configurator::UpdateWorkspace(bool report_errors) {
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
-  if (!hMutex) {
-    LOG(ERROR) << "Error creating WeaselDeployerMutex.";
-    return 1;
-  }
-  if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    LOG(WARNING) << "another deployer process is running; aborting operation.";
-    CloseHandle(hMutex);
+  weasel::ServerLifecycleLock lifecycle_lock;
+  if (!lifecycle_lock.Acquire(0)) {
+    LOG(WARNING) << "another server lifecycle operation is running; aborting "
+                    "deployment operation.";
     if (report_errors) {
       // MessageBox(NULL,
       // L"正在執行另一項部署任務，方纔所做的修改將在輸入法再次啓動後生效。",
@@ -196,7 +217,6 @@ int Configurator::UpdateWorkspace(bool report_errors) {
   weasel::Client client;
   bool maintenance_started = false;
   if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
-    CloseHandle(hMutex);
     return 1;
   }
 
@@ -214,23 +234,18 @@ int Configurator::UpdateWorkspace(bool report_errors) {
       LOG(ERROR) << "Error deploying weasel.yaml.";
       retval = 1;
     }
-    // Even on failure, wait for any maintenance work spawned by the successful
-    // portions above before releasing the mutex and resuming WeaselServer.
+    // Even on failure, wait for maintenance work before the scoped releaser
+    // resumes WeaselServer while lifecycle ownership is still held.
     rime->join_maintenance_thread();
-    CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return retval;
 }
 
 int Configurator::DictManagement() {
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
-  if (!hMutex) {
-    LOG(ERROR) << "Error creating WeaselDeployerMutex.";
-    return 1;
-  }
-  if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    LOG(WARNING) << "another deployer process is running; aborting operation.";
-    CloseHandle(hMutex);
+  weasel::ServerLifecycleLock lifecycle_lock;
+  if (!lifecycle_lock.Acquire(0)) {
+    LOG(WARNING) << "another server lifecycle operation is running; aborting "
+                    "deployment operation.";
     // MessageBox(NULL, L"正在執行另一項部署任務，請稍候再試。", L"【小狼毫】",
     // MB_OK | MB_ICONINFORMATION);
     MSG_BY_IDS(IDS_STR_DEPLOYING_WAIT, IDS_STR_WEASEL,
@@ -241,7 +256,6 @@ int Configurator::DictManagement() {
   weasel::Client client;
   bool maintenance_started = false;
   if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
-    CloseHandle(hMutex);
     return 1;
   }
 
@@ -254,20 +268,15 @@ int Configurator::DictManagement() {
     DictManagementDialog dlg;
     dlg.DoModal();
     rime->join_maintenance_thread();
-    CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return 0;
 }
 
 int Configurator::SyncUserData() {
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
-  if (!hMutex) {
-    LOG(ERROR) << "Error creating WeaselDeployerMutex.";
-    return 1;
-  }
-  if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    LOG(WARNING) << "another deployer process is running; aborting operation.";
-    CloseHandle(hMutex);
+  weasel::ServerLifecycleLock lifecycle_lock;
+  if (!lifecycle_lock.Acquire(0)) {
+    LOG(WARNING) << "another server lifecycle operation is running; aborting "
+                    "deployment operation.";
     // MessageBox(NULL, L"正在執行另一項部署任務，請稍候再試。", L"【小狼毫】",
     // MB_OK | MB_ICONINFORMATION);
     MSG_BY_IDS(IDS_STR_DEPLOYING_WAIT, IDS_STR_WEASEL,
@@ -278,24 +287,22 @@ int Configurator::SyncUserData() {
   weasel::Client client;
   bool maintenance_started = false;
   if (!BeginMaintenanceIfConnected(client, maintenance_started)) {
-    CloseHandle(hMutex);
     return 1;
   }
 
   int retval = 0;
   {
-    // 失败或异常退出本作用域时同样恢复服务端；
-    // EndMaintenance 由析构执行，保持在 CloseHandle
-    // 之后（先释放部署互斥再唤醒服务）
+    // 失败或异常退出本作用域时同样恢复服务端；EndMaintenance 由析构执行，
+    // lifecycle_lock stays owned until that resume completes.
     MaintenanceReleaser releaser(client, maintenance_started);
     RimeApi* rime = rime_get_api();
     if (!rime->sync_user_data()) {
       LOG(ERROR) << "Error synching user data.";
       retval = 1;
     }
-    // 无论同步成败，等待可能仍在运行的维护任务结束后再唤醒服务
+    // 无论同步成败，等待可能仍在运行的维护任务结束后再唤醒服务；
+    // lifecycle ownership remains held through EndMaintenance.
     rime->join_maintenance_thread();
-    CloseHandle(hMutex);  // should be closed before resuming service.
   }
   return retval;
 }

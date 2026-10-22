@@ -15,6 +15,10 @@ class ServerImplTestAccess {
 
   static void StopPipeServer(ServerImpl& server) { server._StopPipeServer(); }
 
+  static void SetRuntimeState(ServerImpl& server, ServerRuntimeState* state) {
+    server.m_runtimeState = state;
+  }
+
   template <typename Resp>
   static void HandlePipeMessage(ServerImpl& server,
                                 PipeMessage message,

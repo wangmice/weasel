@@ -1,7 +1,8 @@
 param(
   [string]$DllMainPath = (Join-Path $PSScriptRoot '..\WeaselTSF\dllmain.cpp'),
   [string]$ClientPath = (Join-Path $PSScriptRoot '..\WeaselIPC\WeaselClientImpl.cpp'),
-  [string]$CompositionPath = (Join-Path $PSScriptRoot '..\WeaselTSF\Composition.cpp')
+  [string]$CompositionPath = (Join-Path $PSScriptRoot '..\WeaselTSF\Composition.cpp'),
+  [string]$KeyEventSinkPath = (Join-Path $PSScriptRoot '..\WeaselTSF\KeyEventSink.cpp')
 )
 
 $dllMainSource = Get-Content -LiteralPath $DllMainPath -Raw
@@ -27,6 +28,21 @@ $directCommitPattern = [regex]::Escape('return pInsertAtSelection->InsertTextAtS
   '\s*ec,\s*0,\s*text\.c_str\(\),\s*static_cast<LONG>\(text\.length\(\)\),\s*&pRange\);'
 if ($compositionSource -notmatch $directCommitPattern) {
   throw 'TSF host-safety regression: direct commits without an active composition must allow TSF default composition'
+}
+
+$keyEventSinkSource = Get-Content -LiteralPath $KeyEventSinkPath -Raw
+if ($keyEventSinkSource -notmatch 'const\s+bool\s+suppress_simulated_caps\s*=[\s\S]*?_keyCountToSimulate\s*>\s*0[\s\S]*?ke\.keycode\s*==\s*ibus::Caps_Lock[\s\S]*?if\s*\(_keyCountToSimulate\s*&&\s*!suppress_simulated_caps\)[\s\S]*?_keyCountToSimulate\s*=\s*0') {
+  throw 'TSF host-safety regression: stale CapsLock simulation must self-clear before a real non-CapsLock key'
+}
+if ($keyEventSinkSource -notmatch 'const\s+bool\s+suppress_simulated_caps\s*=[\s\S]*?_keyCountToSimulate\s*>\s*0[\s\S]*?ke\.keycode\s*==\s*ibus::Caps_Lock') {
+  throw 'TSF host-safety regression: CapsLock suppression must snapshot pre-existing simulation state'
+}
+if ($keyEventSinkSource -notmatch '_keyCountToSimulate\s*=\s*static_cast<int>\([\s\S]*?SendInput' -or
+    $keyEventSinkSource -notmatch 'if\s*\(suppress_simulated_caps\s*&&\s*_keyCountToSimulate\)[\s\S]*?_keyCountToSimulate--') {
+  throw 'TSF host-safety regression: only pre-existing synthetic CapsLock callbacks may consume the injected-event budget'
+}
+if ($keyEventSinkSource -notmatch 'OnSetFocus\(BOOL\s+fForeground\)[\s\S]*?_keyCountToSimulate\s*=\s*0') {
+  throw 'TSF host-safety regression: focus changes must clear stale CapsLock simulation state'
 }
 
 Write-Host 'TSF host-safety policy: PASS'

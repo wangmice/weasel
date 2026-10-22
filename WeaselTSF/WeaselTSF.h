@@ -221,6 +221,15 @@ class WeaselTSF : public ITfTextInputProcessorEx,
  private:
   friend class WeaselTSFTestAccess;
 
+  // A healthy physical key should never let a wedged server pin the host
+  // callback for the pipe's one-second default. This only changes the wait
+  // bound; the successful hot path performs the same single IPC transaction.
+  static constexpr DWORD kKeyEventTransactionTimeoutMs = 100;
+
+  // Only failure-path recovery uses this budget; the active-session hot path
+  // returns before touching recovery state.
+  static constexpr DWORD kFastSessionRecoveryBudgetMs = 20;
+
   /* ui callback functions private */
   void _SelectCandidateOnCurrentPage(const size_t index);
   void _HandleMouseHoverEvent(const size_t index);
@@ -235,10 +244,20 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   BOOL _InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr);
 
+  enum class KeyDispatchResult {
+    Handled,
+    Unhandled,
+    // The server may already have processed the physical key. Do not replay it
+    // and do not let the host process the same key a second time.
+    AmbiguousConsumed,
+  };
+
   BOOL _InitKeyEventSink();
   void _UninitKeyEventSink();
   void _ProcessKeyEvent(WPARAM wParam, LPARAM lParam, BOOL* pfEaten);
-  bool _ProcessKeyEventWithRecovery(const weasel::KeyEvent& keyEvent);
+  KeyDispatchResult _ProcessKeyEventWithRecovery(
+      const weasel::KeyEvent& keyEvent,
+      ULONGLONG recovery_deadline = 0);
 
   BOOL _InitPreservedKey();
   void _UninitPreservedKey();
@@ -270,6 +289,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _RetargetKeyboardDisabledSinks(com_ptr<ITfContext> pContext);
 
   void _Reconnect();
+  bool _EnsureServerConnectedUntil(ULONGLONG recovery_deadline);
+  void _ScheduleServerRecovery() noexcept;
   std::wstring _GetRootDir();
   // consecutive failed reconnect attempts (per instance, was a shared
   // file-static raced across threads and TIP instances)

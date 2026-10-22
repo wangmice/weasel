@@ -132,6 +132,12 @@ void ClientImpl::ShutdownServer() {
 }
 
 KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
+  return ProcessKeyEventEx(keyEvent,
+                           PipeChannelBase::kDefaultTransactionTimeoutMs);
+}
+
+KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent,
+                                             DWORD timeout_ms) {
   const UINT request_session = _SessionId();
   if (!_Connected() || request_session == 0)
     return KeyEventResult::TransportNotDelivered;
@@ -140,7 +146,7 @@ KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
   LRESULT ret = 0;
   try {
     PipeMessage req{WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, request_session};
-    ret = channel.Transact(req);
+    ret = channel.Transact(req, timeout_ms);
   } catch (const PipeTransactionError& error) {
     _ClearSessionIdIf(request_session);
     return error.request_may_have_been_delivered
@@ -352,6 +358,23 @@ bool ClientImpl::Echo() {
       expected_session, _SessionId(), server_echo);
 }
 
+bool ClientImpl::ProbeServer(DWORD timeout_ms) {
+  if (!_Connected() || !timeout_ms)
+    return false;
+
+  try {
+    // Session id 0 is intentionally invalid. Liveness is established by the
+    // bounded request/response completing, not by the ECHO return value. This
+    // probes the pipe dispatcher without creating, destroying, or activating a
+    // Rime session.
+    PipeMessage req{WEASEL_IPC_ECHO, 0, 0};
+    channel.Transact(req, timeout_ms);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool ClientImpl::GetResponseData(ResponseHandler const& handler) {
   if (!handler) {
     return false;
@@ -484,6 +507,11 @@ KeyEventResult Client::ProcessKeyEventEx(KeyEvent const& keyEvent) {
   return m_pImpl->ProcessKeyEventEx(keyEvent);
 }
 
+KeyEventResult Client::ProcessKeyEventEx(KeyEvent const& keyEvent,
+                                         DWORD timeout_ms) {
+  return m_pImpl->ProcessKeyEventEx(keyEvent, timeout_ms);
+}
+
 bool Client::CommitComposition() {
   return m_pImpl->CommitComposition();
 }
@@ -542,6 +570,10 @@ void Client::TrayCommand(UINT menuId) {
 
 bool Client::Echo() {
   return m_pImpl->Echo();
+}
+
+bool Client::ProbeServer(DWORD timeout_ms) {
+  return m_pImpl->ProbeServer(timeout_ms);
 }
 
 bool Client::IsSessionActive() {
