@@ -206,10 +206,6 @@ if ($installer -notmatch 'ExecWait\s+''"\$INSTDIR\\WeaselSetup\.exe" /u''\s+\$R0
   throw 'NSIS uninstaller must stop when WeaselSetup /u reports failure'
 }
 
-Write-Host 'Remaining runtime hardening policy: PASS'
-
-
-
 # Diagnostic breadcrumbs must expose why server wake-up was rejected or
 # launch failed; no runtime key data or installation path is written.
 if ($tsf -notmatch 'tsf\.recovery-lock' -or
@@ -222,3 +218,5 @@ if ($tsf -notmatch 'tsf\.recovery-lock' -or
     $tsf -notmatch 'tsf\.recovery-worker-run') {
   throw 'TSF background wakeup must emit diagnostics at every launch barrier'
 }
+
+Write-Host 'Remaining runtime hardening policy: PASS'
