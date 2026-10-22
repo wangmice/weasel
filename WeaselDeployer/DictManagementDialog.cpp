@@ -74,8 +74,22 @@ DictManagementDialog::DictManagementDialog() {
 
 DictManagementDialog::~DictManagementDialog() {}
 
+static bool ArmDictionaryEnumerationWatchdog(
+    RimeOperationWatchdog& watchdog) noexcept {
+  if (watchdog.Arm())
+    return true;
+  LOG(ERROR) << "Could not arm dictionary enumeration watchdog.";
+  MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+  return false;
+}
+
 void DictManagementDialog::Populate() {
   user_dict_list_.ResetContent();
+
+  RimeOperationWatchdog operation_watchdog;
+  if (!ArmDictionaryEnumerationWatchdog(operation_watchdog))
+    return;
+
   RimeUserDictIterator iter = {0};
   api_->user_dict_iterator_init(&iter);
   while (const char* dict = api_->next_user_dict(&iter)) {
@@ -83,6 +97,8 @@ void DictManagementDialog::Populate() {
     user_dict_list_.AddString(txt.c_str());
   }
   api_->user_dict_iterator_destroy(&iter);
+  operation_watchdog.Disarm();
+
   user_dict_list_.SetCurSel(-1);
   // 程序化 SetCurSel(-1) 不触发 LBN_SELCHANGE，须手动复位按钮状态
   backup_.EnableWindow(FALSE);
@@ -153,7 +169,12 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
   path += std::wstring(L"\\") + dict_name + L".userdb.txt";
   std::string dict_name_str = wtou8(dict_name);
-  if (!api_->backup_user_dict(dict_name_str.c_str())) {
+
+  // Backup can rewrite userdb metadata when the stored user id changes. Do
+  // not hard-kill a mutating userdb operation mid-write.
+  const bool backup_ok = api_->backup_user_dict(dict_name_str.c_str());
+
+  if (!backup_ok) {
     MSG_BY_IDS(IDS_STR_ERR_EXPORT_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     return 0;
   } else if (_waccess(path.c_str(), 0) != 0) {
@@ -186,7 +207,12 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, NULL, L"snapshot");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
-    if (!api_->restore_user_dict(path.c_str())) {
+    // Restore merges entries incrementally into the destination userdb.
+    // Forced process termination here could leave only part of the snapshot
+    // applied, so let the operation complete or fail naturally.
+    const bool restore_ok = api_->restore_user_dict(path.c_str());
+
+    if (!restore_ok) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
       Populate();  // 词典内容已变，重载列表反映恢复结果
@@ -227,7 +253,10 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
     std::string dict_name_str = wtou8(dict_name);
+    // librime writes export output directly to the selected path. Do not
+    // hard-kill the process while that file may be only partially rewritten.
     int result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
+
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else if (_waccess(selected_path.c_str(), 0) != 0) {
@@ -272,7 +301,10 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, open_str, ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
   if (!selected_path.empty()) {
     const std::string path = wtou8(selected_path);
+    // Import is also an incremental userdb mutation; never attach the
+    // process-killing watchdog to this call.
     int result = api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
+
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {

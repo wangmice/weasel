@@ -162,6 +162,23 @@ static void test_server_recovery_coordinator_state_machine() {
   }
 }
 
+static void test_server_lifecycle_tick_deadline() {
+  constexpr DWORD kThresholdMs = 1000;
+  const UINT32 normal = weasel::EncodeServerLifecycleTick(1000);
+  check(!weasel::ServerLifecycleElapsedAtLeast(normal, 1999, kThresholdMs) &&
+            weasel::ServerLifecycleElapsedAtLeast(normal, 2000, kThresholdMs),
+        "lifecycle hard deadline fires exactly at the monotonic threshold");
+
+  const UINT32 wrapped =
+      weasel::EncodeServerLifecycleTick(weasel::kServerLifecycleTickMask - 15);
+  check(!weasel::ServerLifecycleElapsedAtLeast(wrapped, 3, 20) &&
+            weasel::ServerLifecycleElapsedAtLeast(wrapped, 4, 20),
+        "lifecycle deadline arithmetic survives the 31-bit tick wrap");
+
+  check(!weasel::ServerLifecycleElapsedAtLeast(0, 5000, 1),
+        "legacy runtime states without the tick marker never hard-timeout");
+}
+
 static void test_session_id_allocator_survives_maintenance_clear() {
   DWORD next_id = 0x1000;
   std::set<DWORD> active;
@@ -678,6 +695,7 @@ int main() {
     return 1;
   g_hInst = GetModuleHandle(nullptr);
   test_server_recovery_coordinator_state_machine();
+  test_server_lifecycle_tick_deadline();
   test_session_id_allocator_survives_maintenance_clear();
   test_pending_ui_generation_rejects_stale_extent();
   test_server_runtime_state_tracks_maintenance();

@@ -81,8 +81,10 @@ Assert-Policy ($setup.Contains('auto rollback_modify_state = [&]()')) `
   'modify install must define one rollback path for registry/profile state'
 Assert-Policy ($setup.Contains('if (!RestartServer(dir))')) `
   'modify install must distinguish server restart failure from deployment failure'
-Assert-Policy ($setup.Contains('if (!RunDeployer(dir))')) `
-  'modify install must treat deployer failure as a transactional failure'
+Assert-Policy ($setup.Contains('const DeployerRunResult deploy_result = RunDeployer(dir);')) `
+  'modify install must classify deployer completion before transactional recovery'
+Assert-Policy ($setup.Contains('DeployerRunResult::FailedStillRunning')) `
+  'modify install must distinguish a live failed deployer from a confirmed stop'
 Assert-Policy ([regex]::Matches($setup, 'rollback_modify_state\(\);').Count -ge 2) `
   'both restart and deployment failure paths must roll back modify-install state'
 Assert-Policy ($setup.Contains('(void)RestartServer(dir);')) `

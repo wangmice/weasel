@@ -118,7 +118,9 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   void _OnClientProcessExit(ClientProcessToken token);
   // Caller must hold g_api_mutex for commands that change handler options.
   LRESULT _HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled);
-  /* Interrupt and join the pipe listener and its workers; idempotent */
+  /* Bound the complete asynchronous runtime teardown with one hard watchdog. */
+  void _StopRuntime();
+  /* Interrupt and join the pipe listener and its workers; idempotent. */
   void _StopPipeServer();
   int _RequestStopUnderApiLock() noexcept;
   void _SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept;
@@ -146,6 +148,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   std::optional<ClientProcessToken> m_maintenanceOwner;
   RequestHandler* m_pRequestHandler;  // points at session_router while active
   ServerLifecycleLock m_startupLifecycleLock;
+  HANDLE m_singletonMutex;
   HANDLE m_runtimeStateMapping;
   ServerRuntimeState* m_runtimeState;
   std::map<UINT, CommandHandler> m_MenuHandlers;
@@ -156,6 +159,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   PPhysicalToLogicalPointForPerMonitorDPI
       m_pPhysicalToLogicalPointForPerMonitorDPI;
   BOOL m_darkMode;
+  bool m_runtimeStopped = false;
 };
 
 }  // namespace weasel

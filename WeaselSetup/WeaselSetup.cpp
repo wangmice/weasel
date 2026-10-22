@@ -73,7 +73,20 @@ static std::wstring install_dir() {
 }
 
 namespace {
-constexpr DWORD kServerTransitionTimeoutMs = 30000;
+// The server's own shutdown watchdog fires at 20s and WeaselServer /q waits
+// up to 30s for the old process. Setup is the outer supervisor, so it needs
+// additional grace to observe /q completion rather than racing the same
+// deadline.
+constexpr DWORD kServerTransitionTimeoutMs = 45000;
+constexpr DWORD kDeployerOperationTimeoutMs = 15 * 60 * 1000 + 10 * 1000;
+constexpr DWORD kDeployerTerminationWaitMs = 5000;
+constexpr DWORD kElevationCommandTimeoutMs = 60 * 60 * 1000;
+
+enum class DeployerRunResult {
+  Success,
+  FailedStopped,
+  FailedStillRunning,
+};
 
 bool RunProcessAndWait(const std::wstring& executable,
                        const std::wstring& parameters,
@@ -179,12 +192,66 @@ bool RestartServer(const std::wstring& dir) {
   return server_ready;
 }
 
-bool RunDeployer(const std::wstring& dir) {
+DeployerRunResult RunDeployer(const std::wstring& dir) {
   const std::wstring deployer = dir + L"\\WeaselDeployer.exe";
-  DWORD deploy_exit_code = 0;
-  return RunProcessAndWait(deployer, L"/deploy", INFINITE, deploy_exit_code,
-                           SW_HIDE) &&
-         deploy_exit_code == 0;
+  std::wstring command_line = L"\"" + deployer + L"\" /deploy";
+  std::vector<wchar_t> mutable_command(command_line.begin(),
+                                       command_line.end());
+  mutable_command.push_back(L'\0');
+
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process_info{};
+  if (!CreateProcessW(deployer.c_str(), mutable_command.data(), nullptr,
+                      nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
+                      &startup, &process_info)) {
+    LOG(ERROR) << "Could not launch WeaselDeployer, error: " << GetLastError();
+    return DeployerRunResult::FailedStopped;
+  }
+
+  CloseHandle(process_info.hThread);
+  HANDLE process = process_info.hProcess;
+
+  const DWORD wait_result =
+      WaitForSingleObject(process, kDeployerOperationTimeoutMs);
+  if (wait_result == WAIT_OBJECT_0) {
+    DWORD exit_code = ERROR_GEN_FAILURE;
+    const bool got_exit_code = GetExitCodeProcess(process, &exit_code) != FALSE;
+    CloseHandle(process);
+    if (!got_exit_code) {
+      LOG(ERROR) << "Could not read WeaselDeployer exit code.";
+      return DeployerRunResult::FailedStopped;
+    }
+    return exit_code == 0 ? DeployerRunResult::Success
+                          : DeployerRunResult::FailedStopped;
+  }
+
+  if (wait_result == WAIT_TIMEOUT) {
+    LOG(ERROR) << "WeaselDeployer exceeded the deployment timeout.";
+  } else {
+    const DWORD wait_error = GetLastError();
+    LOG(ERROR) << "Waiting for WeaselDeployer failed, error: " << wait_error;
+  }
+
+  // Deployment mutates Rime data while owning server maintenance. Never roll
+  // back registry/profile state or restart the server until the deployer is
+  // confirmed dead. If termination cannot be confirmed, fail closed and leave
+  // the existing maintenance owner in charge of recovery.
+  if (!TerminateProcess(process, ERROR_TIMEOUT)) {
+    LOG(ERROR) << "Could not terminate failed WeaselDeployer, error: "
+               << GetLastError();
+  }
+
+  const DWORD stopped =
+      WaitForSingleObject(process, kDeployerTerminationWaitMs);
+  CloseHandle(process);
+  if (stopped != WAIT_OBJECT_0) {
+    LOG(ERROR) << "WeaselDeployer is still running after termination request; "
+                  "skipping rollback and server restart.";
+    return DeployerRunResult::FailedStillRunning;
+  }
+
+  return DeployerRunResult::FailedStopped;
 }
 }  // namespace
 
@@ -317,11 +384,18 @@ static int CustomInstall(bool installing) {
     (void)rollback_modify_state();
     return 1;
   }
-  if (!RunDeployer(dir)) {
+  const DeployerRunResult deploy_result = RunDeployer(dir);
+  if (deploy_result != DeployerRunResult::Success) {
+    if (deploy_result == DeployerRunResult::FailedStillRunning) {
+      // A live deployer may still own maintenance and mutate Rime data. Do not
+      // restore registry/profile state or restart WeaselServer underneath it.
+      return 1;
+    }
+
     (void)rollback_modify_state();
-    // The server was started after the tentative registry/profile update. Once
-    // those values are restored, restart it again so its process-local paths
-    // and Rime state no longer reference the failed modification.
+    // The deployer is confirmed stopped. Restore the previous registry/profile
+    // state, then restart the server so its process-local paths and Rime state
+    // no longer reference the failed modification.
     (void)RestartServer(dir);
     return 1;
   }
@@ -476,6 +550,8 @@ bool IsProcAdmin() {
 }
 
 int RestartAsAdmin(LPTSTR lpCmdLine) {
+  const bool interactive_launch = !lpCmdLine || !*lpCmdLine;
+
   SHELLEXECUTEINFO execInfo{0};
   TCHAR path[MAX_PATH];
   GetModuleFileName(GetModuleHandle(NULL), path, _countof(path));
@@ -488,12 +564,39 @@ int RestartAsAdmin(LPTSTR lpCmdLine) {
   execInfo.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
   execInfo.hwnd = NULL;
   execInfo.hProcess = NULL;
-  if (::ShellExecuteEx(&execInfo) && execInfo.hProcess != NULL) {
-    ::WaitForSingleObject(execInfo.hProcess, INFINITE);
-    DWORD dwExitCode = 0;
-    ::GetExitCodeProcess(execInfo.hProcess, &dwExitCode);
+  if (!::ShellExecuteEx(&execInfo) || execInfo.hProcess == NULL)
+    return -1;
+
+  if (interactive_launch) {
+    // The unelevated launcher has no work to perform after UAC succeeds.
+    // Leaving immediately avoids pinning a parent process while the user keeps
+    // the elevated configuration dialog open.
     ::CloseHandle(execInfo.hProcess);
-    return dwExitCode;
+    return 0;
   }
-  return -1;
+
+  const DWORD wait_result =
+      ::WaitForSingleObject(execInfo.hProcess, kElevationCommandTimeoutMs);
+  if (wait_result == WAIT_OBJECT_0) {
+    DWORD exit_code = ERROR_GEN_FAILURE;
+    const bool got_exit_code =
+        ::GetExitCodeProcess(execInfo.hProcess, &exit_code) != FALSE;
+    ::CloseHandle(execInfo.hProcess);
+    return got_exit_code ? static_cast<int>(exit_code) : -1;
+  }
+
+  if (wait_result == WAIT_TIMEOUT) {
+    LOG(ERROR) << "Elevated WeaselSetup exceeded the command timeout.";
+    ::CloseHandle(execInfo.hProcess);
+    // Do not terminate an elevated install/uninstall transaction from the
+    // unelevated launcher. Report timeout while allowing the child to finish
+    // or recover according to its own transactional/runtime safeguards.
+    return ERROR_TIMEOUT;
+  }
+
+  const DWORD wait_error = GetLastError();
+  LOG(ERROR) << "Waiting for elevated WeaselSetup failed, error: "
+             << wait_error;
+  ::CloseHandle(execInfo.hProcess);
+  return wait_error ? static_cast<int>(wait_error) : -1;
 }

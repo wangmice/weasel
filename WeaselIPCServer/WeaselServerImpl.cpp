@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include "WeaselServerImpl.h"
 #include <PipeServer.h>
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 #include <Windows.h>
@@ -24,6 +25,88 @@ static constexpr boost::chrono::milliseconds kListenRetryBackoff{50};
 
 static constexpr DWORD kPrimaryPipeReadyTimeoutMs = 2000;
 static constexpr DWORD kServerStartupLifecycleWaitMs = 2000;
+// Keep the in-process hard stop comfortably inside the /q supervisor's
+// 30-second process-exit wait so the supervisor has time to observe the
+// forced exit and complete normally.
+static constexpr DWORD kServerShutdownHardTimeoutMs = 20 * 1000;
+
+DWORD WINAPI ServerShutdownWatchdogProc(LPVOID param) noexcept {
+  HANDLE cancel_event = static_cast<HANDLE>(param);
+  const DWORD wait_result =
+      WaitForSingleObject(cancel_event, kServerShutdownHardTimeoutMs);
+  CloseHandle(cancel_event);
+
+  if (wait_result != WAIT_OBJECT_0) {
+    // Request handlers may be blocked inside librime or another synchronous
+    // business operation that cannot be safely cancelled at thread scope.
+    // Once graceful pipe shutdown exceeds the hard deadline, process exit is
+    // the only safe ownership boundary; TSF recovery can then start a clean
+    // server generation without leaving detached workers behind.
+    TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+  }
+  return 0;
+}
+
+class ServerShutdownWatchdog {
+ public:
+  ServerShutdownWatchdog() noexcept = default;
+  ServerShutdownWatchdog(const ServerShutdownWatchdog&) = delete;
+  ServerShutdownWatchdog& operator=(const ServerShutdownWatchdog&) = delete;
+  ~ServerShutdownWatchdog() { Disarm(); }
+
+  bool Arm() noexcept {
+    if (cancel_event_)
+      return true;
+
+    HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!cancel_event)
+      return false;
+
+    HANDLE watchdog_event = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), cancel_event, GetCurrentProcess(),
+                         &watchdog_event, SYNCHRONIZE, FALSE, 0)) {
+      CloseHandle(cancel_event);
+      return false;
+    }
+
+    HANDLE thread = CreateThread(nullptr, 0, ServerShutdownWatchdogProc,
+                                 watchdog_event, 0, nullptr);
+    if (!thread) {
+      CloseHandle(watchdog_event);
+      CloseHandle(cancel_event);
+      return false;
+    }
+
+    CloseHandle(thread);
+    cancel_event_ = cancel_event;
+    return true;
+  }
+
+  void Disarm() noexcept {
+    if (!cancel_event_)
+      return;
+    SetEvent(cancel_event_);
+    CloseHandle(cancel_event_);
+    cancel_event_ = nullptr;
+  }
+
+ private:
+  HANDLE cancel_event_ = nullptr;
+};
+
+class SynchronousPipeIoScope {
+ public:
+  explicit SynchronousPipeIoScope(std::atomic_bool& pending)
+      : pending_(pending) {
+    pending_.store(true, std::memory_order_release);
+  }
+  ~SynchronousPipeIoScope() {
+    pending_.store(false, std::memory_order_release);
+  }
+
+ private:
+  std::atomic_bool& pending_;
+};
 
 bool WaitForPrimaryPipeReady() noexcept {
   const std::wstring pipe_name = GetPipeName();
@@ -52,6 +135,7 @@ ServerImpl::ServerImpl()
       process_tracker(
           [this](ClientProcessToken token) { _OnClientProcessExit(token); }),
       m_pRequestHandler(NULL),
+      m_singletonMutex(NULL),
       m_runtimeStateMapping(NULL),
       m_runtimeState(nullptr),
       m_darkMode(IsUserDarkMode()) {
@@ -69,8 +153,7 @@ ServerImpl::~ServerImpl() {
 void ServerImpl::_Finailize() {
   _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   m_startupLifecycleLock.Release();
-  _StopPipeServer();
-  process_tracker.Stop();
+  _StopRuntime();
 
   if (IsWindow())
     DestroyWindow();
@@ -82,11 +165,23 @@ void ServerImpl::_Finailize() {
     CloseHandle(m_runtimeStateMapping);
     m_runtimeStateMapping = NULL;
   }
+  // Keep the named singleton mutex alive until all server-owned resources have
+  // finished teardown. Closing it earlier would allow a second generation to
+  // start while this one is still draining workers or destroying its window.
+  if (m_singletonMutex) {
+    CloseHandle(m_singletonMutex);
+    m_singletonMutex = NULL;
+  }
 }
 
 void ServerImpl::_SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept {
   if (!m_runtimeState)
     return;
+
+  // Publish the monotonic start tick before the lifecycle value. A reader that
+  // observes the new lifecycle can therefore never pair it with an older
+  // timestamp and prematurely classify the state as wedged.
+  m_runtimeState->reserved = EncodeServerLifecycleTick(GetTickCount());
   InterlockedExchange(&m_runtimeState->lifecycle, static_cast<LONG>(lifecycle));
 }
 
@@ -103,6 +198,11 @@ bool ServerImpl::_TryTransitionRuntimeLifecycle(
     ServerLifecycle desired) noexcept {
   if (!m_runtimeState)
     return false;
+
+  // Stamping before the compare-exchange is conservative: a failed transition
+  // can only make recovery wait longer for the still-current state, never make
+  // it look older than it really is.
+  m_runtimeState->reserved = EncodeServerLifecycleTick(GetTickCount());
   return InterlockedCompareExchange(
              &m_runtimeState->lifecycle, static_cast<LONG>(desired),
              static_cast<LONG>(expected)) == static_cast<LONG>(expected);
@@ -294,9 +394,17 @@ LRESULT ServerImpl::OnServiceNotifyMessage(UINT uMsg,
 DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
                             DWORD wParam,
                             DWORD lParam) {
+  const UINT command = LOWORD(wParam);
+  // Run() already holds g_api_mutex for every pipe command. The quit menu
+  // handler calls Stop(), which would try to acquire the same non-recursive
+  // mutex again on this worker thread. Use the lock-held stop helper directly.
+  if (command == ID_WEASELTRAY_QUIT) {
+    _RequestStopUnderApiLock();
+    return 1;
+  }
+
   BOOL handled = TRUE;
-  // Run() already holds g_api_mutex for every pipe command.
-  _HandleCommand(LOWORD(wParam), lParam, handled);
+  _HandleCommand(command, lParam, handled);
   return handled;
 }
 
@@ -351,7 +459,12 @@ HWND ServerImpl::Start() {
     m_runtimeStateMapping = NULL;
     m_startupLifecycleLock.Release();
     CloseHandle(hMutexOneInstance);
+    return 0;
   }
+
+  // This handle is intentionally process-lifetime state: it keeps the named
+  // mutex object present for as long as this server generation is alive.
+  m_singletonMutex = hMutexOneInstance;
   return hwnd;
 }
 
@@ -445,6 +558,14 @@ int ServerImpl::Run() {
         session_router.ClearCurrentOwner();
       m_dispatchProcessOwner.reset();
     }
+
+    if (starting && lifecycle_admitted) {
+      // Lifecycle ownership only linearizes START_SESSION admission and the
+      // committed session state under g_api_mutex. The synchronous response
+      // write is transport work and may block on a client that is not reading;
+      // never extend the cross-process lifecycle critical section across it.
+      session_lifecycle.Unlock();
+    }
     resp(result);
   };
   // Capture the listener by value: a stack reference would dangle as soon
@@ -461,13 +582,13 @@ int ServerImpl::Run() {
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     // Startup lifecycle ownership stays held through WeaselServerApp cleanup;
     // ServerImpl destruction releases it after Rime/UI teardown.
-    _StopPipeServer();
+    _StopRuntime();
     return -1;
   }
 
   if (!_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,
                                       ServerLifecycle::Ready)) {
-    _StopPipeServer();
+    _StopRuntime();
     return -1;
   }
   _UnlockStartupLifecycleLock();
@@ -482,18 +603,38 @@ int ServerImpl::Run() {
     std::lock_guard guard(g_api_mutex);
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   }
-  // Stop the pipe server before the caller (WeaselServerApp::Run) starts
-  // destroying the handler and UI: late requests would touch freed objects.
-  _StopPipeServer();
-  // Process-exit waits are another asynchronous source that can touch the
-  // handler. Drain them at the same lifetime boundary before returning.
-  process_tracker.Stop();
+  // Drain every asynchronous source that can still touch the handler before
+  // WeaselServerApp starts destroying Rime/UI state. One hard deadline covers
+  // both pipe workers and process-exit callbacks.
+  _StopRuntime();
   return nRet;
+}
+
+void ServerImpl::_StopRuntime() {
+  if (m_runtimeStopped)
+    return;
+
+  ServerShutdownWatchdog shutdown_watchdog;
+  if (!shutdown_watchdog.Arm()) {
+    // Teardown below contains blocking joins. Continuing without the hard
+    // watchdog would restore the unbounded-shutdown failure mode precisely
+    // when the process is resource-starved. We are already committed to
+    // Stopping, so fail closed at the process ownership boundary instead.
+    LOG(ERROR) << "Could not arm server shutdown watchdog; terminating "
+                  "WeaselServer instead of entering unbounded teardown.";
+    TerminateProcess(GetCurrentProcess(), ERROR_GEN_FAILURE);
+    std::abort();
+  }
+
+  _StopPipeServer();
+  process_tracker.Stop();
+  m_runtimeStopped = true;
 }
 
 void ServerImpl::_StopPipeServer() {
   if (!pipeThread)
     return;
+
   channel->StopListener(*pipeThread);
   channel->DrainWorkers();
   pipeThread.reset();
@@ -894,8 +1035,18 @@ void PipeServer::DrainWorkers() {
     for (auto& pair : m_workers) {
       auto& entry = pair.second;
       if (!entry.finished) {
-        // Abort pending reads and break the connection so blocked workers
-        // fail their next I/O instead of waiting for their clients forever.
+        // CancelSynchronousIo is thread-wide, not handle-specific. Only use
+        // it while this worker explicitly marks that it is inside the
+        // synchronous pipe ReadFile/WriteFile window; never cancel unrelated
+        // synchronous I/O that a request handler (for example librime) may be
+        // performing on the same worker thread.
+        if (entry.pipe_io_pending &&
+            entry.pipe_io_pending->load(std::memory_order_acquire) &&
+            entry.thread && entry.thread->joinable()) {
+          const auto native_thread = entry.thread->native_handle();
+          if (native_thread)
+            ::CancelSynchronousIo(native_thread);
+        }
         ::CancelIoEx(entry.pipe, NULL);
         ::DisconnectNamedPipe(entry.pipe);
       }
@@ -926,17 +1077,18 @@ void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
   // close the pipe. Once the thread exists, its slot is guaranteed to exist;
   // because m_workers_mutex is still held, an immediately finishing worker
   // can only enter _MarkWorkerFinished() after thread ownership is published.
-  auto [it, inserted] =
-      m_workers.emplace(worker_id, WorkerEntry{pipe, nullptr, false});
+  auto pipe_io_pending = std::make_shared<std::atomic_bool>(false);
+  auto [it, inserted] = m_workers.emplace(
+      worker_id, WorkerEntry{pipe, nullptr, pipe_io_pending, false});
   if (!inserted)
     throw static_cast<DWORD>(ERROR_ALREADY_EXISTS);
 
   try {
     // Copy the handler into the worker: it must not reference anything
     // on this thread's stack.
-    auto worker =
-        std::make_shared<boost::thread>([this, worker_id, pipe, handler] {
-          _ProcessPipeThread(worker_id, pipe, handler);
+    auto worker = std::make_shared<boost::thread>(
+        [this, worker_id, pipe, pipe_io_pending, handler] {
+          _ProcessPipeThread(worker_id, pipe, pipe_io_pending, handler);
         });
     it->second.thread = std::move(worker);
   } catch (...) {
@@ -1002,14 +1154,22 @@ PipeServer::ServerRunner PipeServer::GetServerRunner(
   return [handler, this]() { Listen(handler); };
 }
 
-void PipeServer::_ProcessPipeThread(WorkerId worker_id,
-                                    HANDLE pipe,
-                                    ServerHandler const& handler) {
+void PipeServer::_ProcessPipeThread(
+    WorkerId worker_id,
+    HANDLE pipe,
+    const std::shared_ptr<std::atomic_bool>& pipe_io_pending,
+    ServerHandler const& handler) {
   try {
     for (;;) {
       Res msg;
-      _Receive(pipe, &msg, sizeof(msg));
-      handler(msg, [this, pipe](Msg resp) { _Send(pipe, resp); });
+      {
+        SynchronousPipeIoScope io_scope(*pipe_io_pending);
+        _Receive(pipe, &msg, sizeof(msg));
+      }
+      handler(msg, [this, pipe, pipe_io_pending](Msg resp) {
+        SynchronousPipeIoScope io_scope(*pipe_io_pending);
+        _Send(pipe, resp);
+      });
     }
   } catch (...) {
   }

@@ -8,6 +8,7 @@ $languageBar = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\LanguageBar.
 $switcherHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\SwitcherSettingsDialog.h') -Raw
 $switcher = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\SwitcherSettingsDialog.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
+$deployer = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\WeaselDeployer.cpp') -Raw
 $deployerProject = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\WeaselDeployer.vcxproj') -Raw
 
 if ($globalsHeader -notmatch 'bool\s+QueueDllBackgroundTask\s*\(') {
@@ -93,12 +94,50 @@ if ($switcher -match 'TerminateProcess\s*\(') {
 if ($configurator -match 'WeaselDeployerMutex') {
   throw 'deployer correctness must use the shared server lifecycle lock'
 }
-if (([regex]::Matches($configurator, 'ServerLifecycleLock\s+lifecycle_lock')).Count -ne 3 -or
-    ([regex]::Matches($configurator, 'lifecycle_lock\.Acquire\(0\)')).Count -ne 3) {
-  throw 'workspace deploy dictionary management and sync must each own the shared lifecycle lock'
+if (([regex]::Matches($configurator, 'ServerLifecycleLock\s+lifecycle_lock')).Count -ne 4 -or
+    ([regex]::Matches($configurator, 'lifecycle_lock\.Acquire\(0\)')).Count -ne 4) {
+  throw 'workspace deploy GUI dictionary CLI dictionary and sync worker must each own the shared lifecycle lock'
 }
 if ($configurator -match 'CloseHandle\(hMutex\)') {
   throw 'deployer lifecycle ownership must be RAII and extend through EndMaintenance'
+}
+
+
+if (([regex]::Matches($configurator, 'join_maintenance_thread\s*\(')).Count -ne 1) {
+  throw 'only isolated sync_user_data may retain librime''s unbounded maintenance join'
+}
+if ($deployer -notmatch 'kInternalSyncWorkerOption\[\]\s*=\s*L"/internal-sync-worker"' -or
+    $deployer -notmatch 'kRimeOperationHardTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000') {
+  throw 'sync isolation must use one hidden worker mode with a finite hard deadline'
+}
+if ($deployer -notmatch 'WaitForSingleObject\(cancel_event,\s*kRimeOperationHardTimeoutMs\)' -or
+    $deployer -notmatch 'TerminateProcess\(GetCurrentProcess\(\),\s*ERROR_TIMEOUT\)') {
+  throw 'the isolated sync worker must self-terminate when librime exceeds the hard deadline'
+}
+if ($deployer -notmatch 'CreateProcessW\([\s\S]*?CREATE_NO_WINDOW' -or
+    $deployer -notmatch 'WaitForSingleObject\([\s\S]*?process\.hProcess,[\s\S]*?kRimeOperationHardTimeoutMs\s*\+\s*kSyncSupervisorGraceMs' -or
+    $deployer -notmatch 'TerminateProcess\(process\.hProcess,\s*ERROR_TIMEOUT\)') {
+  throw 'the /sync supervisor must launch a hidden child and bound the child process lifetime'
+}
+$syncSupervisor = $deployer.IndexOf('return RunIsolatedSyncWorker();')
+$deployerInit = $deployer.IndexOf('configurator.Initialize();')
+if ($syncSupervisor -lt 0 -or $deployerInit -lt 0 -or $syncSupervisor -gt $deployerInit) {
+  throw '/sync must launch the isolated worker before the supervising process initializes librime'
+}
+if ($deployer -notmatch 'if\s*\(internal_sync_worker\)[\s\S]*?return\s+Run\(argc,\s*argv\);[\s\S]*?CreateMutex\(NULL,\s*TRUE,\s*L"WeaselDeployerExclusiveMutex"\)') {
+  throw 'only the exact internal sync worker may bypass the deployer process singleton'
+}
+
+if ($deployer -match 'IsBoundedWorkspaceDeploy' -or
+    $deployer -notmatch 'internal_sync_worker\s*&&\s*!cleanup\.watchdog\.Arm\(\)') {
+  throw 'only the isolated sync worker should carry an entry-point watchdog'
+}
+if ($deployer -notmatch '~RuntimeCleanup\(\)[\s\S]*?watchdog\.Disarm\(\)[\s\S]*?_Module\.Term\(\)[\s\S]*?CoUninitialize\(\)') {
+  throw 'entry-point watchdog must be disarmed before ATL and COM teardown'
+}
+if ($deployer -notmatch 'RimeOperationWatchdog\s+initialization_watchdog[\s\S]*?initialization_watchdog\.Arm\(\)[\s\S]*?configurator\.Initialize\(\)' -or
+    $configurator -notmatch 'int\s+Configurator::UpdateWorkspace[\s\S]*?RimeOperationWatchdog\s+deploy_watchdog[\s\S]*?deploy_watchdog\.Arm\(\)[\s\S]*?ServerLifecycleLock\s+lifecycle_lock') {
+  throw 'Rime initialization and workspace deployment must each have an operation-scoped hard watchdog'
 }
 
 if ($configurator -notmatch 'ServerSingletonPresent\(\)[\s\S]*?GetServerInstanceName\(\)[\s\S]*?GetLegacyServerInstanceName\(\)' -or

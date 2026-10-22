@@ -253,6 +253,12 @@ int Configurator::Run(bool installing) {
 }
 
 int Configurator::UpdateWorkspace(bool report_errors) {
+  RimeOperationWatchdog deploy_watchdog;
+  if (!deploy_watchdog.Arm()) {
+    LOG(ERROR) << "Could not arm Rime workspace deployment watchdog.";
+    return 1;
+  }
+
   weasel::ServerLifecycleLock lifecycle_lock;
   if (!lifecycle_lock.Acquire(0)) {
     LOG(WARNING) << "another server lifecycle operation is running; aborting "
@@ -287,9 +293,8 @@ int Configurator::UpdateWorkspace(bool report_errors) {
       LOG(ERROR) << "Error deploying weasel.yaml.";
       retval = 1;
     }
-    // Even on failure, wait for maintenance work before the scoped releaser
-    // resumes WeaselServer while lifecycle ownership is still held.
-    rime->join_maintenance_thread();
+    // deploy() and deploy_config_file() are synchronous librime RunTask()
+    // calls; there is no asynchronous maintenance future to join here.
   }
   if (!releaser.Finish())
     retval = 1;
@@ -314,17 +319,31 @@ int Configurator::DictManagement() {
     return 1;
   }
 
+  int result = 0;
   MaintenanceReleaser releaser(client, maintenance_started);
   {
     RimeApi* rime = rime_get_api();
-    if (RIME_API_AVAILABLE(rime, run_task)) {
-      rime->run_task("installation_update");  // setup user data sync dir
+    if (RIME_API_AVAILABLE(rime, run_task) &&
+        !rime->run_task("installation_update")) {
+      // installation_update rewrites installation.yaml directly. A
+      // process-killing watchdog could truncate that file, so this mutating
+      // operation must complete or fail naturally until it is isolated behind
+      // a recoverable transaction boundary.
+      LOG(ERROR) << "Dictionary installation_update task failed.";
+      result = 1;
     }
+  }
+
+  // Never time the user's interaction with the modal dialog. Only read-only
+  // dictionary enumeration inside the dialog uses a hard watchdog.
+  if (!result) {
     DictManagementDialog dlg;
     dlg.DoModal();
-    rime->join_maintenance_thread();
   }
-  return releaser.Finish() ? 0 : 1;
+
+  if (!releaser.Finish())
+    result = 1;
+  return result;
 }
 
 int Configurator::DictManagement(const std::vector<std::wstring>& args) {
@@ -373,21 +392,38 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
     LOG(ERROR) << "Rime levers module is unavailable.";
     result = 1;
   } else if (RIME_API_AVAILABLE(rime, run_task)) {
+    // installation_update writes installation.yaml through a direct
+    // std::ofstream in librime. Do not make a timeout corrupt that file.
     rime->run_task("installation_update");
   }
 
   if (!result && list) {
-    RimeUserDictIterator iter = {0};
-    if (!api->user_dict_iterator_init(&iter)) {
-      LOG(ERROR) << "Failed to enumerate user dictionaries.";
+    std::vector<std::wstring> dictionaries;
+    RimeOperationWatchdog list_watchdog;
+    if (!list_watchdog.Arm()) {
+      LOG(ERROR) << "Could not arm dictionary enumeration watchdog.";
       result = 1;
     } else {
-      while (const char* dict = api->next_user_dict(&iter)) {
-        std::wcout << u8tow(dict) << std::endl;
+      RimeUserDictIterator iter = {0};
+      if (!api->user_dict_iterator_init(&iter)) {
+        LOG(ERROR) << "Failed to enumerate user dictionaries.";
+        result = 1;
+      } else {
+        while (const char* dict = api->next_user_dict(&iter)) {
+          dictionaries.push_back(u8tow(dict));
+        }
+        api->user_dict_iterator_destroy(&iter);
       }
-      api->user_dict_iterator_destroy(&iter);
+      list_watchdog.Disarm();
+    }
+    if (!result) {
+      for (const auto& dict : dictionaries)
+        std::wcout << dict << std::endl;
     }
   } else if (!result && backup) {
+    // backup_user_dict may recreate userdb metadata. Do not attach the
+    // process-killing watchdog to mutating userdb operations: librime writes
+    // them incrementally and forced termination can leave a partial mutation.
     const std::string dict_name = wtou8(args[1]);
     if (!api->backup_user_dict(dict_name.c_str())) {
       LOG(ERROR) << "Failed to backup user dictionary: " << dict_name;
@@ -398,6 +434,9 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
       std::wcout << snapshot.wstring() << std::endl;
     }
   } else if (!result && restore) {
+    // Restore merges records directly into the destination userdb. It must
+    // finish or report failure naturally; hard-killing this process mid-merge
+    // would turn a timeout into a partially applied restore.
     const std::string snapshot = wtou8(args[1]);
     if (!api->restore_user_dict(snapshot.c_str())) {
       LOG(ERROR) << "Failed to restore user dictionary: " << snapshot;
@@ -406,6 +445,9 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
   } else if (!result && export_dict) {
     const std::string dict_name = wtou8(args[1]);
     const std::string text_file = wtou8(args[2]);
+    // Export writes directly to the caller-selected file. Hard-killing the
+    // process can truncate an existing target, so leave this write unbounded
+    // until export uses a temporary-file + atomic-replace boundary.
     const int count =
         api->export_user_dict(dict_name.c_str(), text_file.c_str());
     if (count < 0) {
@@ -415,6 +457,8 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
       std::wcout << count << std::endl;
     }
   } else if (!result && import_dict) {
+    // Import performs incremental db_->Update() calls. Keep it outside the
+    // process-killing watchdog so timeout handling cannot leave half an import.
     const std::string dict_name = wtou8(args[1]);
     const std::string text_file = wtou8(args[2]);
     const int count =
@@ -427,10 +471,7 @@ int Configurator::DictManagement(const std::vector<std::wstring>& args) {
     }
   }
 
-  // installation_update may schedule maintenance work. Preserve the local
-  // lifecycle rule: do not resume the server until all local librime work is
-  // complete.
-  rime->join_maintenance_thread();
+  // The synchronous calls above do not require an unrelated maintenance join.
   if (!releaser.Finish())
     result = 1;
   return result;
@@ -464,8 +505,10 @@ int Configurator::SyncUserData() {
       LOG(ERROR) << "Error synching user data.";
       retval = 1;
     }
-    // 无论同步成败，等待可能仍在运行的维护任务结束后再唤醒服务；
-    // lifecycle ownership remains held through EndMaintenance.
+    // sync_user_data() is the one deployer operation here that intentionally
+    // starts librime's asynchronous maintenance worker. This method is invoked
+    // only by the isolated internal worker, whose process-level watchdog is
+    // the hard failure boundary for an unresponsive librime future.
     rime->join_maintenance_thread();
   }
   if (!releaser.Finish())
