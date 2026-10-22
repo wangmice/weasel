@@ -97,10 +97,10 @@ void RimeWithWeaselHandler::Initialize() {
 }
 
 void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
-  // Initialization is unavailable until a real Rime session can be created.
-  // Startup may still refuse to initialize while a deployer owns local Rime,
+  // Startup may refuse to initialize while a deployer owns local Rime,
   // whereas END_MAINTENANCE already carries explicit lifecycle ownership and
-  // must bypass that startup-only probe.
+  // must bypass that startup-only probe. Real Rime sessions are created only
+  // after the server pipe reaches Ready.
   m_disabled = true;
   if (detect_deployer && _IsDeployerRunning()) {
     return;
@@ -109,12 +109,13 @@ void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
   LOG(INFO) << "Initializing la rime.";
   LOG(INFO) << "calling rime_api->initialize";
   rime_api->initialize(NULL);
-  LOG(INFO) << "starting Rime maintenance";
-  if (rime_api->start_maintenance(/*full_check = */ False)) {
-    LOG(INFO) << "waiting for Rime maintenance";
-    rime_api->join_maintenance_thread();
-  }
 
+  // Do not run librime maintenance synchronously during WeaselServer startup
+  // or END_MAINTENANCE recovery. ServerImpl still owns the startup lifecycle
+  // lock here and has not published a usable pipe yet; blocking on internal
+  // maintenance can strand the process in Starting and make every TSF client
+  // observe a singleton with no service. Workspace maintenance is owned
+  // explicitly by WeaselDeployer through START/END_MAINTENANCE.
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
@@ -150,15 +151,10 @@ void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
   }
   m_last_schema_id.clear();
 
-  // Do not let IPC liveness masquerade as input readiness. A throwaway Rime
-  // session proves that startup/internal maintenance has really completed.
-  const RimeSessionId readiness_session =
-      static_cast<RimeSessionId>(rime_api->create_session());
-  if (!readiness_session) {
-    LOG(ERROR) << "Rime initialization completed but session creation failed.";
-    return;
-  }
-  rime_api->destroy_session(readiness_session);
+  // Real session creation may lazily load schemas and dictionaries. Keep that
+  // work on START_SESSION, after ServerImpl has started IPC and published
+  // Ready; otherwise a slow/corrupt schema can strand the process in Starting
+  // with no usable pipe, blocking input, restart, and uninstall at once.
   m_disabled = false;
 }
 
@@ -618,12 +614,16 @@ void RimeWithWeaselHandler::OnUpdateUI(std::function<void()> const& cb) {
 }
 
 bool RimeWithWeaselHandler::_IsDeployerRunning() {
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
-  bool deployer_detected = hMutex && GetLastError() == ERROR_ALREADY_EXISTS;
-  if (hMutex) {
-    CloseHandle(hMutex);
+  HANDLE mutex =
+      OpenMutexW(SYNCHRONIZE, FALSE, weasel::kDeployerExclusiveMutexName);
+  if (mutex) {
+    CloseHandle(mutex);
+    return true;
   }
-  return deployer_detected;
+
+  // Access denied still proves that the named object exists; treat it as an
+  // active deployer instead of racing local Rime initialization against it.
+  return GetLastError() == ERROR_ACCESS_DENIED;
 }
 
 void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id,

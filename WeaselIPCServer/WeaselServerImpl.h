@@ -108,6 +108,9 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   void SetTrayRefreshCallback(std::function<void()> callback) {
     m_trayRefreshCallback = std::move(callback);
   }
+  void SetBeforeReadyCallback(std::function<void()> callback) {
+    m_beforeReadyCallback = std::move(callback);
+  }
 
  private:
   friend class ServerImplTestAccess;
@@ -122,7 +125,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   void _StopRuntime();
   /* Interrupt and join the pipe listener and its workers; idempotent. */
   void _StopPipeServer();
-  int _RequestStopUnderApiLock() noexcept;
+  int _RequestStop() noexcept;
   void _SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept;
   ServerLifecycle _RuntimeLifecycle() const noexcept;
   bool _TryTransitionRuntimeLifecycle(ServerLifecycle expected,
@@ -153,6 +156,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   ServerRuntimeState* m_runtimeState;
   std::map<UINT, CommandHandler> m_MenuHandlers;
   std::function<void()> m_trayRefreshCallback;
+  std::function<void()> m_beforeReadyCallback;
   HMODULE m_hUser32Module;
   /* Resolved once in the ctor; stays null if user32 does not export it
    * (below Win8.1), and OnUpdateInputPosition then keeps physical coords */

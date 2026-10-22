@@ -395,11 +395,10 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
                             DWORD wParam,
                             DWORD lParam) {
   const UINT command = LOWORD(wParam);
-  // Run() already holds g_api_mutex for every pipe command. The quit menu
-  // handler calls Stop(), which would try to acquire the same non-recursive
-  // mutex again on this worker thread. Use the lock-held stop helper directly.
+  // Pipe dispatch already owns g_api_mutex. Stop requests only publish
+  // Stopping and post WM_QUIT, so use the non-blocking control-plane helper.
   if (command == ID_WEASELTRAY_QUIT) {
-    _RequestStopUnderApiLock();
+    _RequestStop();
     return 1;
   }
 
@@ -468,24 +467,25 @@ HWND ServerImpl::Start() {
   return hwnd;
 }
 
-int ServerImpl::_RequestStopUnderApiLock() noexcept {
+int ServerImpl::_RequestStop() noexcept {
+  // Shutdown is a control-plane transition and must never wait behind a Rime
+  // business call holding g_api_mutex. Lifecycle transitions are atomic: if a
+  // maintenance transition raced first, Stopping wins and EndMaintenance is
+  // already forbidden from publishing Ready again.
   _SetRuntimeLifecycle(ServerLifecycle::Stopping);
-  // DO NOT exit process or finalize here. Let WeaselServer unwind Run().
+  // DO NOT exit process or finalize here. Let WeaselServer unwind Run(); its
+  // teardown watchdog bounds any worker still stuck inside librime.
   PostMessage(WM_QUIT);
   return 0;
 }
 
 int ServerImpl::Stop() {
-  // Lifecycle publication must linearize with pipe handlers that can enter or
-  // leave maintenance. OnShutdownServer already runs under this lock and calls
-  // the lock-held helper directly.
-  std::lock_guard guard(g_api_mutex);
-  return _RequestStopUnderApiLock();
+  return _RequestStop();
 }
 
 int ServerImpl::Run() {
-  if (!m_pRequestHandler || !m_pRequestHandler->IsReadyForSessions()) {
-    LOG(ERROR) << "Rime backend is not ready for input sessions";
+  if (!m_pRequestHandler) {
+    LOG(ERROR) << "server request handler is not installed";
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     return -1;
   }
@@ -525,6 +525,16 @@ int ServerImpl::Run() {
     {
       std::lock_guard guard(g_api_mutex);
       bool dispatch = lifecycle_admitted;
+
+      // The primary pipe intentionally becomes reachable before Rime/UI/shell
+      // startup work completes. While lifecycle is still Starting, keep that
+      // backend completely private: only shutdown belongs to the control plane
+      // and is safe before initialization has finished.
+      if (_RuntimeLifecycle() == ServerLifecycle::Starting &&
+          msg.Msg != WEASEL_IPC_SHUTDOWN_SERVER) {
+        dispatch = false;
+      }
+
       if (starting && dispatch) {
         // Lifecycle may have reached Stopping before this request acquired the
         // API lock. Recheck under serialization before creating any session.
@@ -573,15 +583,34 @@ int ServerImpl::Run() {
   pipeThread = std::make_unique<boost::thread>(
       [this, listener]() { channel->Listen(listener); });
 
-  // WeaselServerApp calls Run() only after Rime initialization has completed.
-  // Do not expose Ready until the primary pipe instance actually exists:
-  // deployers interpret a failed Connect while owning the lifecycle lock as
-  // "no live server" and may otherwise start local Rime maintenance beside us.
+  // Bring up the control pipe before any potentially blocking application
+  // startup callback. Lifecycle remains Starting, so the listener can reject
+  // data-plane requests while still making this process observable/controlable.
+  // Do not expose Ready until both the pipe and backend startup are complete.
   if (!WaitForPrimaryPipeReady()) {
     LOG(ERROR) << "primary IPC pipe did not become ready during server startup";
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     // Startup lifecycle ownership stays held through WeaselServerApp cleanup;
     // ServerImpl destruction releases it after Rime/UI teardown.
+    _StopRuntime();
+    return -1;
+  }
+
+  // Shell_NotifyIcon may synchronously interact with Explorer. Keep that work
+  // out of the pre-IPC window: Explorer can already reach this pipe and any
+  // START_SESSION attempt is rejected while lifecycle remains Starting, so a
+  // taskbar thread waiting on Weasel cannot deadlock server startup.
+  if (m_beforeReadyCallback) {
+    try {
+      m_beforeReadyCallback();
+    } catch (...) {
+      LOG(ERROR) << "before-Ready server startup callback failed";
+    }
+  }
+
+  if (!m_pRequestHandler->IsReadyForSessions()) {
+    LOG(ERROR) << "Rime backend is not ready for input sessions";
+    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
     _StopRuntime();
     return -1;
   }
@@ -687,8 +716,7 @@ DWORD ServerImpl::OnKeyEvent(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnShutdownServer(WEASEL_IPC_COMMAND uMsg,
                                    DWORD wParam,
                                    DWORD lParam) {
-  // Pipe dispatch already owns g_api_mutex here.
-  _RequestStopUnderApiLock();
+  _RequestStop();
   return 0;
 }
 
@@ -1212,6 +1240,10 @@ void Server::AddMenuHandler(UINT uID, CommandHandler handler) {
 
 void Server::SetTrayRefreshCallback(std::function<void()> callback) {
   m_pImpl->SetTrayRefreshCallback(callback);
+}
+
+void Server::SetBeforeReadyCallback(std::function<void()> callback) {
+  m_pImpl->SetBeforeReadyCallback(std::move(callback));
 }
 
 HWND Server::GetHWnd() {

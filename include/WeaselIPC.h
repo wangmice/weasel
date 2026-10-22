@@ -41,6 +41,12 @@ enum WEASEL_IPC_COMMAND {
 #define WM_WEASEL_SERVICE_NOTIFY (WEASEL_IPC_LAST_COMMAND + 200)
 
 namespace weasel {
+// One process-wide deployer singleton name is shared with WeaselServer startup
+// detection. Keeping the literal here prevents the two sides from silently
+// drifting and initializing librime concurrently.
+inline constexpr wchar_t kDeployerExclusiveMutexName[] =
+    L"WeaselDeployerExclusiveMutex";
+
 // Typed key result for callers that need to distinguish a normal unhandled
 // key from session invalidation and transport delivery ambiguity.
 enum class KeyEventResult {
@@ -259,6 +265,9 @@ class Server {
   // Callback invoked on the server message thread when a tray icon refresh is
   // requested from a pipe worker thread.
   void SetTrayRefreshCallback(std::function<void()> callback);
+  // Runs after the primary pipe listener is live but before Starting -> Ready.
+  // Use it for shell/UI startup work that must never block IPC availability.
+  void SetBeforeReadyCallback(std::function<void()> callback);
 
  private:
   ServerImpl* m_pImpl;

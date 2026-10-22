@@ -12,6 +12,7 @@ $serverApp = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServe
 $systemTray = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\SystemTraySDK.cpp') -Raw
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
+$languageBar = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\LanguageBar.cpp') -Raw
 $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
 $registerCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Register.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
@@ -137,9 +138,32 @@ if ($rimeWithWeasel -notmatch 'void\s+RimeWithWeaselHandler::_Initialize\(bool\s
     $rimeWithWeasel -notmatch 'm_disabled\s*=\s*true[\s\S]*?detect_deployer\s*&&\s*_IsDeployerRunning\(\)') {
   throw 'Rime initialization must separate startup deployer detection from maintenance resume'
 }
-if ($rimeWithWeasel -notmatch 'join_maintenance_thread\(\)' -or
-    $rimeWithWeasel -notmatch 'readiness_session[\s\S]*?create_session\(\)[\s\S]*?destroy_session\(readiness_session\)[\s\S]*?m_disabled\s*=\s*false') {
-  throw 'Rime must remain disabled until startup maintenance ends and a real session probe succeeds'
+$rimeInitStart = $rimeWithWeasel.IndexOf('void RimeWithWeaselHandler::_Initialize(bool detect_deployer)')
+$rimeFinalizeStart = $rimeWithWeasel.IndexOf('void RimeWithWeaselHandler::Finalize()', $rimeInitStart)
+if ($rimeInitStart -lt 0 -or $rimeFinalizeStart -le $rimeInitStart) {
+  throw 'unable to isolate RimeWithWeaselHandler::_Initialize'
+}
+$rimeInitBody = $rimeWithWeasel.Substring(
+  $rimeInitStart,
+  $rimeFinalizeStart - $rimeInitStart
+)
+if ($rimeInitBody -match 'start_maintenance\s*\(' -or
+    $rimeInitBody -match 'join_maintenance_thread\s*\(') {
+  throw 'WeaselServer startup must not run synchronous librime maintenance before IPC Ready'
+}
+if ($rimeInitBody -match 'rime_api->create_session\s*\(') {
+  throw 'pre-IPC server startup must not create a real Rime session'
+}
+if ($rimeInitBody -notmatch 'm_disabled\s*=\s*false') {
+  throw 'Rime initialization must enable START_SESSION after non-session setup completes'
+}
+if ($ipcHeader -notmatch 'kDeployerExclusiveMutexName\[\][\s\S]*?WeaselDeployerExclusiveMutex' -or
+    $rimeWithWeasel -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*weasel::kDeployerExclusiveMutexName\)' -or
+    $deployerMain -notmatch 'CreateMutex\(NULL,\s*TRUE,\s*weasel::kDeployerExclusiveMutexName\)') {
+  throw 'WeaselServer and WeaselDeployer must share one deployer singleton name'
+}
+if ($rimeWithWeasel -match 'WeaselDeployerMutex') {
+  throw 'server startup must not probe the obsolete WeaselDeployerMutex name'
 }
 $endMaintenance = [regex]::Match(
   $rimeWithWeasel,
@@ -154,6 +178,15 @@ if ($serverImpl -notmatch 'IsReadyForSessions\(\)' -or
     $serverImpl -notmatch 'maintenance owner exited; recovering WeaselServer' -or
     $serverImpl -notmatch '\*m_dispatchProcessOwner\s*!=\s*\*m_maintenanceOwner') {
   throw 'server Ready and Maintenance states must be backend-ready and process-generation owned'
+}
+
+# Tray quit from a pipe worker must use the active stop-control API name.
+# This prevents an old helper name surviving a shutdown refactor and breaking
+# the entire Windows build with C3861.
+if ($serverImpl -match '_RequestStopUnderApiLock' -or
+    $serverImplHeader -notmatch 'int\s+_RequestStop\(\)\s+noexcept\s*;' -or
+    $serverImpl -notmatch 'ServerImpl::OnCommand\(WEASEL_IPC_COMMAND[\s\S]*?ID_WEASELTRAY_QUIT\)[\s\S]*?_RequestStop\(\);') {
+  throw 'IPC tray quit must call the current non-blocking _RequestStop helper'
 }
 
 $switcherStart = $configurator.IndexOf('static ConfigureResult configure_switcher')
@@ -300,6 +333,43 @@ if ($feedSetup -lt 0 -or $initSparkle -le $feedSetup -or
   throw 'WinSparkle feed/setup must precede init, manual checks must follow init, and cleanup must be scoped'
 }
 
+# Once singleton/Starting is published, make the control pipe reachable before
+# every potentially blocking Rime/UI/shell startup operation.
+if ($serverImplHeader -notmatch 'SetBeforeReadyCallback\(std::function<void\(\)> callback\)' -or
+    $ipcHeader -notmatch 'SetBeforeReadyCallback\(std::function<void\(\)> callback\)') {
+  throw 'server API must expose a before-Ready callback for post-listener startup work'
+}
+$runImplStart = $serverImpl.IndexOf('int ServerImpl::Run()')
+$stopRuntimeStart = $serverImpl.IndexOf('void ServerImpl::_StopRuntime()', $runImplStart)
+if ($runImplStart -lt 0 -or $stopRuntimeStart -le $runImplStart) {
+  throw 'unable to isolate ServerImpl::Run startup ordering'
+}
+$runImpl = $serverImpl.Substring($runImplStart, $stopRuntimeStart - $runImplStart)
+$listenerStart = $runImpl.IndexOf('pipeThread = std::make_unique<boost::thread>')
+$pipeReady = $runImpl.IndexOf('WaitForPrimaryPipeReady()')
+$beforeReady = $runImpl.IndexOf('m_beforeReadyCallback()')
+$backendReady = $runImpl.IndexOf('m_pRequestHandler->IsReadyForSessions()', $beforeReady)
+$publishReady = $runImpl.IndexOf('_TryTransitionRuntimeLifecycle(ServerLifecycle::Starting,')
+if ($listenerStart -lt 0 -or $pipeReady -lt 0 -or $beforeReady -lt 0 -or
+    $backendReady -lt 0 -or $publishReady -lt 0 -or
+    -not ($listenerStart -lt $pipeReady -and $pipeReady -lt $beforeReady -and
+          $beforeReady -lt $backendReady -and $backendReady -lt $publishReady)) {
+  throw 'pipe must precede application startup and backend readiness must precede Ready publication'
+}
+if ($runImpl -notmatch '_RuntimeLifecycle\(\)\s*==\s*ServerLifecycle::Starting[\s\S]*?msg\.Msg\s*!=\s*WEASEL_IPC_SHUTDOWN_SERVER[\s\S]*?dispatch\s*=\s*false') {
+  throw 'Starting listener must reject every data-plane command while retaining shutdown control'
+}
+if (([regex]::Matches($serverApp, 'm_handler->Initialize\(\)')).Count -ne 1 -or
+    ([regex]::Matches($serverApp, 'm_ui\.Create\(')).Count -ne 1 -or
+    ([regex]::Matches($serverApp, 'tray_icon\.Create\(')).Count -ne 1 -or
+    $serverApp -notmatch 'SetBeforeReadyCallback\([\s\S]*?win_sparkle_init\(\)[\s\S]*?m_ui\.Create\(m_server\.GetHWnd\(\)\)[\s\S]*?m_handler->Initialize\(\)[\s\S]*?tray_icon\.Create\(m_server\.GetHWnd\(\)\)[\s\S]*?m_server\.Run\(\)') {
+  throw 'WinSparkle UI Rime and tray startup must all execute only after the primary pipe is listening'
+}
+if ($languageBar -match 'start_service\.bat' -or
+    $languageBar -notmatch 'ID_WEASELTRAY_RERUN_SERVICE[\s\S]*?QueueDllBackgroundTask[\s\S]*?WeaselServer\.exe') {
+  throw 'language-bar restart must launch WeaselServer directly instead of relying on a batch shell layer'
+}
+
 # A restart must wait for the old process, not merely for its pipe to vanish:
 # ServerImpl keeps the singleton mutex until process teardown completes.
 $restartStart = $serverMain.IndexOf('// Retain the existing process for both /quit and a normal restart.')
@@ -308,7 +378,7 @@ if ($restartStart -lt 0 -or $restartEnd -le $restartStart) {
   throw 'unable to isolate WeaselServer restart flow'
 }
 $restartFlow = $serverMain.Substring($restartStart, $restartEnd - $restartStart)
-$openProcess = $restartFlow.IndexOf('OpenRunningServerProcess(running_server, running_window)')
+$openProcess = $restartFlow.IndexOf('OpenRunningServerProcess(running_server, running_window,')
 $shutdown = $restartFlow.IndexOf('client.ShutdownServer()')
 $disconnect = $restartFlow.IndexOf('client.Disconnect()', $shutdown)
 $waitExit = $restartFlow.IndexOf('WaitForRunningServerExit(running_server)', $disconnect)
@@ -334,6 +404,17 @@ if ($restartFlow -notmatch 'ServerLifecycleLock\s+restart_lifecycle' -or
     $restartFlow -notmatch '\(connected\s*\|\|\s*running_server\)[\s\S]*?restart_lifecycle\.Acquire\(0\)' -or
     $restartFlow -notmatch 'client\.ShutdownServer\(\)[\s\S]*?WaitForRunningServerExit\(running_server\)') {
   throw 'normal restart must own the shared lifecycle lock while stopping an existing server'
+}
+
+if ($serverMain -notmatch 'ForceStopStartingServer\(' -or
+    $serverMain -notmatch 'TerminateProcess\(process,\s*ERROR_TIMEOUT\)' -or
+    $restartFlow -notmatch 'recovered_starting[\s\S]*?ForceStopStartingServer\(running_server,\s*running_window,[\s\S]*?running_state\)') {
+  throw 'explicit restart and quit must recover only an authenticated generation wedged in Starting'
+}
+if ($tsf -notmatch 'kServerStartingHardTimeoutMs\s*=\s*30\s*\*\s*1000' -or
+    $tsf -notmatch 'kServerMaintenanceHardTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000' -or
+    $tsf -notmatch 'kServerStoppingHardTimeoutMs\s*=\s*30\s*\*\s*1000') {
+  throw 'Starting and Stopping recovery deadlines must stay short without shortening deploy maintenance'
 }
 
 # IPC must be scoped by Windows session while retaining the legacy endpoint for

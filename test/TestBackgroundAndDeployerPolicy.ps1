@@ -128,7 +128,7 @@ $deployerInit = $deployer.IndexOf('configurator.Initialize();')
 if ($syncSupervisor -lt 0 -or $deployerInit -lt 0 -or $syncSupervisor -gt $deployerInit) {
   throw '/sync must launch the isolated worker before the supervising process initializes librime'
 }
-if ($deployer -notmatch 'if\s*\(internal_sync_worker\)[\s\S]*?return\s+Run\(argc,\s*argv\);[\s\S]*?CreateMutex\(NULL,\s*TRUE,\s*L"WeaselDeployerExclusiveMutex"\)') {
+if ($deployer -notmatch 'if\s*\(internal_sync_worker\)[\s\S]*?return\s+Run\(argc,\s*argv\);[\s\S]*?CreateMutex\(NULL,\s*TRUE,\s*weasel::kDeployerExclusiveMutexName\)') {
   throw 'only the exact internal sync worker may bypass the deployer process singleton'
 }
 if ($deployer -notmatch 'kInstallerDeployOption\[\]\s*=\s*L"/install-deploy"' -or

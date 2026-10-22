@@ -2,6 +2,7 @@
 //
 #include "stdafx.h"
 #include <WeaselUtility.h>
+#include <WeaselIPC.h>
 #include <fstream>
 #include <vector>
 #include "WeaselDeployer.h"
@@ -270,7 +271,7 @@ int wmain(int argc, wchar_t* argv[]) {
   }
 
   int ret = 0;
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerExclusiveMutex");
+  HANDLE hMutex = CreateMutex(NULL, TRUE, weasel::kDeployerExclusiveMutexName);
   if (!hMutex) {
     LOG(ERROR) << "Error creating WeaselDeployerExclusiveMutex.";
     ret = 1;
