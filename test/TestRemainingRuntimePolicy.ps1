@@ -215,8 +215,23 @@ if ($tsf -notmatch 'tsf\.recovery-lock' -or
     $tsf -notmatch 'root-unavailable' -or
     $tsf -notmatch 'singleton-timeout' -or
     $tsf -notmatch 'admission-deferred' -or
-    $tsf -notmatch 'tsf\.recovery-worker-run') {
+    $tsf -notmatch 'tsf\.recovery-worker-run' -or
+    $tsf -notmatch 'root-resolved') {
   throw 'TSF background wakeup must emit diagnostics at every launch barrier'
+}
+# Native process registry views differ: recovering a stopped Server must read
+# both WOW64 views before falling back to the machine Run executable value.
+# Only a directory with a real Server and start_service.bat may launch.
+if ($tsf -notmatch 'FindRecoveryServerDirectory\(' -or
+    $tsf -notmatch 'RRF_SUBKEY_WOW6432KEY' -or
+    $tsf -notmatch 'RRF_SUBKEY_WOW6464KEY' -or
+    $tsf -notmatch 'kMachineRunKey' -or
+    $tsf -notmatch 'RecoveryHasServerFiles\(candidate\)' -or
+    $tsf -notmatch 'WeaselServer\.exe' -or
+    $tsf -notmatch 'start_service\.bat' -or
+    $tsf -notmatch 'L"WeaselRoot"\s*:\s*L"WeaselServer"' -or
+    $tsf -notmatch 'install\.path\.empty\(\)') {
+  throw 'TSF wakeup must resolve and validate installed server roots across registry views'
 }
 
 Write-Host 'Remaining runtime hardening policy: PASS'
