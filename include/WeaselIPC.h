@@ -352,8 +352,15 @@ class ServerLifecycleLock {
     if (owned_)
       return true;
     if (!handle_) {
-      handle_ = CreateMutexW(security_attributes, FALSE,
-                             GetServerLifecycleMutexName().c_str());
+      // The first server creates this mutex with the named-pipe DACL:
+      // the logon SID receives GENERIC_READ | GENERIC_WRITE, not ALL_ACCESS.
+      // CreateMutexW implicitly requests MUTEX_ALL_ACCESS when reopening an
+      // existing object, so TSF, Deployer and /quit would all get access denied
+      // despite the startup owner having already released the mutex.
+      // Only synchronization and release rights are needed here.
+      handle_ = CreateMutexExW(
+          security_attributes, GetServerLifecycleMutexName().c_str(), 0,
+          SYNCHRONIZE | MUTEX_MODIFY_STATE);
       if (!handle_)
         return false;
     }

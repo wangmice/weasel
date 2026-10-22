@@ -13,6 +13,87 @@ static void check(bool ok, const char* what) {
   }
 }
 
+
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <sddl.h>
+#include <vector>
+
+// Regression for the real security mismatch: the production pipe-derived DACL
+// grants GRGW to the current logon SID, not MUTEX_ALL_ACCESS. Reopening that
+// mutex needs only SYNCHRONIZE | MUTEX_MODIFY_STATE.
+static std::wstring current_logon_sid() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    return {};
+  DWORD size = 0;
+  GetTokenInformation(token, TokenGroups, nullptr, 0, &size);
+  if (!size) {
+    CloseHandle(token);
+    return {};
+  }
+  std::vector<BYTE> bytes(size);
+  if (!GetTokenInformation(token, TokenGroups, bytes.data(), size, &size)) {
+    CloseHandle(token);
+    return {};
+  }
+  CloseHandle(token);
+  const auto* groups = reinterpret_cast<const TOKEN_GROUPS*>(bytes.data());
+  for (DWORD i = 0; i < groups->GroupCount; ++i) {
+    if ((groups->Groups[i].Attributes & SE_GROUP_LOGON_ID) != SE_GROUP_LOGON_ID)
+      continue;
+    LPWSTR value = nullptr;
+    if (!ConvertSidToStringSidW(groups->Groups[i].Sid, &value))
+      return {};
+    std::wstring result = value;
+    LocalFree(value);
+    return result;
+  }
+  return {};
+}
+
+static void test_lifecycle_mutex_access() {
+  const std::wstring sid = current_logon_sid();
+  check(!sid.empty(), "can resolve the current logon session SID");
+  if (sid.empty())
+    return;
+
+  const std::wstring sddl = weasel::pipe_security::BuildPipeSecuritySddl(sid);
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) {
+    check(false, "can build the production-equivalent mutex DACL");
+    return;
+  }
+
+  SECURITY_ATTRIBUTES attributes{};
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = descriptor;
+  const std::wstring name =
+      L"Local\\WeaselLifecycleAccessTest-" +
+      std::to_wstring(GetCurrentProcessId()) + L"-" +
+      std::to_wstring(GetTickCount64());
+
+  constexpr DWORD rights = SYNCHRONIZE | MUTEX_MODIFY_STATE;
+  HANDLE creator = CreateMutexExW(&attributes, name.c_str(), 0, rights);
+  check(creator != nullptr, "creator can create mutex with logon-session DACL");
+  if (creator) {
+    HANDLE other = CreateMutexExW(nullptr, name.c_str(), 0, rights);
+    check(other != nullptr, "another handle can reopen with required rights");
+    if (other) {
+      check(WaitForSingleObject(other, 0) == WAIT_OBJECT_0,
+            "reopened handle can acquire the lifecycle mutex");
+      check(ReleaseMutex(other) != 0,
+            "reopened handle can release the lifecycle mutex");
+      CloseHandle(other);
+    }
+    CloseHandle(creator);
+  }
+  LocalFree(descriptor);
+}
+#endif
+
 int main() {
   using weasel::pipe_security::BuildPipeSecuritySddl;
 
@@ -29,6 +110,10 @@ int main() {
         "security descriptor does not grant Everyone");
   check(BuildPipeSecuritySddl(L"").empty(),
         "missing logon SID fails closed at policy construction");
+
+#if defined(_WIN32)
+  test_lifecycle_mutex_access();
+#endif
 
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
