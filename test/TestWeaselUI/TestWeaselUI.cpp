@@ -85,6 +85,9 @@ class UiThread {
   bool same_thread_show_ok = false;
   bool same_thread_hide_ok = false;
   bool shared_resources_released_before_com_uninit = false;
+  bool registered_class_uses_proc_module = false;
+  bool registered_class_removed = false;
+  bool recreated_class_is_valid = false;
 
   void Run() {
     const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -96,6 +99,26 @@ class UiThread {
       same_thread_show_ok = ui.IsShown();
       ui.Hide();
       same_thread_hide_ok = !ui.IsShown();
+    }
+    WCHAR registered_class[128] = {};
+    HINSTANCE registered_module = nullptr;
+    if (created) {
+      const HWND panel = ui.hwnd();
+      if (panel && GetClassNameW(panel, registered_class,
+                                 _countof(registered_class))) {
+        registered_module =
+            reinterpret_cast<HINSTANCE>(GetClassLongPtrW(panel, GCLP_HMODULE));
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(wc);
+        HMODULE proc_module = nullptr;
+        registered_class_uses_proc_module =
+            GetClassInfoExW(registered_module, registered_class, &wc) &&
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(wc.lpfnWndProc), &proc_module) &&
+            proc_module == registered_module;
+      }
     }
     SetEvent(m_ready);
     // pump until asked to stop
@@ -120,6 +143,22 @@ class UiThread {
     // Destroy(true) releases this UI's D2D generation lease. With no other UI
     // owner in this isolated test process, the manager's weak generation must
     // expire before COM is uninitialized.
+    ui.Destroy(true);
+    if (registered_module && registered_class[0]) {
+      WNDCLASSEXW wc = {};
+      wc.cbSize = sizeof(wc);
+      registered_class_removed =
+          !GetClassInfoExW(registered_module, registered_class, &wc);
+    }
+    // A fresh panel must register and destroy its own class after the prior
+    // registration is gone, without inheriting any stale WNDPROC.
+    const bool recreated = ui.Create(nullptr);
+    if (recreated) {
+      WCHAR new_class[128] = {};
+      recreated_class_is_valid =
+          GetClassNameW(ui.hwnd(), new_class, _countof(new_class)) &&
+          wcscmp(new_class, registered_class) != 0;
+    }
     ui.Destroy(true);
     shared_resources_released_before_com_uninit =
         !weasel::DeviceResources::Get().HasLiveGeneration();
@@ -517,6 +556,12 @@ int main() {
         "B1: UI thread exits cleanly");
   check(t.shared_resources_released_before_com_uninit,
         "P1: shared graphics generation released before COM teardown");
+  check(t.registered_class_uses_proc_module,
+        "P1: window class is registered against WNDPROC's module");
+  check(t.registered_class_removed,
+        "P1: window class is unregistered after panel destruction");
+  check(t.recreated_class_is_valid,
+        "P1: next panel uses a fresh class without stale WNDPROC");
 
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;
