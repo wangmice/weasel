@@ -97,10 +97,10 @@ void RimeWithWeaselHandler::Initialize() {
 }
 
 void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
-  // Initialization is unavailable until a real Rime session can be created.
-  // Startup may still refuse to initialize while a deployer owns local Rime,
+  // Startup may refuse to initialize while a deployer owns local Rime,
   // whereas END_MAINTENANCE already carries explicit lifecycle ownership and
-  // must bypass that startup-only probe.
+  // must bypass that startup-only probe. Real Rime sessions are created only
+  // after the server pipe reaches Ready.
   m_disabled = true;
   if (detect_deployer && _IsDeployerRunning()) {
     return;
@@ -151,15 +151,10 @@ void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
   }
   m_last_schema_id.clear();
 
-  // Do not let IPC liveness masquerade as input readiness. A throwaway Rime
-  // session proves that startup/internal maintenance has really completed.
-  const RimeSessionId readiness_session =
-      static_cast<RimeSessionId>(rime_api->create_session());
-  if (!readiness_session) {
-    LOG(ERROR) << "Rime initialization completed but session creation failed.";
-    return;
-  }
-  rime_api->destroy_session(readiness_session);
+  // Real session creation may lazily load schemas and dictionaries. Keep that
+  // work on START_SESSION, after ServerImpl has started IPC and published
+  // Ready; otherwise a slow/corrupt schema can strand the process in Starting
+  // with no usable pipe, blocking input, restart, and uninstall at once.
   m_disabled = false;
 }
 

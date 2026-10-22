@@ -286,7 +286,9 @@ constexpr DWORD kServerUnavailableRestartThresholdMs = 1500;
 constexpr DWORD kServerGracefulShutdownTimeoutMs = 1500;
 constexpr DWORD kServerForceTerminateThresholdMs = 5000;
 constexpr DWORD kServerForcedExitTimeoutMs = 1000;
-constexpr DWORD kServerNonReadyHardTimeoutMs = 15 * 60 * 1000;
+constexpr DWORD kServerStartingHardTimeoutMs = 30 * 1000;
+constexpr DWORD kServerMaintenanceHardTimeoutMs = 15 * 60 * 1000;
+constexpr DWORD kServerStoppingHardTimeoutMs = 30 * 1000;
 constexpr DWORD kServerLivenessProbeTimeoutMs = 100;
 constexpr DWORD kServerRecoveryWorkerRetryBudgetMs = 2500;
 constexpr DWORD kFirstKeyRecoveryPollMs = 5;
@@ -378,9 +380,22 @@ bool IsKnownNonReadyLifecycle(LONG lifecycle) noexcept {
 
 bool NonReadyLifecycleHardTimeoutExpired(
     const weasel::ServerRuntimeState& state) noexcept {
-  return IsKnownNonReadyLifecycle(state.lifecycle) &&
-         weasel::ServerLifecycleElapsedAtLeast(state.reserved, GetTickCount(),
-                                               kServerNonReadyHardTimeoutMs);
+  DWORD timeout_ms = 0;
+  if (state.lifecycle ==
+      static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
+    timeout_ms = kServerStartingHardTimeoutMs;
+  } else if (state.lifecycle ==
+             static_cast<LONG>(weasel::ServerLifecycle::Maintenance)) {
+    timeout_ms = kServerMaintenanceHardTimeoutMs;
+  } else if (state.lifecycle ==
+             static_cast<LONG>(weasel::ServerLifecycle::Stopping)) {
+    timeout_ms = kServerStoppingHardTimeoutMs;
+  } else {
+    return false;
+  }
+
+  return weasel::ServerLifecycleElapsedAtLeast(state.reserved, GetTickCount(),
+                                               timeout_ms);
 }
 
 bool IsServerInstancePresent(

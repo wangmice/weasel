@@ -150,8 +150,11 @@ if ($rimeInitBody -match 'start_maintenance\s*\(' -or
     $rimeInitBody -match 'join_maintenance_thread\s*\(') {
   throw 'WeaselServer startup must not run synchronous librime maintenance before IPC Ready'
 }
-if ($rimeInitBody -notmatch 'readiness_session[\s\S]*?create_session\(\)[\s\S]*?destroy_session\(readiness_session\)[\s\S]*?m_disabled\s*=\s*false') {
-  throw 'Rime initialization must prove real session readiness before enabling input'
+if ($rimeInitBody -match 'rime_api->create_session\s*\(') {
+  throw 'pre-IPC server startup must not create a real Rime session'
+}
+if ($rimeInitBody -notmatch 'm_disabled\s*=\s*false') {
+  throw 'Rime initialization must enable START_SESSION after non-session setup completes'
 }
 if ($ipcHeader -notmatch 'kDeployerExclusiveMutexName\[\][\s\S]*?WeaselDeployerExclusiveMutex' -or
     $rimeWithWeasel -notmatch 'OpenMutexW\(SYNCHRONIZE,\s*FALSE,\s*weasel::kDeployerExclusiveMutexName\)' -or
@@ -328,7 +331,7 @@ if ($restartStart -lt 0 -or $restartEnd -le $restartStart) {
   throw 'unable to isolate WeaselServer restart flow'
 }
 $restartFlow = $serverMain.Substring($restartStart, $restartEnd - $restartStart)
-$openProcess = $restartFlow.IndexOf('OpenRunningServerProcess(running_server, running_window)')
+$openProcess = $restartFlow.IndexOf('OpenRunningServerProcess(running_server, running_window,')
 $shutdown = $restartFlow.IndexOf('client.ShutdownServer()')
 $disconnect = $restartFlow.IndexOf('client.Disconnect()', $shutdown)
 $waitExit = $restartFlow.IndexOf('WaitForRunningServerExit(running_server)', $disconnect)
@@ -354,6 +357,17 @@ if ($restartFlow -notmatch 'ServerLifecycleLock\s+restart_lifecycle' -or
     $restartFlow -notmatch '\(connected\s*\|\|\s*running_server\)[\s\S]*?restart_lifecycle\.Acquire\(0\)' -or
     $restartFlow -notmatch 'client\.ShutdownServer\(\)[\s\S]*?WaitForRunningServerExit\(running_server\)') {
   throw 'normal restart must own the shared lifecycle lock while stopping an existing server'
+}
+
+if ($serverMain -notmatch 'ForceStopStartingServer\(' -or
+    $serverMain -notmatch 'TerminateProcess\(process,\s*ERROR_TIMEOUT\)' -or
+    $restartFlow -notmatch 'recovered_starting[\s\S]*?ForceStopStartingServer\(running_server,\s*running_window,[\s\S]*?running_state\)') {
+  throw 'explicit restart and quit must recover only an authenticated generation wedged in Starting'
+}
+if ($tsf -notmatch 'kServerStartingHardTimeoutMs\s*=\s*30\s*\*\s*1000' -or
+    $tsf -notmatch 'kServerMaintenanceHardTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000' -or
+    $tsf -notmatch 'kServerStoppingHardTimeoutMs\s*=\s*30\s*\*\s*1000') {
+  throw 'Starting and Stopping recovery deadlines must stay short without shortening deploy maintenance'
 }
 
 # IPC must be scoped by Windows session while retaining the legacy endpoint for

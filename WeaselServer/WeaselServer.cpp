@@ -20,6 +20,7 @@ CAppModule _Module;
 
 namespace {
 constexpr DWORD kServerShutdownTimeoutMs = 30000;
+constexpr DWORD kStartingServerForcedExitTimeoutMs = 2000;
 
 struct RuntimeCleanup {
   bool com_initialized = false;
@@ -112,8 +113,10 @@ HWND FindServerWindowForProcess(DWORD process_id) noexcept {
 bool OpenValidatedServerProcess(DWORD process_id,
                                 UINT64 expected_creation_time,
                                 HANDLE& process) noexcept {
-  process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
-                        process_id);
+  process =
+      OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION |
+                      PROCESS_TERMINATE,
+                  FALSE, process_id);
   if (!process)
     return GetLastError() == ERROR_INVALID_PARAMETER;
 
@@ -127,9 +130,14 @@ bool OpenValidatedServerProcess(DWORD process_id,
   return false;
 }
 
-bool OpenRunningServerProcess(HANDLE& process, HWND& window) {
+bool OpenRunningServerProcess(
+    HANDLE& process,
+    HWND& window,
+    weasel::ServerRuntimeState* runtime_state = nullptr) {
   process = nullptr;
   window = nullptr;
+  if (runtime_state)
+    *runtime_state = {};
 
   weasel::ServerRuntimeState state{};
   if (ReadServerRuntimeState(state)) {
@@ -139,6 +147,8 @@ bool OpenRunningServerProcess(HANDLE& process, HWND& window) {
     }
     if (process)
       window = FindServerWindowForProcess(state.process_id);
+    if (runtime_state)
+      *runtime_state = state;
     return true;
   }
 
@@ -173,6 +183,50 @@ bool WaitForRunningServerExit(HANDLE process) {
       WaitForSingleObject(process, kServerShutdownTimeoutMs);
   CloseHandle(process);
   return wait_result == WAIT_OBJECT_0;
+}
+
+bool SameServerGeneration(const weasel::ServerRuntimeState& lhs,
+                          const weasel::ServerRuntimeState& rhs) noexcept {
+  return lhs.version == rhs.version && lhs.process_id == rhs.process_id &&
+         lhs.process_creation_time == rhs.process_creation_time;
+}
+
+bool ForceStopStartingServer(
+    HANDLE process,
+    HWND window,
+    const weasel::ServerRuntimeState& expected_state) noexcept {
+  if (!process ||
+      expected_state.lifecycle !=
+          static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
+    return false;
+  }
+
+  weasel::ServerRuntimeState current{};
+  if (!ReadServerRuntimeState(current) ||
+      !SameServerGeneration(current, expected_state) ||
+      current.lifecycle !=
+          static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
+    return false;
+  }
+
+  if (window)
+    PostMessageW(window, WM_CLOSE, 0, 0);
+  if (WaitForSingleObject(process, kStartingServerForcedExitTimeoutMs) ==
+      WAIT_OBJECT_0) {
+    return true;
+  }
+
+  if (!ReadServerRuntimeState(current) ||
+      !SameServerGeneration(current, expected_state) ||
+      current.lifecycle !=
+          static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
+    return false;
+  }
+
+  if (!TerminateProcess(process, ERROR_TIMEOUT))
+    return false;
+  return WaitForSingleObject(process, kStartingServerForcedExitTimeoutMs) ==
+         WAIT_OBJECT_0;
 }
 }  // namespace
 
@@ -258,7 +312,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   bool quit = !wcscmp(L"/q", lpstrCmdLine) || !wcscmp(L"/quit", lpstrCmdLine);
   HANDLE running_server = nullptr;
   HWND running_window = nullptr;
-  if (!OpenRunningServerProcess(running_server, running_window)) {
+  weasel::ServerRuntimeState running_state{};
+  if (!OpenRunningServerProcess(running_server, running_window,
+                                &running_state)) {
     LOG(ERROR) << "failed to validate the running WeaselServer process";
     return 1;
   }
@@ -273,12 +329,35 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
 
     weasel::ServerLifecycleLock restart_lifecycle;
     if ((connected || running_server) && !restart_lifecycle.Acquire(0)) {
-      LOG(WARNING) << "another server lifecycle operation is active; refusing "
-                      "to restart or quit WeaselServer";
+      const bool recovered_starting =
+          running_server &&
+          running_state.lifecycle ==
+              static_cast<LONG>(weasel::ServerLifecycle::Starting) &&
+          ForceStopStartingServer(running_server, running_window,
+                                  running_state);
+      if (!recovered_starting) {
+        LOG(WARNING)
+            << "another server lifecycle operation is active; refusing "
+               "to restart or quit WeaselServer";
+        client.Disconnect();
+        if (running_server)
+          CloseHandle(running_server);
+        return 1;
+      }
+
       client.Disconnect();
-      if (running_server)
-        CloseHandle(running_server);
-      return 1;
+      CloseHandle(running_server);
+      running_server = nullptr;
+      running_window = nullptr;
+      running_state = {};
+      if (quit)
+        return 0;
+
+      if (!restart_lifecycle.Acquire(kStartingServerForcedExitTimeoutMs)) {
+        LOG(WARNING) << "lifecycle ownership changed after recovering a stuck "
+                        "Starting server";
+        return 1;
+      }
     }
 
     if (connected) {
@@ -286,7 +365,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
       // that happened, capture it now so the restart still has a process-exit
       // barrier rather than reverting to the old pipe-only race.
       if (!running_server) {
-        if (!OpenRunningServerProcess(running_server, running_window) ||
+        if (!OpenRunningServerProcess(running_server, running_window,
+                                      &running_state) ||
             !running_server) {
           LOG(ERROR)
               << "connected to WeaselServer but could not validate its process";
