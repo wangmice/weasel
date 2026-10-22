@@ -16,6 +16,23 @@ foreach ($name in @('build.bat', 'xbuild.bat')) {
   }
 }
 
+$makeInstaller = Get-Content -LiteralPath (Join-Path $repo 'make-installer.ps1') -Raw
+if ($makeInstaller -notmatch "Join-Path\s+\$repo\s+'VERSION'" -or
+    $makeInstaller -notmatch "Get-Content\s+-LiteralPath\s+\$versionPath\s+-Raw" -or
+    $makeInstaller -notmatch '\$repositoryVersion\.Split\(') {
+  throw 'make-installer.ps1 must derive version metadata from VERSION'
+}
+if ($makeInstaller -notmatch '\$releaseBuild\s*=\s*\$Release' -or
+    $makeInstaller -notmatch 'if\s*\(\$releaseBuild\)[\s\S]*?\$major\s*=\s*\$versionParts\[0\][\s\S]*?\$minor\s*=\s*\$versionParts\[1\][\s\S]*?\$patch\s*=\s*\$versionParts\[2\]') {
+  throw 'make-installer.ps1 -Release must take MAJOR.MINOR.PATCH exclusively from VERSION'
+}
+if ($makeInstaller -notmatch 'else\s*\{[\s\S]*?\$env:VERSION_MAJOR[\s\S]*?\$env:VERSION_MINOR[\s\S]*?\$env:VERSION_PATCH') {
+  throw 'make-installer.ps1 may allow component overrides only on non-release builds'
+}
+if ($makeInstaller -notmatch "if\s*\(\$releaseBuild\)[\s\S]*?\$weaselBuild\s*=\s*'0'") {
+  throw 'make-installer.ps1 -Release must force WEASEL_BUILD=0 when no explicit build override is supplied'
+}
+
 $xmake = Get-Content -LiteralPath (Join-Path $repo 'xmake.lua') -Raw
 if ($xmake -notmatch 'path\.join\(os\.projectdir\(\),\s*"VERSION"\)') {
   throw 'xmake.lua must load the repository VERSION file for direct xmake builds'
