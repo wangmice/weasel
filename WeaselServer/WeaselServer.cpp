@@ -113,10 +113,9 @@ HWND FindServerWindowForProcess(DWORD process_id) noexcept {
 bool OpenValidatedServerProcess(DWORD process_id,
                                 UINT64 expected_creation_time,
                                 HANDLE& process) noexcept {
-  process =
-      OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION |
-                      PROCESS_TERMINATE,
-                  FALSE, process_id);
+  process = OpenProcess(
+      SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+      FALSE, process_id);
   if (!process)
     return GetLastError() == ERROR_INVALID_PARAMETER;
 
@@ -195,9 +194,8 @@ bool ForceStopStartingServer(
     HANDLE process,
     HWND window,
     const weasel::ServerRuntimeState& expected_state) noexcept {
-  if (!process ||
-      expected_state.lifecycle !=
-          static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
+  if (!process || expected_state.lifecycle !=
+                      static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
     return false;
   }
 

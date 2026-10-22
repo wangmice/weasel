@@ -381,8 +381,7 @@ bool IsKnownNonReadyLifecycle(LONG lifecycle) noexcept {
 bool NonReadyLifecycleHardTimeoutExpired(
     const weasel::ServerRuntimeState& state) noexcept {
   DWORD timeout_ms = 0;
-  if (state.lifecycle ==
-      static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
+  if (state.lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Starting)) {
     timeout_ms = kServerStartingHardTimeoutMs;
   } else if (state.lifecycle ==
              static_cast<LONG>(weasel::ServerLifecycle::Maintenance)) {
@@ -653,9 +652,8 @@ bool ReadRecoveryRegistryString(const wchar_t* subkey,
   DWORD type = REG_NONE;
   constexpr DWORD kMaxRegistryStringBytes = 32768 * sizeof(wchar_t);
   status = RegQueryValueExW(key, name, nullptr, &type, nullptr, &bytes);
-  if (status != ERROR_SUCCESS || type != REG_SZ ||
-      bytes < sizeof(wchar_t) || bytes > kMaxRegistryStringBytes ||
-      bytes % sizeof(wchar_t) != 0) {
+  if (status != ERROR_SUCCESS || type != REG_SZ || bytes < sizeof(wchar_t) ||
+      bytes > kMaxRegistryStringBytes || bytes % sizeof(wchar_t) != 0) {
     RegCloseKey(key);
     if (status == ERROR_SUCCESS)
       status = ERROR_INVALID_DATA;
@@ -692,8 +690,7 @@ bool ReadRecoveryRegistryString(const wchar_t* subkey,
 
 RecoveryServerDirectory FindRecoveryServerDirectory() {
   RecoveryServerDirectory result;
-  constexpr REGSAM kViews[] = {
-      0, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+  constexpr REGSAM kViews[] = {0, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
   constexpr DWORD kViewIds[] = {0, 32, 64};
   constexpr wchar_t kMachineRunKey[] =
       L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -708,8 +705,7 @@ RecoveryServerDirectory FindRecoveryServerDirectory() {
                                       status)) {
         // Keep the actual registry error, but don't let an unsupported
         // alternate view mask the native ERROR_FILE_NOT_FOUND diagnosis.
-        if (status != ERROR_FILE_NOT_FOUND &&
-            status != ERROR_INVALID_PARAMETER)
+        if (status != ERROR_FILE_NOT_FOUND && status != ERROR_INVALID_PARAMETER)
           result.last_error = status;
         continue;
       }
@@ -722,8 +718,7 @@ RecoveryServerDirectory FindRecoveryServerDirectory() {
           candidate = candidate.substr(1, candidate.size() - 2);
         const auto slash = candidate.find_last_of(L"\\/");
         if (slash == std::wstring::npos ||
-            _wcsicmp(candidate.c_str() + slash + 1,
-                     L"WeaselServer.exe") != 0)
+            _wcsicmp(candidate.c_str() + slash + 1, L"WeaselServer.exe") != 0)
           continue;
         candidate.resize(slash);
       }
