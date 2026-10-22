@@ -199,14 +199,10 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
  * OnKeyDown() never comes.
  *
  * We use the pending state to omit multiple OnTestKeyDown() calls, and for
- * OnKeyDown() to check if the key has already been sent to the server. The
- * pending state is keyed by virtual-key code only: the paired Test/Key
- * callbacks are not guaranteed to carry identical lParam (for non-TSF apps
- * the caller is the CUAS IMM32-bridge, which may pass different lParam bits
- * between the two calls), while the vkey is the whole key identity this
- * component consumes (see KeyEvent.cpp). Any event for a different key
- * starts a new cycle, so a stale pending flag (its paired call was
- * swallowed) cannot eat the next key.
+ * OnKeyDown() to check if the key has already been sent to the server. Test
+ * and Key callbacks are paired by virtual-key plus GetMessageTime(): CUAS/IMM
+ * bridges do not guarantee identical lParam, while message time distinguishes
+ * a swallowed old Test callback from a later physical repeat of the same key.
  */
 
 STDMETHODIMP WeaselTSF::OnTestKeyDown(ITfContext* pContext,
@@ -234,8 +230,9 @@ STDMETHODIMP WeaselTSF::OnKeyDown(ITfContext* pContext,
                                   LPARAM lParam,
                                   BOOL* pfEaten) {
   _testKeyUpPending.Clear();
-  if (_testKeyDownPending.ConsumePairedKey(
-          static_cast<std::uint32_t>(wParam))) {
+  const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
+  const auto vkey = static_cast<std::uint32_t>(wParam);
+  if (_testKeyDownPending.ConsumePairedKey(vkey, messageTime)) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);
@@ -269,7 +266,9 @@ STDMETHODIMP WeaselTSF::OnKeyUp(ITfContext* pContext,
                                 LPARAM lParam,
                                 BOOL* pfEaten) {
   _testKeyDownPending.Clear();
-  if (_testKeyUpPending.ConsumePairedKey(static_cast<std::uint32_t>(wParam))) {
+  const auto messageTime = static_cast<std::uint32_t>(::GetMessageTime());
+  const auto vkey = static_cast<std::uint32_t>(wParam);
+  if (_testKeyUpPending.ConsumePairedKey(vkey, messageTime)) {
     *pfEaten = TRUE;
   } else {
     _ProcessKeyEvent(wParam, lParam, pfEaten);

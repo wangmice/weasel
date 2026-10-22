@@ -23,10 +23,13 @@ struct PendingTestKeyState {
     test_message_time = message_time;
   }
 
-  // Any real OnKey* callback ends the previous Test cycle. It is a duplicate
-  // only when the virtual key matches; a different key starts a new cycle.
-  bool ConsumePairedKey(std::uint32_t key) {
-    const bool duplicate = pending && vkey == key;
+  // Any real OnKey* callback ends the previous Test cycle. Treat it as the
+  // paired delivery only when it belongs to the same Windows input message.
+  // Some bridges alter lParam between Test/Key callbacks, so message time is
+  // the stable identity used here as well as for duplicate Test callbacks.
+  bool ConsumePairedKey(std::uint32_t key, std::uint32_t message_time) {
+    const bool duplicate =
+        pending && vkey == key && test_message_time == message_time;
     Clear();
     return duplicate;
   }

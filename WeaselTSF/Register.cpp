@@ -43,6 +43,23 @@ ULONG TextServiceDescriptionCch(const std::wstring& description) {
   return static_cast<ULONG>(capped);
 }
 
+std::wstring GetModulePath(HMODULE module) {
+  DWORD capacity = 260;
+  for (;;) {
+    std::vector<wchar_t> buffer(capacity);
+    const DWORD buffer_size = static_cast<DWORD>(buffer.size());
+    const DWORD copied = GetModuleFileNameW(module, buffer.data(), buffer_size);
+    if (copied == 0)
+      return {};
+    if (copied < buffer.size())
+      return std::wstring(buffer.data(), copied);
+
+    if (capacity >= 32768)
+      return {};
+    capacity = (std::min)(capacity * 2, static_cast<DWORD>(32768));
+  }
+}
+
 BOOL RegisterProfiles() {
 #define CHECK_HR(hr) \
   if (FAILED(hr))    \
@@ -67,17 +84,18 @@ BOOL RegisterProfiles() {
   const ULONG text_service_desc_len =
       TextServiceDescriptionCch(text_service_desc);
 
-  WCHAR achIconFile[MAX_PATH] = {};
-  const DWORD cchIconFile =
-      GetModuleFileNameW(g_hInst, achIconFile, ARRAYSIZE(achIconFile));
-  if (cchIconFile == 0 || cchIconFile >= ARRAYSIZE(achIconFile))
+  const std::wstring icon_file = GetModulePath(g_hInst);
+  if (icon_file.empty() ||
+      icon_file.size() >
+          static_cast<size_t>((std::numeric_limits<ULONG>::max)()))
     return FALSE;
+  const ULONG icon_file_len = static_cast<ULONG>(icon_file.size());
 
   const auto register_profile = [&](LANGID langId, HKL hkl, BOOL enable) {
     return pInputProcessorProfileMgr->RegisterProfile(
         c_clsidTextService, langId, c_guidProfile, text_service_desc_str,
-        text_service_desc_len, achIconFile, cchIconFile, TEXTSERVICE_ICON_INDEX,
-        hkl, 0, enable, 0);
+        text_service_desc_len, icon_file.c_str(), icon_file_len,
+        TEXTSERVICE_ICON_INDEX, hkl, 0, enable, 0);
   };
 
   const auto hkl_hans = FindIME(TEXTSERVICE_LANGID_HANS);
@@ -198,7 +216,25 @@ BOOL RegisterServer() {
   HKEY hSubKey;
   BOOL fRet;
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
-  char achFileName[MAX_PATH];
+
+  std::wstring module_path = GetModulePath(g_hInst);
+  if (module_path.empty())
+    return FALSE;
+
+#ifdef _M_ARM64
+  // ARM64 loads the architecture-specific payload beside the ARM64X
+  // redirector. Register the redirector itself for future COM activation.
+  const size_t separator = module_path.find_last_of(L"\\/");
+  if (separator == std::wstring::npos)
+    return FALSE;
+  module_path.resize(separator + 1);
+  module_path += L"weasel.dll";
+#endif
+
+  const auto* module_path_data =
+      reinterpret_cast<const BYTE*>(module_path.c_str());
+  const DWORD module_path_bytes =
+      static_cast<DWORD>((module_path.size() + 1) * sizeof(wchar_t));
 
   if (!CLSIDToStringA(c_clsidTextService,
                       achIMEKey + ARRAYSIZE(c_szInfoKeyPrefix) - 1))
@@ -213,27 +249,8 @@ BOOL RegisterServer() {
     if (fRet &=
         RegCreateKeyExA(hKey, c_szInProcSvr32, 0, NULL, REG_OPTION_NON_VOLATILE,
                         KEY_WRITE, NULL, &hSubKey, &dw) == ERROR_SUCCESS) {
-      dw = GetModuleFileNameA(g_hInst, achFileName, ARRAYSIZE(achFileName));
-
-#ifdef _M_ARM64
-      {
-        // On ARM64 we use ARM64X redirection DLL.
-        // When loaded, weasel.dll will be redirected to weaselARM64.dll on
-        // ARM64 processes, and weaselx64.dll on x64 processes.
-        //
-        // But GetModuleFileNameA will return the actual loaded DLL name aka
-        // weaselARM64.dll Rewrite the path to point to the redirector.
-
-        char wrapperPath[MAX_PATH];
-        StringCbCatA(achFileName, MAX_PATH, "\\..\\weasel.dll");
-        GetFullPathNameA(achFileName, MAX_PATH, wrapperPath, NULL);
-        memcpy(achFileName, wrapperPath, MAX_PATH);
-      }
-#endif
-
-      fRet &= RegSetValueExA(hSubKey, NULL, 0, REG_SZ, (BYTE*)achFileName,
-                             (strlen(achFileName) + 1) * sizeof(char)) ==
-              ERROR_SUCCESS;
+      fRet &= RegSetValueExW(hSubKey, NULL, 0, REG_SZ, module_path_data,
+                             module_path_bytes) == ERROR_SUCCESS;
       fRet &= RegSetValueExA(hSubKey, c_szModelName, 0, REG_SZ,
                              (BYTE*)TEXTSERVICE_MODEL,
                              sizeof TEXTSERVICE_MODEL) == ERROR_SUCCESS;

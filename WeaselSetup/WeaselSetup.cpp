@@ -78,13 +78,14 @@ constexpr DWORD kServerTransitionTimeoutMs = 30000;
 bool RunProcessAndWait(const std::wstring& executable,
                        const std::wstring& parameters,
                        DWORD timeout_ms,
-                       DWORD& exit_code) {
+                       DWORD& exit_code,
+                       int show = SW_SHOWNORMAL) {
   SHELLEXECUTEINFOW exec{};
   exec.cbSize = sizeof(exec);
   exec.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
   exec.lpFile = executable.c_str();
   exec.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
-  exec.nShow = SW_SHOWNORMAL;
+  exec.nShow = show;
   if (!ShellExecuteExW(&exec) || !exec.hProcess)
     return false;
 
@@ -181,7 +182,8 @@ bool RestartServer(const std::wstring& dir) {
 bool RunDeployer(const std::wstring& dir) {
   const std::wstring deployer = dir + L"\\WeaselDeployer.exe";
   DWORD deploy_exit_code = 0;
-  return RunProcessAndWait(deployer, L"/deploy", INFINITE, deploy_exit_code) &&
+  return RunProcessAndWait(deployer, L"/deploy", INFINITE, deploy_exit_code,
+                           SW_HIDE) &&
          deploy_exit_code == 0;
 }
 }  // namespace

@@ -159,14 +159,20 @@ static void testPendingTestKeyPairing() {
   check(!pending.IsDuplicateTest('A', 101),
         "pairing: later same-vkey message is a new physical key");
 
-  pending.Arm('A', 101);
-  check(pending.ConsumePairedKey('A'),
+  // A host may swallow the paired OnKey callback for the first Test event and
+  // later deliver the next same-vkey input as OnKey-only. Different message
+  // time means it is a new physical key and must reach the server.
+  check(!pending.ConsumePairedKey('A', 101),
+        "pairing: stale Test state cannot swallow later same-vkey OnKey");
+
+  pending.Arm('A', 110);
+  check(pending.ConsumePairedKey('A', 110),
         "pairing: matching OnKey callback is consumed once");
-  check(!pending.ConsumePairedKey('A'),
+  check(!pending.ConsumePairedKey('A', 110),
         "pairing: consumed state cannot swallow another key");
 
   pending.Arm('A', 200);
-  check(!pending.ConsumePairedKey('B'),
+  check(!pending.ConsumePairedKey('B', 200),
         "pairing: different vkey is not treated as the old pair");
   check(!pending.pending, "pairing: different key ends the stale Test cycle");
 

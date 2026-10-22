@@ -198,15 +198,14 @@ LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
     LOG(ERROR) << "Error reading registry value WeaselRoot.";
     return 0;
   }
-  WCHAR parameters[MAX_PATH + 37];
-  wcscpy_s<_countof(parameters)>(
-      parameters, (L"/c \"" + weaselRoot + L"\\rime-install.bat\"").c_str());
+  const std::wstring parameters =
+      L"/c \"" + weaselRoot + L"\\rime-install.bat\"";
   SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO),
                            SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
                            hWndCtl,
                            L"open",
                            L"cmd",
-                           parameters,
+                           parameters.c_str(),
                            NULL,
                            SW_SHOW,
                            NULL,

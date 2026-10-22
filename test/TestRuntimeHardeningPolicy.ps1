@@ -12,8 +12,14 @@ $serverApp = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\WeaselServe
 $systemTray = Get-Content -LiteralPath (Join-Path $repo 'WeaselServer\SystemTraySDK.cpp') -Raw
 $serverImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
+$textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
+$registerCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Register.cpp') -Raw
 $d2d = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\d2d.cpp') -Raw
 $configurator = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\Configurator.cpp') -Raw
+$deployerMain = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\WeaselDeployer.cpp') -Raw
+$fontSettingsDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\FontSettingDialog.cpp') -Raw
+$dictManagementDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\DictManagementDialog.cpp') -Raw
+$switcherDialog = Get-Content -LiteralPath (Join-Path $repo 'WeaselDeployer\SwitcherSettingsDialog.cpp') -Raw
 $serverCommandsTest = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\TestServerCommands.cpp') -Raw
 $serverCommandsXmake = Get-Content -LiteralPath (Join-Path $repo 'test\TestServerCommands\xmake.lua') -Raw
 $weaselTsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
@@ -196,6 +202,75 @@ if ($systemTray -notmatch 'm_hInstance\s*=\s*NULL' -or
     $systemTray -notmatch 'm_StartTime\s*=\s*0' -or
     $systemTray -notmatch 'm_nAnimationPeriod\s*=\s*0') {
   throw 'CSystemTray must initialize every handle and animation field before Create() can fail'
+}
+
+$comboRead = [regex]::Match(
+  $fontSettingsDialog,
+  'wstring\s+FontSettingDialog::GetComboBoxSelectStr\(HWND\s+target\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $comboRead.Success -or
+    $comboRead.Groups['body'].Value -match 'wchar_t\s+buffer\s*\[4096\]' -or
+    $comboRead.Groups['body'].Value -notmatch 'CB_GETLBTEXTLEN' -or
+    $comboRead.Groups['body'].Value -notmatch 'std::vector<wchar_t>\s+buffer' -or
+    $comboRead.Groups['body'].Value -notmatch 'buffer\.data\(\)') {
+  throw 'FontSettingDialog combo-box reads must size storage from CB_GETLBTEXTLEN'
+}
+
+$threadFocusUninit = [regex]::Match(
+  $tsf,
+  'void\s+WeaselTSF::_UninitThreadFocusSink\(\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $threadFocusUninit.Success -or
+    $threadFocusUninit.Groups['body'].Value -notmatch '_dwThreadFocusSinkCookie\s*==\s*TF_INVALID_COOKIE' -or
+    $threadFocusUninit.Groups['body'].Value -notmatch 'const\s+DWORD\s+cookie\s*=\s*_dwThreadFocusSinkCookie' -or
+    $threadFocusUninit.Groups['body'].Value -notmatch '_dwThreadFocusSinkCookie\s*=\s*TF_INVALID_COOKIE' -or
+    $threadFocusUninit.Groups['body'].Value -notmatch 'UnadviseSink\(cookie\)') {
+  throw 'thread-focus sink cleanup must invalidate the stored cookie before touching a new source'
+}
+
+$textSinkInit = [regex]::Match(
+  $textEditSink,
+  'BOOL\s+WeaselTSF::_InitTextEditSink\(com_ptr<ITfDocumentMgr>\s+pDocMgr\)\s*\{(?<body>[\s\S]*?)\n\}',
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $textSinkInit.Success -or
+    $textSinkInit.Groups['body'].Value -notmatch 'AdviseSink\(IID_ITfTextEditSink' -or
+    $textSinkInit.Groups['body'].Value -notmatch '_dwTextEditSinkCookie\s*=\s*TF_INVALID_COOKIE[\s\S]*?_pTextEditSinkContext\s*=\s*nullptr[\s\S]*?return\s+FALSE' -or
+    $textSinkInit.Groups['body'].Value -notmatch 'AdviseSink\(IID_ITfTextLayoutSink' -or
+    $textSinkInit.Groups['body'].Value -notmatch '_dwTextLayoutSinkCookie\s*=\s*TF_INVALID_COOKIE[\s\S]*?return\s+TRUE') {
+  throw 'text-edit sink must be mandatory while layout notifications remain optional'
+}
+if ($tsf -notmatch 'GetFocus\(&pDocMgrFocus\)[\s\S]*?!_InitTextEditSink\(pDocMgrFocus\)[\s\S]*?goto\s+ExitError') {
+  throw 'activation must fail when the focused document cannot establish its text-edit sink'
+}
+
+if ($dictManagementDialog -match 'WideCharToMultiByte\(CP_UTF8[\s\S]{0,160}selected_path' -or
+    $dictManagementDialog -match 'char\s+path\s*\[MAX_PATH\]' -or
+    $dictManagementDialog -notmatch 'const\s+std::string\s+path\s*=\s*wtou8\(selected_path\)') {
+  throw 'dictionary file-dialog paths must remain dynamically sized UTF-8 strings'
+}
+if ($switcherDialog -match 'WCHAR\s+parameters\s*\[MAX_PATH' -or
+    $switcherDialog -notmatch 'const\s+std::wstring\s+parameters' -or
+    $switcherDialog -notmatch 'parameters\.c_str\(\)') {
+  throw 'schema-installer command lines must not fall back to MAX_PATH storage'
+}
+
+if ($deployerMain -notmatch 'struct\s+RuntimeCleanup' -or
+    $deployerMain -notmatch 'if\s*\(FAILED\(hRes\)\)[\s\S]*?CoInitialize failed' -or
+    $deployerMain -notmatch 'cleanup\.com_initialized\s*=\s*true' -or
+    $deployerMain -notmatch 'ATL module initialization failed' -or
+    $deployerMain -notmatch 'cleanup\.module_initialized\s*=\s*true' -or
+    $deployerMain -match 'ATLASSERT\(SUCCEEDED\(hRes\)\)') {
+  throw 'WeaselDeployer must handle COM/ATL initialization failures at runtime with scoped cleanup'
+}
+
+if ($registerCpp -notmatch 'std::wstring\s+GetModulePath\(HMODULE\s+module\)' -or
+    $registerCpp -notmatch 'std::vector<wchar_t>\s+buffer\(capacity\)' -or
+    $registerCpp -match 'WCHAR\s+achIconFile\s*\[MAX_PATH\]' -or
+    $registerCpp -match 'char\s+achFileName\s*\[MAX_PATH\]' -or
+    $registerCpp -match 'GetModuleFileNameA\(' -or
+    $registerCpp -notmatch 'module_path_data\s*=\s*[\s\S]*?module_path\.c_str\(\)' -or
+    $registerCpp -notmatch 'RegSetValueExW\([\s\S]*?module_path_data[\s\S]*?module_path_bytes') {
+  throw 'TSF profile/COM registration must keep module paths dynamically sized and Unicode'
 }
 
 # WinSparkle setup, manual update checks, and cleanup must share one lifetime.
