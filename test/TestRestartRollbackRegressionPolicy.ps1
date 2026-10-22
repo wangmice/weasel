@@ -12,7 +12,7 @@ if ($restartStart -lt 0 -or $restartEnd -le $restartStart) {
   throw 'unable to isolate WeaselServer restart flow'
 }
 $restart = $serverMain.Substring($restartStart, $restartEnd - $restartStart)
-if ($serverMain -notmatch 'OpenProcess\(SYNCHRONIZE\s*\|\s*PROCESS_QUERY_LIMITED_INFORMATION') {
+if ($serverMain -notmatch 'OpenProcess\(\s*SYNCHRONIZE\s*\|\s*PROCESS_QUERY_LIMITED_INFORMATION\s*\|\s*PROCESS_TERMINATE') {
   throw 'restart must retain enough process rights to verify fallback-window ownership'
 }
 if ($restart -notmatch 'else\s+if\s*\(running_server\)') {

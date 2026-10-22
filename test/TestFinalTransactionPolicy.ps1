@@ -64,7 +64,7 @@ $deployEnd = $installer.IndexOf('; option CheckForUpdates:', $deploy)
 $deployBlock = $installer.Substring($deploy, $deployEnd - $deploy)
 Assert-Policy ($deployBlock.Contains('ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3')) `
   'interactive deployment must capture WeaselDeployer exit status'
-Assert-Policy ($deployBlock.Contains('ExecWait "$INSTDIR\WeaselDeployer.exe /deploy" $R3')) `
+Assert-Policy ($deployBlock.Contains('ExecWait "$INSTDIR\WeaselDeployer.exe /install-deploy" $R3')) `
   'silent deployment must capture WeaselDeployer exit status'
 Assert-Policy (-not $deployBlock.Contains('Call RollbackPreviousInstall')) `
   'deployment failure must not roll an already-mutated workspace back to older binaries'

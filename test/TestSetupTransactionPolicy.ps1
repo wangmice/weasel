@@ -89,7 +89,14 @@ if ($imeSetup -notmatch 'static\s+bool\s+read_pending_uninstall_phase[\s\S]*?ope
     $uninstallFlow -notmatch 'if\s*\(!read_pending_uninstall_phase\(&pending\)\)\s*return\s+1;') {
   throw 'uninstall must fail closed when the persisted recovery phase cannot be read'
 }
-if ($transactionalFlow -notmatch 'is_profile_enabled_by_default[\s\S]*?enabled_by_default') {
+$captureStart = $imeSetup.IndexOf('static bool capture_text_service_user_state(')
+$captureEnd = $imeSetup.IndexOf('static int process_tsf_registration_file(', $captureStart)
+if ($captureStart -lt 0 -or $captureEnd -le $captureStart) {
+  throw 'unable to isolate TSF uninstall state snapshot'
+}
+$captureFlow = $imeSetup.Substring($captureStart, $captureEnd - $captureStart)
+if ($captureFlow -notmatch 'is_profile_enabled_by_default\s*\(\s*state\.profile,\s*&state\.enabled_by_default\s*\)' -or
+    $transactionalFlow -notmatch 'capture_text_service_user_state\(states\)[\s\S]*?set_pending_uninstall_phase\(PendingUninstallPhase::LogicalRetry\)') {
   throw 'TSF uninstall must snapshot machine default-profile state before unregistering'
 }
 if ($transactionalFlow -notmatch 'set_pending_uninstall_phase\(PendingUninstallPhase::LogicalRetry\)[\s\S]*?RunTsfUninstallTransaction') {
