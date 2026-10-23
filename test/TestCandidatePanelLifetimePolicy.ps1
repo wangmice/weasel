@@ -44,8 +44,25 @@ if ($panel -notmatch 'GetModuleHandleExW\([\s\S]*?GET_MODULE_HANDLE_EX_FLAG_FROM
     $panelHeader -notmatch 'HMODULE\s+m_windowClassModule') {
   throw 'window class must be module-owned and unregistered before unloading callback code'
 }
-if ($panel -notmatch 'DestroyWindow\(\)[\s\S]*?if\s*\(!::DestroyWindow\(hwnd\)\s*&&\s*::IsWindow\(hwnd\)\)[\s\S]*?SetWindowLongPtrW\(hwnd,\s*GWLP_USERDATA,\s*0\)') {
-  throw 'failed window destruction must remove stale panel user data'
+if ($panel -notmatch 'SendMessageTimeoutW\(hwnd,\s*WM_WEASEL_DESTROY_OWNER' -or
+    $panel -notmatch 'SMTO_ABORTIFHUNG\s*\|\s*SMTO_BLOCK' -or
+    $panel -notmatch 'g_panelClassSerial\.fetch_add\(') {
+  throw 'panel teardown must synchronize with HWND owner and use generation-unique classes'
+}
+$ui = Get-Content -LiteralPath (Join-Path $repo 'WeaselUI\WeaselUI.cpp') -Raw
+$uiHeader = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselUI.h') -Raw
+if ($ui -notmatch 'if\s*\(!pimpl_->panel\.DestroyWindow\(full\)\)[\s\S]*?pimpl_\.release\(\)' -or
+    $uiHeader -notmatch 'struct\s+UISharedState' -or
+    $panelHeader -notmatch 'shared_ptr<UISharedState>\s+m_uiState') {
+  throw 'failed window destruction must preserve panel and referenced state'
+}
+$langBar = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\LanguageBar.cpp') -Raw
+$langBarHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\LanguageBar.h') -Raw
+if ($langBarHeader -notmatch 'UIStyle\s+_style;' -or
+    $langBarHeader -match 'UIStyle&\s+_style' -or
+    $langBar -notmatch '_pLangBarButton->DetachOwner\(\)' -or
+    $langBar -notmatch 'UpdateWeaselStatus\(stat,\s*_cand->style\(\)\)') {
+  throw 'host-retained language bar must own its style and detach from TIP'
 }
 if ($panel -match 'GetModuleHandle\(nullptr\);\s*WNDCLASS' -or
     $panel -match 'ERROR_CLASS_ALREADY_EXISTS\)') {

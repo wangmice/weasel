@@ -4,6 +4,7 @@
 #include "VHorizontalLayout.h"
 #include "VerticalLayout.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -76,13 +77,19 @@ void LoadIconIfNeed(wstring& loaded_path,
   loaded_path.swap(path);
 }
 
+namespace {
+std::atomic<std::uint64_t> g_panelClassSerial{0};
+constexpr UINT kPanelDestroyWaitMs = 2000;
+}  // namespace
+
 struct WeaselUIUpdate {
   Context ctx;
   Status status;
 };
 
 WeaselPanel::WeaselPanel(UI& ui)
-    : m_hWnd(nullptr),
+    : m_uiState(ui.SharedState()),
+      m_hWnd(nullptr),
       m_ctx(ui.ctx()),
       m_layout(nullptr),
       m_pD2D(nullptr),
@@ -114,8 +121,10 @@ WeaselPanel::WeaselPanel(UI& ui)
 }
 
 WeaselPanel::~WeaselPanel() {
-  if (m_hWnd && ::IsWindow(m_hWnd))
-    DestroyWindow();
+  // UI::Destroy keeps this entire object alive when owner-thread teardown
+  // times out; do not release a window class from a still-running WNDPROC.
+  if (m_hWnd && ::IsWindow(m_hWnd) && !DestroyWindow())
+    DEBUG << "WeaselPanel destroyed with live owner-thread window";
   _UnregisterWindowClass();
 
   if (!m_current_zhung_icon.empty())
@@ -138,10 +147,13 @@ bool WeaselPanel::_RegisterWindowClass() {
                           &module))
     return false;
 
-  // A per-panel class cannot alias an earlier module generation's WNDPROC,
-  // or a class registered by another WeaselUI copy inside the host process.
-  const auto address = reinterpret_cast<std::uintptr_t>(this);
-  m_windowClassName = L"WeaselPanel." + std::to_wstring(address);
+  // The module address and a monotonic class generation prevent collisions
+  // when the allocator reuses an old Panel address.
+  const auto moduleAddress = reinterpret_cast<std::uintptr_t>(module);
+  const auto serial =
+      g_panelClassSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+  m_windowClassName = L"WeaselPanel." + std::to_wstring(moduleAddress) + L"." +
+                      std::to_wstring(serial);
 
   WNDCLASSW wc = {};
   wc.lpfnWndProc = WeaselPanel::WindowProc;
@@ -303,27 +315,34 @@ void WeaselPanel::_CancelAutoHide() {
     _ApplyVisibility(PanelVisibility::Hide, 0);
 }
 
-void WeaselPanel::DestroyWindow() {
+bool WeaselPanel::DestroyWindow(bool full) {
   const HWND hwnd = m_hWnd;
-  if (!hwnd)
-    return;
-  // clear timers before releasing window resources
-  _ClearTimers();
+  if (hwnd && ::IsWindow(hwnd)) {
+    // The HWND and its Direct2D resources belong to the same UI thread.
+    // A worker must not destroy either object itself.
+    if (GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+      DWORD_PTR result = 0;
+      if (!SendMessageTimeoutW(hwnd, WM_WEASEL_DESTROY_OWNER, full, 0,
+                               SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                               kPanelDestroyWaitMs, &result))
+        return false;
+      return result != 0 && !::IsWindow(hwnd);
+    }
 
-  if (m_pD2D) {
-    m_pD2D->ReleaseWindowResources();
-    // mark D2D as detached from any window
-    m_pD2D->m_hWnd = nullptr;
-  }
-  if (!::DestroyWindow(hwnd) && ::IsWindow(hwnd)) {
-    // DestroyWindow can fail on a non-owning thread. If the panel is then
-    // released, the still-live window must never dispatch into freed 'this'.
-    // UnregisterClass will fail with this HWND alive, keeping its callback
-    // module referenced until the process exits.
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-    DEBUG << "WeaselPanel: window destruction failed; detached user data";
+    _ClearTimers();
+    if (m_pD2D) {
+      m_pD2D->ReleaseWindowResources();
+      m_pD2D->m_hWnd = nullptr;
+    }
+    if (!::DestroyWindow(hwnd) && ::IsWindow(hwnd))
+      return false;
   }
   m_hWnd = nullptr;
+  // For a complete teardown, release the D2D generation on the HWND owner
+  // before returning to a foreign caller that will free the Panel object.
+  if (full)
+    ReleaseAllResources();
+  return true;
 }
 
 void WeaselPanel::ReleaseAllResources() {
@@ -1468,6 +1487,8 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
                                 WPARAM wParam,
                                 LPARAM lParam) {
   switch (uMsg) {
+    case WM_WEASEL_DESTROY_OWNER:
+      return DestroyWindow(wParam != 0) ? 1 : 0;
     case WM_WEASEL_REFRESH:
       if (wParam)  // Internal recovery must not cancel the auto-hide timer.
         _Refresh();

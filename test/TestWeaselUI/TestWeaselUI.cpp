@@ -102,6 +102,7 @@ class UiThread {
     }
     WCHAR registered_class[128] = {};
     HINSTANCE registered_module = nullptr;
+    WNDPROC registered_proc = nullptr;
     if (created) {
       const HWND panel = ui.hwnd();
       if (panel &&
@@ -111,8 +112,12 @@ class UiThread {
         WNDCLASSEXW wc = {};
         wc.cbSize = sizeof(wc);
         HMODULE proc_module = nullptr;
+        const bool registered =
+            GetClassInfoExW(registered_module, registered_class, &wc) != FALSE;
+        if (registered)
+          registered_proc = wc.lpfnWndProc;
         registered_class_uses_proc_module =
-            GetClassInfoExW(registered_module, registered_class, &wc) &&
+            registered &&
             GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                reinterpret_cast<LPCWSTR>(wc.lpfnWndProc),
@@ -155,9 +160,15 @@ class UiThread {
     const bool recreated = ui.Create(nullptr);
     if (recreated) {
       WCHAR new_class[128] = {};
+      const HINSTANCE new_module = reinterpret_cast<HINSTANCE>(
+          GetClassLongPtrW(ui.hwnd(), GCLP_HMODULE));
+      WNDCLASSEXW new_wc = {};
+      new_wc.cbSize = sizeof(new_wc);
       recreated_class_is_valid =
           GetClassNameW(ui.hwnd(), new_class, _countof(new_class)) &&
-          wcscmp(new_class, registered_class) != 0;
+          GetClassInfoExW(new_module, new_class, &new_wc) &&
+          new_wc.hInstance == new_module &&
+          new_wc.lpfnWndProc == registered_proc;
     }
     ui.Destroy(true);
     shared_resources_released_before_com_uninit =
@@ -551,6 +562,12 @@ int main() {
   test_d2d_debug_layer_policy();
   test_label_text_format_bounded();
 
+  // Exercise owner-thread marshalling rather than calling Win32 DestroyWindow
+  // on the worker and leaving a live HWND behind.
+  t.ui.Destroy(true);
+  check(t.ui.hwnd() == nullptr,
+        "P1: cross-thread UI destruction completes on the window owner");
+
   t.RequestStop();
   check(ui_thread.timed_join(boost::posix_time::seconds(5)),
         "B1: UI thread exits cleanly");
@@ -561,7 +578,7 @@ int main() {
   check(t.registered_class_removed,
         "P1: window class is unregistered after panel destruction");
   check(t.recreated_class_is_valid,
-        "P1: next panel uses a fresh class without stale WNDPROC");
+        "P1: recreated panel registers a valid class after prior teardown");
 
   std::cout << (g_failures ? "FAILED: " : "PASSED: ") << g_failures
             << " failure(s)" << std::endl;

@@ -19,6 +19,7 @@ constexpr UINT WM_WEASEL_UPDATE = WM_APP + 0x1003;
 constexpr UINT WM_WEASEL_SETSTYLE = WM_APP + 0x1004;
 constexpr UINT WM_WEASEL_SHOW = WM_APP + 0x1005;
 constexpr UINT WM_WEASEL_PREVIEW = WM_APP + 0x1006;
+constexpr UINT WM_WEASEL_DESTROY_OWNER = WM_APP + 0x1007;
 enum class PanelVisibility : WPARAM { Hide, Show, ShowWithTimeout };
 
 class WeaselPanel {
@@ -34,7 +35,8 @@ class WeaselPanel {
 
   BOOL IsWindow() const;
   void ShowWindow(int nCmdShow);
-  void DestroyWindow();
+  // False means a live HWND was not destroyed by its owning thread.
+  bool DestroyWindow(bool full = false);
   // Release this panel without resetting devices still used by other panels.
   void ReleaseAllResources();
   BOOL Create(HWND parent, bool preview_mode = false);
@@ -106,6 +108,8 @@ class WeaselPanel {
   // helper to clear any active timers
   void _ClearTimers();
 
+  // Own the storage underlying m_ctx/m_style/m_uiCallback.
+  std::shared_ptr<UISharedState> m_uiState;
   RECT m_inputPos{0, 0, 0, 0};
   CPoint m_lastCursorPos = {-1, -1};
 

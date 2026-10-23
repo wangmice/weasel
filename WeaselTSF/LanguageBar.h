@@ -6,7 +6,7 @@ class CLangBarItemButton : public ITfLangBarItemButton, public ITfSource {
  public:
   CLangBarItemButton(WeaselTSF* pTextService,
                      REFGUID guid,
-                     weasel::UIStyle& style);
+                     const weasel::UIStyle& style);
   ~CLangBarItemButton();
 
   /* IUnknown */
@@ -32,7 +32,8 @@ class CLangBarItemButton : public ITfLangBarItemButton, public ITfSource {
   STDMETHODIMP UnadviseSink(DWORD dwCookie);
   BOOL IsLangBarDisabled() { return (_status & TF_LBI_STATUS_DISABLED); }
 
-  void UpdateWeaselStatus(weasel::Status stat);
+  void UpdateWeaselStatus(weasel::Status stat, const weasel::UIStyle& style);
+  void DetachOwner();
   void SetLangbarStatus(DWORD dwStatus, BOOL fSet);
 
  private:
@@ -51,7 +52,8 @@ class CLangBarItemButton : public ITfLangBarItemButton, public ITfSource {
   LONG _cRef; /* COM Reference count */
   DWORD _status;
   bool ascii_mode;
-  weasel::UIStyle& _style;
+  // Owned snapshot; the candidate providing the original theme may be gone.
+  weasel::UIStyle _style;
   std::wstring _current_schema_zhung_icon;
   std::wstring _current_schema_ascii_icon;
   std::wstring _zhung_icon_path;

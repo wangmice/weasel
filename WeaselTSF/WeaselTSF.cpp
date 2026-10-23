@@ -28,6 +28,10 @@ WeaselTSF::WeaselTSF() {
 }
 
 WeaselTSF::~WeaselTSF() {
+  // Hosts may omit Deactivate; an externally retained language bar must not
+  // call through its non-owning TIP back-pointer after TIP destruction.
+  if (_pLangBarButton)
+    _pLangBarButton->DetachOwner();
   // Even hosts that omit Deactivate() must never leave the candidate with a
   // dangling raw TIP pointer. Candidate holds a separate DLL lease.
   if (_cand)
