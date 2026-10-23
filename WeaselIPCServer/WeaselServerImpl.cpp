@@ -329,12 +329,12 @@ LRESULT ServerImpl::OnEndSystemSession(UINT uMsg,
                                        WPARAM wParam,
                                        LPARAM lParam,
                                        BOOL& bHandled) {
-  std::lock_guard guard(g_api_mutex);
-  _SetRuntimeLifecycle(ServerLifecycle::Stopping);
-  if (m_pRequestHandler) {
-    m_pRequestHandler->Finalize();
-    session_router.SetBackend(nullptr);
-    m_pRequestHandler = nullptr;
+  // A cancelled logoff/shutdown sends WM_ENDSESSION with wParam == FALSE.
+  // Keep the running service alive when the system session will continue.
+  if (wParam) {
+    // Run() drains workers under the hard watchdog; never block here on
+    // g_api_mutex held by a business request.
+    _RequestStop();
   }
   return 0;
 }
@@ -626,12 +626,11 @@ int ServerImpl::Run() {
   _Module.AddMessageLoop(&theLoop);
   int nRet = theLoop.Run();
   _Module.RemoveMessageLoop();
-  {
-    // A maintenance handler that linearized first may finish cleanly; one that
-    // arrives after this point observes Stopping and is rejected.
-    std::lock_guard guard(g_api_mutex);
-    _SetRuntimeLifecycle(ServerLifecycle::Stopping);
-  }
+  // Publishing Stopping is atomic and needs no g_api_mutex. A stuck Rime
+  // worker may still hold that lock; waiting here would prevent _StopRuntime
+  // from arming its 20-second teardown watchdog. Maintenance->Ready uses CAS
+  // and cannot overwrite Stopping once it has been published.
+  _SetRuntimeLifecycle(ServerLifecycle::Stopping);
   // Drain every asynchronous source that can still touch the handler before
   // WeaselServerApp starts destroying Rime/UI state. One hard deadline covers
   // both pipe workers and process-exit callbacks.

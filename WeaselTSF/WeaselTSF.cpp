@@ -95,6 +95,9 @@ STDMETHODIMP WeaselTSF::Activate(ITfThreadMgr* pThreadMgr,
 }
 
 STDMETHODIMP WeaselTSF::Deactivate() {
+  // Invalidate every pending keyboard restore before detaching the old TIP.
+  ++_keyboardOpenGeneration;
+  _keyboardOpenPending = false;
   _InvalidatePendingUI();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
@@ -139,6 +142,8 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
     _cand.Release();
     _cand.Attach(new CCandidateList(this));
   }
+  ++_keyboardOpenGeneration;
+  _keyboardOpenPending = false;
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;

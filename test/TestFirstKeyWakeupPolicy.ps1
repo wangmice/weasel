@@ -119,22 +119,28 @@ $shutdownStart = $serverImpl.IndexOf('DWORD ServerImpl::OnShutdownServer(')
 $shutdownEnd = $serverImpl.IndexOf('DWORD ServerImpl::OnFocusIn(', $shutdownStart)
 $maintenanceStart = $serverImpl.IndexOf('DWORD ServerImpl::OnEndMaintenance(')
 $maintenanceEnd = $serverImpl.IndexOf('DWORD ServerImpl::OnCommitComposition(', $maintenanceStart)
+$runtimeStart = $serverImpl.IndexOf('void ServerImpl::_StopRuntime()', $stopEnd)
 if ($stopStart -lt 0 -or $stopEnd -le $stopStart -or
     $shutdownStart -lt 0 -or $shutdownEnd -le $shutdownStart -or
-    $maintenanceStart -lt 0 -or $maintenanceEnd -le $maintenanceStart) {
-  throw 'unable to isolate server stop and maintenance paths'
+    $maintenanceStart -lt 0 -or $maintenanceEnd -le $maintenanceStart -or
+    $runtimeStart -le $stopEnd) {
+  throw 'unable to isolate nonblocking stop and maintenance flows'
 }
 $stopFlow = $serverImpl.Substring($stopStart, $stopEnd - $stopStart)
 $shutdownFlow = $serverImpl.Substring($shutdownStart, $shutdownEnd - $shutdownStart)
 $maintenanceFlow = $serverImpl.Substring($maintenanceStart, $maintenanceEnd - $maintenanceStart)
+$runFlow = $serverImpl.Substring($stopEnd, $runtimeStart - $stopEnd)
 if ($stopFlow -notmatch '_SetRuntimeLifecycle\(ServerLifecycle::Stopping\)' -or
     $stopFlow -notmatch 'PostMessage\(WM_QUIT\)' -or
     $stopFlow -match 'lock_guard\s+guard\(g_api_mutex\)' -or
     $stopFlow -notmatch 'int\s+ServerImpl::Stop\(\)\s*\{\s*return\s+_RequestStop\(\);\s*\}' -or
     $shutdownFlow -notmatch '_RequestStop\(\)' -or
-    $maintenanceFlow -notmatch '_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,\s*ServerLifecycle::Ready\)' -or
-    $serverImpl -notmatch '_Module\.RemoveMessageLoop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?ServerLifecycle::Stopping') {
-  throw 'server stop must publish Stopping without waiting for g_api_mutex and reject late maintenance Ready'
+    $runFlow -notmatch '_Module\.RemoveMessageLoop\(\);[\s\S]*?_SetRuntimeLifecycle\(ServerLifecycle::Stopping\);[\s\S]*?_StopRuntime\(\);' -or
+    $runFlow -match '_Module\.RemoveMessageLoop\(\);\s*\{[\s\S]*?lock_guard\s+guard\(g_api_mutex\)') {
+  throw 'server stop must publish Stopping and arm watchdog without waiting for g_api_mutex'
+}
+if ($maintenanceFlow -notmatch '_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,\s*ServerLifecycle::Ready\)') {
+  throw 'late maintenance cannot overwrite a Stopping server lifecycle'
 }
 $listenerStart = $serverImpl.IndexOf('auto listener = [this]')
 $listenerEnd = $serverImpl.IndexOf('pipeThread = std::make_unique<boost::thread>', $listenerStart)

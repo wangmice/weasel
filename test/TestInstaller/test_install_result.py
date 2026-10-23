@@ -296,7 +296,14 @@ class InstallResultTests(unittest.TestCase):
             "FunctionEnd", 1
         )[0]
         self.assertNotIn('Abort "$(SETUPFAILED)"', init)
-        self.assertIn("!insertmacro AbortInitFailure", init)
+        # Current .onInit uses explicit platform guards before any existing
+        # installation mutation, rather than the legacy AbortInitFailure macro.
+        self.assertIn("SetErrorLevel 1633", init)
+        self.assertIn('MessageBox MB_OK|MB_ICONSTOP "$(ARM64NOTSUPPORTED)"', init)
+        self.assertIn("IfSilent +2", init)
+        self.assertIn("${IfNot} ${AtLeastWin8.1}", init)
+        self.assertGreaterEqual(init.count("Quit"), 2)
+        self.assertLess(init.index("SetErrorLevel 1633"), init.index("ReadRegStr $R0 HKLM"))
         self.assertNotIn("WeaselServer.exe\" /quit", init)
         self.assertNotIn("WeaselSetup.exe\" /u", init)
 
