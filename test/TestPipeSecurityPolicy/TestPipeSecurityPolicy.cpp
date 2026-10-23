@@ -14,8 +14,6 @@ static void check(bool ok, const char* what) {
   }
 }
 
-
-
 #if defined(_WIN32)
 #include <windows.h>
 #include <sddl.h>
@@ -72,10 +70,9 @@ static void test_lifecycle_mutex_access() {
   SECURITY_ATTRIBUTES attributes{};
   attributes.nLength = sizeof(attributes);
   attributes.lpSecurityDescriptor = descriptor;
-  const std::wstring name =
-      L"Local\\WeaselLifecycleAccessTest-" +
-      std::to_wstring(GetCurrentProcessId()) + L"-" +
-      std::to_wstring(GetTickCount64());
+  const std::wstring name = L"Local\\WeaselLifecycleAccessTest-" +
+                            std::to_wstring(GetCurrentProcessId()) + L"-" +
+                            std::to_wstring(GetTickCount64());
 
   constexpr DWORD rights = SYNCHRONIZE | MUTEX_MODIFY_STATE;
   HANDLE creator = CreateMutexExW(&attributes, name.c_str(), 0, rights);
@@ -124,8 +121,9 @@ int main() {
         "lifecycle mutex grants explicit sync and modify-state access");
   check(mutex_sddl.find(L";;;WD)") == std::wstring::npos,
         "lifecycle mutex never grants access to Everyone");
-  check(weasel::lifecycle_security::BuildLifecycleMutexSecuritySddl(L"").empty(),
-        "lifecycle mutex policy fails closed without a logon SID");
+  check(
+      weasel::lifecycle_security::BuildLifecycleMutexSecuritySddl(L"").empty(),
+      "lifecycle mutex policy fails closed without a logon SID");
 
 #if defined(_WIN32)
   test_lifecycle_mutex_access();

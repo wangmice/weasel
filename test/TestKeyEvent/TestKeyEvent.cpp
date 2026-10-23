@@ -162,8 +162,9 @@ static void testPendingTestKeyPairing() {
   // CUAS/IMM32 bridge regression: OnTestKeyDown and OnKeyDown can be called
   // with different message timestamps for a single physical key. Test
   // already sent the key to Rime; the matching Key callback must NOT replay.
-  check(pending.ConsumePairedKey('A'),
-        "pairing: same vkey Test/Key pair ignores bridge timestamp differences");
+  check(
+      pending.ConsumePairedKey('A'),
+      "pairing: same vkey Test/Key pair ignores bridge timestamp differences");
   check(!pending.ConsumePairedKey('A'),
         "pairing: consumed state cannot swallow another key");
 

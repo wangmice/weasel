@@ -13,8 +13,8 @@ inline std::wstring BuildLifecycleMutexSecuritySddl(
   if (logon_sid.empty())
     return {};
 
-  return L"S:(ML;;NW;;;LW)D:(A;;GA;;;SY)(A;;0x00100001;;;" +
-         logon_sid + L")(A;;0x00100001;;;AC)";
+  return L"S:(ML;;NW;;;LW)D:(A;;GA;;;SY)(A;;0x00100001;;;" + logon_sid +
+         L")(A;;0x00100001;;;AC)";
 }
 
 }  // namespace weasel::lifecycle_security

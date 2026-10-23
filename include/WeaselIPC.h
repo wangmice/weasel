@@ -358,9 +358,9 @@ class ServerLifecycleLock {
       // existing object, so TSF, Deployer and /quit would all get access denied
       // despite the startup owner having already released the mutex.
       // Only synchronization and release rights are needed here.
-      handle_ = CreateMutexExW(
-          security_attributes, GetServerLifecycleMutexName().c_str(), 0,
-          SYNCHRONIZE | MUTEX_MODIFY_STATE);
+      handle_ = CreateMutexExW(security_attributes,
+                               GetServerLifecycleMutexName().c_str(), 0,
+                               SYNCHRONIZE | MUTEX_MODIFY_STATE);
       if (!handle_)
         return false;
     }

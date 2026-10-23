@@ -113,10 +113,28 @@ if ($ipc -notmatch 'class\s+ServerLifecycleLock' -or
 if ($ipc -match 'GetServerReadyEventName|ServerRuntimeIdentity|GetServerRuntimeIdentityName') {
   throw 'ready events and seqlock identity must not duplicate runtime lifecycle state'
 }
-if ($serverImpl -notmatch 'int\s+ServerImpl::Stop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?_RequestStopUnderApiLock\(\)' -or
-    $serverImpl -notmatch 'OnShutdownServer[\s\S]*?_RequestStopUnderApiLock\(\)' -or
+$stopStart = $serverImpl.IndexOf('int ServerImpl::_RequestStop() noexcept')
+$stopEnd = $serverImpl.IndexOf('int ServerImpl::Run()', $stopStart)
+$shutdownStart = $serverImpl.IndexOf('DWORD ServerImpl::OnShutdownServer(')
+$shutdownEnd = $serverImpl.IndexOf('DWORD ServerImpl::OnFocusIn(', $shutdownStart)
+$maintenanceStart = $serverImpl.IndexOf('DWORD ServerImpl::OnEndMaintenance(')
+$maintenanceEnd = $serverImpl.IndexOf('DWORD ServerImpl::OnCommitComposition(', $maintenanceStart)
+if ($stopStart -lt 0 -or $stopEnd -le $stopStart -or
+    $shutdownStart -lt 0 -or $shutdownEnd -le $shutdownStart -or
+    $maintenanceStart -lt 0 -or $maintenanceEnd -le $maintenanceStart) {
+  throw 'unable to isolate server stop and maintenance paths'
+}
+$stopFlow = $serverImpl.Substring($stopStart, $stopEnd - $stopStart)
+$shutdownFlow = $serverImpl.Substring($shutdownStart, $shutdownEnd - $shutdownStart)
+$maintenanceFlow = $serverImpl.Substring($maintenanceStart, $maintenanceEnd - $maintenanceStart)
+if ($stopFlow -notmatch '_SetRuntimeLifecycle\(ServerLifecycle::Stopping\)' -or
+    $stopFlow -notmatch 'PostMessage\(WM_QUIT\)' -or
+    $stopFlow -match 'lock_guard\s+guard\(g_api_mutex\)' -or
+    $stopFlow -notmatch 'int\s+ServerImpl::Stop\(\)\s*\{\s*return\s+_RequestStop\(\);\s*\}' -or
+    $shutdownFlow -notmatch '_RequestStop\(\)' -or
+    $maintenanceFlow -notmatch '_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,\s*ServerLifecycle::Ready\)' -or
     $serverImpl -notmatch '_Module\.RemoveMessageLoop\(\)[\s\S]*?lock_guard\s+guard\(g_api_mutex\)[\s\S]*?ServerLifecycle::Stopping') {
-  throw 'server stop publication must serialize with maintenance handlers through g_api_mutex'
+  throw 'server stop must publish Stopping without waiting for g_api_mutex and reject late maintenance Ready'
 }
 $listenerStart = $serverImpl.IndexOf('auto listener = [this]')
 $listenerEnd = $serverImpl.IndexOf('pipeThread = std::make_unique<boost::thread>', $listenerStart)
@@ -129,7 +147,7 @@ $apiAcquire = $listenerBody.IndexOf('std::lock_guard guard(g_api_mutex)')
 if ($lifecycleAcquire -lt 0 -or $apiAcquire -lt 0 -or $lifecycleAcquire -gt $apiAcquire) {
   throw 'START_SESSION must acquire lifecycle ownership before g_api_mutex to preserve global lock order'
 }
-if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(kServerStartupLifecycleWaitMs,\s*sa\.get_attr\(\)\)' -or
+if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(kServerStartupLifecycleWaitMs,\s*sa\.get_mutex_attr\(\)\)' -or
     $serverImpl -notmatch '_PublishRuntimeState\(\)' -or
     $serverImpl -notmatch 'ServerLifecycle::Starting' -or
     $serverImpl -notmatch 'WaitForPrimaryPipeReady\(\)[\s\S]*?ServerLifecycle::Ready[\s\S]*?_UnlockStartupLifecycleLock\(\)' -or

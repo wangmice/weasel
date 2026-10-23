@@ -190,10 +190,18 @@ if ($recoveryCoordinator -notmatch 'retry_after_' -or
 if ($imeSetup -notmatch 'HRESULT\s+enable_profile\s*\(') {
   throw 'profile registration helper must return HRESULT instead of swallowing failures'
 }
-if ($imeSetup -notmatch 'if\s*\(!delete_file\([^\)]*\)\)\s*\+\+retval') {
+if ($imeSetup -notmatch 'if\s*\(!delete_file\([^\)]*\)\)\s*(?:\+\+retval|retval\s*=\s*1)\s*;') {
   throw 'system DLL deletion failures must contribute to uninstall failure'
 }
-if ($imeSetup -notmatch 'FAILED\(install_layout_or_tip\(profile,\s*LayoutOrTipAction::Uninstall\)\)') {
+$layoutStart = $imeSetup.IndexOf('    int remove_layouts()')
+$layoutEnd = $imeSetup.IndexOf('    int unregister_services()', $layoutStart)
+if ($layoutStart -lt 0 -or $layoutEnd -le $layoutStart) {
+  throw 'unable to isolate transactional layout removal'
+}
+$layoutRemoval = $imeSetup.Substring($layoutStart, $layoutEnd - $layoutStart)
+if ($layoutRemoval -notmatch 'FAILED\s*\(\s*install_layout_or_tip\s*\(\s*state\.profile,\s*LayoutOrTipAction::Uninstall\s*\)\s*\)' -or
+    $layoutRemoval -notmatch 'result\s*=\s*1\s*;' -or
+    $layoutRemoval -notmatch 'return\s+result\s*;') {
   throw 'layout removal failure must contribute to uninstall failure'
 }
 if ($imeSetup -notmatch 'RegDeleteKeyEx\(HKEY_LOCAL_MACHINE,\s*WEASEL_WER_KEY[\s\S]*?ERROR_FILE_NOT_FOUND') {
