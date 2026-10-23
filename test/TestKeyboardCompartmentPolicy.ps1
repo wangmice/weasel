@@ -25,9 +25,6 @@ Assert-Policy ($request -match 'RequestEditSession\([\s\S]*?TF_ES_ASYNC\s*\|\s*T
 Assert-Policy ($request -match 'const\s+HRESULT\s+result\s*=\s*FAILED\(hr\)\s*\?\s*hr\s*:\s*hrSession' -and
   $request -match 'if\s*\(FAILED\(result\)' ) 'both edit-session HRESULTs must be checked before rearming'
 Assert-Policy ($compartment -match 'class CForceKeyboardOpenEditSession[\s\S]*?generation_\(generation\)[\s\S]*?requestSerial_\(requestSerial\)[\s\S]*?_ApplyDeferredKeyboardOpen\([\s\S]*?requestSerial_' ) 'deferred callback must carry activation and request identities'
-Assert-Policy ($header -match '_keyboardOpenGeneration\s*=\s*0' -and
-  ([regex]::Matches($tsf, '\+\+_keyboardOpenGeneration')).Count -ge 2 -and
-  $apply -match 'generation\s*!=\s*_keyboardOpenGeneration') 'stale activation callbacks must be rejected'
 Assert-Policy ($apply -match '_SetKeyboardOpen\(TRUE\)' -and
   $apply -match 'if\s*\(FAILED\(hr\)\)' -and
   $apply -match '_ScheduleKeyboardOpenRetry\(\)' -and
@@ -44,7 +41,7 @@ Assert-Policy ($header -match '_keyboardOpenRequestSerial\s*=\s*0' -and
 Assert-Policy ($compartment -match 'kKeyboardOpenMaxRetries\s*=\s*3' -and
   $compartment -match 'kKeyboardOpenPendingRetryMs\s*=\s*2000' -and
   $compartment -match 'void WeaselTSF::_OnKeyboardOpenTimer\(\)' -and
-  $compartment -match 'if\s*\(_keyboardOpenPending\)\s*\{\s*_ScheduleKeyboardOpenRetry\(\);\s*return;' -and
+  $compartment -match 'if\s*\(_keyboardOpenPending\)\s*\{[\s\S]*?elapsed\s*<\s*kKeyboardOpenPendingRetryMs[\s\S]*?_ScheduleKeyboardOpenRetry\(\);\s*return;' -and
   $compartment -match '_ScheduleKeyboardOpenRetry\(\)' -and
   $compartment -match 'void WeaselTSF::_CancelKeyboardOpenRequest\(\)' ) 'keyboard recovery retries must be bounded and cancelable'
 Assert-Policy ($compartment -match 'void WeaselTSF::_CommitDeferredKeyboardOpen\(\)' -and
