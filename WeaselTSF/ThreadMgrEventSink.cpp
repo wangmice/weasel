@@ -11,6 +11,8 @@ STDMETHODIMP WeaselTSF::OnUninitDocumentMgr(ITfDocumentMgr* pDocMgr) {
 
 STDMETHODIMP WeaselTSF::OnSetFocus(ITfDocumentMgr* pDocMgrFocus,
                                    ITfDocumentMgr* pDocMgrPrevFocus) {
+  if (pDocMgrFocus != pDocMgrPrevFocus)
+    _CancelKeyboardOpenRequest();
   // Keep the sink on the old composition context until its handoff barrier has
   // actually ended. A TF_E_LOCKED handoff must receive that old context's
   // OnEndEdit notification after the competing write lock is released.
