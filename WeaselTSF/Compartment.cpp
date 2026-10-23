@@ -234,21 +234,30 @@ class CForceKeyboardOpenEditSession : public CEditSession {
  public:
   CForceKeyboardOpenEditSession(com_ptr<WeaselTSF> pTextService,
                                 com_ptr<ITfContext> pContext,
-                                UINT64 generation)
-      : CEditSession(pTextService, pContext), generation_(generation) {}
+                                UINT64 generation,
+                                UINT64 requestSerial)
+      : CEditSession(pTextService, pContext),
+        generation_(generation),
+        requestSerial_(requestSerial) {}
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) {
-    return _pTextService->_ApplyDeferredKeyboardOpen(generation_);
+    return _pTextService->_ApplyDeferredKeyboardOpen(
+        generation_, requestSerial_, _pContext);
   }
 
  private:
   UINT64 generation_;
+  UINT64 requestSerial_;
 };
 }  // namespace
 
 HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
   if (_pThreadMgr == NULL)
     return E_UNEXPECTED;
+  // Multiple OnChange notifications can arrive before the asynchronous edit
+  // session runs. Coalesce them into a single pending recovery.
+  if (_keyboardOpenPending)
+    return S_FALSE;
 
   // 借力的文档上下文：优先焦点文档 top（Ctrl+Space 即发生于焦点应用），
   // 其次最近一次键处理的上下文
@@ -263,20 +272,44 @@ HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
   if (pContext == NULL)
     return E_FAIL;  // No context to schedule the delayed operation.
 
+  const UINT64 serial = ++_keyboardOpenRequestSerial;
   com_ptr<CForceKeyboardOpenEditSession> pEditSession;
   pEditSession.Attach(new CForceKeyboardOpenEditSession(
-      this, pContext, _keyboardOpenGeneration));
+      this, pContext, _keyboardOpenGeneration, serial));
   if (pEditSession == NULL)
     return E_OUTOFMEMORY;
 
+  _keyboardOpenPending = true;
   HRESULT hrSession = E_FAIL;
   const HRESULT hr = pContext->RequestEditSession(
       _tfClientId, pEditSession, TF_ES_ASYNC | TF_ES_READ, &hrSession);
-  return FAILED(hr) ? hr : hrSession;
+  const HRESULT result = FAILED(hr) ? hr : hrSession;
+  if (FAILED(result) && serial == _keyboardOpenRequestSerial)
+    _keyboardOpenPending = false;
+  return result;
 }
 
-HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation) {
-  if (_pThreadMgr == NULL || generation != _keyboardOpenGeneration)
+HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
+                                               UINT64 requestSerial,
+                                               ITfContext* requestContext) {
+  if (_pThreadMgr == NULL || generation != _keyboardOpenGeneration ||
+      !_keyboardOpenPending || requestSerial != _keyboardOpenRequestSerial)
+    return S_FALSE;
+  _keyboardOpenPending = false;
+
+  // The profile option or focus may have changed while the edit session was
+  // queued. Never reopen a keyboard that now deliberately uses OPENCLOSE, nor
+  // apply an obsolete toggle to another focused document.
+  if (_isToOpenClose)
+    return S_FALSE;
+  com_ptr<ITfDocumentMgr> focusDocument;
+  com_ptr<ITfContext> focusContext;
+  if (_pThreadMgr->GetFocus(&focusDocument) == S_OK && focusDocument &&
+      focusDocument->GetTop(&focusContext) == S_OK && focusContext &&
+      focusContext != requestContext)
+    return S_FALSE;
+  // A second actor may already have reopened the keyboard while we waited.
+  if (_IsKeyboardOpen())
     return S_FALSE;
 
   // SetValue notifies synchronously. Suppress this self-write only, then
@@ -291,12 +324,7 @@ HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation) {
     return hr;
   }
 
-  // Do not publish a mode change until OPENCLOSE has actually reopened.
-  // If the option changed while the edit session was queued, use that new
-  // option and discard the obsolete ASCII toggle.
-  if (_isToOpenClose)
-    return S_OK;
-
+  // Do not publish the new ASCII mode until OPENCLOSE was reopened.
   _status.ascii_mode = !_status.ascii_mode;
   if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
     _EnableLanguageBar(true);

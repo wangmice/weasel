@@ -118,7 +118,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // OnChange 由 _fSuppressOpenCloseSelfWrite 跳过，避免 ascii_mode 被
   // 强制重开翻转回去
   HRESULT _RequestKeyboardOpenDeferred();
-  HRESULT _ApplyDeferredKeyboardOpen(UINT64 generation);
+  HRESULT _ApplyDeferredKeyboardOpen(UINT64 generation,
+                                     UINT64 requestSerial,
+                                     ITfContext* requestContext);
   HRESULT _GetCompartmentDWORD(DWORD& value, const GUID guid);
   HRESULT _SetCompartmentDWORD(const DWORD& value, const GUID guid);
 
@@ -334,6 +336,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // _HandleCompartment 跳过该次自写触发的通知（见 Compartments 注释）
   BOOL _fSuppressOpenCloseSelfWrite = FALSE;
   UINT64 _keyboardOpenGeneration = 0;
+  // At most one deferred recovery for this TIP activation: stale callbacks
+  // never consume a later request or toggle the mode twice.
+  UINT64 _keyboardOpenRequestSerial = 0;
+  bool _keyboardOpenPending = false;
 
   // 禁用态缓存（K23c）：_pDisabledCacheContext 为空表示不缓存
   com_ptr<CCompartmentEventSink> _pKeyboardDisabledSink;
