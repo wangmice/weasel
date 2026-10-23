@@ -340,6 +340,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // never consume a later request or toggle the mode twice.
   UINT64 _keyboardOpenRequestSerial = 0;
   bool _keyboardOpenPending = false;
+  ULONGLONG _keyboardOpenPendingSinceTick = 0;
 
   // 禁用态缓存（K23c）：_pDisabledCacheContext 为空表示不缓存
   com_ptr<CCompartmentEventSink> _pKeyboardDisabledSink;
