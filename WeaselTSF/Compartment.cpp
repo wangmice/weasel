@@ -408,8 +408,7 @@ void WeaselTSF::_OnKeyboardOpenTimer() {
   if (_keyboardOpenPending) {
     // KillTimer does not retract an already-queued WM_TIMER. Ignore any
     // leftover timer from a previous request until this lease really expires.
-    const ULONGLONG elapsed =
-        GetTickCount64() - _keyboardOpenPendingSinceTick;
+    const ULONGLONG elapsed = GetTickCount64() - _keyboardOpenPendingSinceTick;
     if (elapsed < kKeyboardOpenPendingRetryMs) {
       const UINT remaining =
           static_cast<UINT>(kKeyboardOpenPendingRetryMs - elapsed);
