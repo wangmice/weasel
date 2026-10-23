@@ -121,6 +121,16 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   HRESULT _ApplyDeferredKeyboardOpen(UINT64 generation,
                                      UINT64 requestSerial,
                                      ITfContext* requestContext);
+  static LRESULT CALLBACK _KeyboardOpenWindowProc(HWND hwnd,
+                                                  UINT message,
+                                                  WPARAM wParam,
+                                                  LPARAM lParam);
+  bool _EnsureKeyboardOpenWindow();
+  void _DestroyKeyboardOpenWindow() noexcept;
+  void _CancelKeyboardOpenRequest() noexcept;
+  bool _ScheduleKeyboardOpenRetry() noexcept;
+  void _OnKeyboardOpenTimer();
+  void _CommitDeferredKeyboardOpen();
   HRESULT _GetCompartmentDWORD(DWORD& value, const GUID guid);
   HRESULT _SetCompartmentDWORD(const DWORD& value, const GUID guid);
 
@@ -341,6 +351,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   UINT64 _keyboardOpenRequestSerial = 0;
   bool _keyboardOpenPending = false;
   ULONGLONG _keyboardOpenPendingSinceTick = 0;
+  unsigned int _keyboardOpenRetries = 0;
+  bool _keyboardOpenCommitPending = false;
+  com_ptr<ITfContext> _keyboardOpenRequestContext;
+  HWND _keyboardOpenWindow = nullptr;
+  ATOM _keyboardOpenWindowClassAtom = 0;
+  HMODULE _keyboardOpenWindowModule = nullptr;
+  std::wstring _keyboardOpenWindowClassName;
 
   // 禁用态缓存（K23c）：_pDisabledCacheContext 为空表示不缓存
   com_ptr<CCompartmentEventSink> _pKeyboardDisabledSink;

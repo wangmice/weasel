@@ -28,6 +28,7 @@ WeaselTSF::WeaselTSF() {
 }
 
 WeaselTSF::~WeaselTSF() {
+  _DestroyKeyboardOpenWindow();
   // Hosts may omit Deactivate; an externally retained language bar must not
   // call through its non-owning TIP back-pointer after TIP destruction.
   if (_pLangBarButton)
@@ -97,9 +98,7 @@ STDMETHODIMP WeaselTSF::Activate(ITfThreadMgr* pThreadMgr,
 STDMETHODIMP WeaselTSF::Deactivate() {
   // Invalidate every pending keyboard restore before detaching the old TIP.
   ++_keyboardOpenGeneration;
-  ++_keyboardOpenRequestSerial;
-  _keyboardOpenPending = false;
-  _keyboardOpenPendingSinceTick = 0;
+  _DestroyKeyboardOpenWindow();
   _InvalidatePendingUI();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
@@ -145,9 +144,7 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
     _cand.Attach(new CCandidateList(this));
   }
   ++_keyboardOpenGeneration;
-  ++_keyboardOpenRequestSerial;
-  _keyboardOpenPending = false;
-  _keyboardOpenPendingSinceTick = 0;
+  _CancelKeyboardOpenRequest();
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;
@@ -239,9 +236,7 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
 }
 STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
   // Cancel outstanding keyboard recovery when the thread loses focus.
-  ++_keyboardOpenRequestSerial;
-  _keyboardOpenPending = false;
-  _keyboardOpenPendingSinceTick = 0;
+  _CancelKeyboardOpenRequest();
   // Thread focus loss invalidates composition state, not already emitted
   // commit events. _AbortComposition advances the engine epoch and preserves
   // durable queued commits for their original document context.

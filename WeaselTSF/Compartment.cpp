@@ -10,6 +10,8 @@
 #include "ResponseParser.h"
 #include "CandidateList.h"
 #include "LanguageBar.h"
+#include <atomic>
+#include <cstdint>
 
 STDMETHODIMP CCompartmentEventSink::QueryInterface(REFIID riid,
                                                    _Outptr_ void** ppvObj) {
@@ -230,6 +232,11 @@ namespace {
 // A host may accept an async session but never run it after context disposal.
 // Permit retry on subsequent notifications without flooding its TSF queue.
 constexpr ULONGLONG kKeyboardOpenPendingRetryMs = 2000;
+constexpr UINT kKeyboardOpenRetryTimer = 1;
+constexpr UINT kKeyboardOpenCommitMessage = WM_APP + 0x3a0;
+constexpr unsigned int kKeyboardOpenMaxRetries = 3;
+constexpr UINT kKeyboardOpenRetryDelaysMs[] = {20, 50, 100};
+std::atomic_uint64_t g_keyboardWindowClassSerial{0};
 
 // TF_ES_ASYNCDONTCARE may execute synchronously within OnChange, while
 // SetValue on that compartment is still forbidden (E_UNEXPECTED). Force an
@@ -255,88 +262,204 @@ class CForceKeyboardOpenEditSession : public CEditSession {
 };
 }  // namespace
 
-HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
-  if (_pThreadMgr == NULL)
-    return E_UNEXPECTED;
-  // Coalesce nearby notifications but let a later notification replace an
-  // edit session whose host accepted it without ever invoking the callback.
-  const ULONGLONG now = GetTickCount64();
-  if (_keyboardOpenPending) {
-    if (now - _keyboardOpenPendingSinceTick < kKeyboardOpenPendingRetryMs)
-      return S_FALSE;
-    // Invalidate the old callback before checking focus. It must never
-    // commit a mode toggle after this request's timeout.
-    ++_keyboardOpenRequestSerial;
-    _keyboardOpenPending = false;
-    _keyboardOpenPendingSinceTick = 0;
+LRESULT CALLBACK WeaselTSF::_KeyboardOpenWindowProc(HWND hwnd,
+                                                    UINT message,
+                                                    WPARAM wParam,
+                                                    LPARAM lParam) {
+  if (message == WM_NCCREATE) {
+    const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    return TRUE;
+  }
+  if (message == WM_NCDESTROY) {
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    return DefWindowProcW(hwnd, message, wParam, lParam);
   }
 
-  // Never borrow a stale edit-session context after this thread loses focus.
-  com_ptr<ITfDocumentMgr> pDocMgrFocus;
-  com_ptr<ITfContext> pContext;
-  if (_pThreadMgr->GetFocus(&pDocMgrFocus) != S_OK || !pDocMgrFocus ||
-      pDocMgrFocus->GetTop(&pContext) != S_OK || !pContext)
-    return E_FAIL;
-
-  const UINT64 generation = _keyboardOpenGeneration;
-  const UINT64 serial = ++_keyboardOpenRequestSerial;
-  com_ptr<CForceKeyboardOpenEditSession> pEditSession;
-  pEditSession.Attach(
-      new CForceKeyboardOpenEditSession(this, pContext, generation, serial));
-  if (pEditSession == NULL)
-    return E_OUTOFMEMORY;
-
-  _keyboardOpenPending = true;
-  _keyboardOpenPendingSinceTick = now;
-  HRESULT hrSession = E_FAIL;
-  const HRESULT hr = pContext->RequestEditSession(
-      _tfClientId, pEditSession, TF_ES_ASYNC | TF_ES_READ, &hrSession);
-  const HRESULT result = FAILED(hr) ? hr : hrSession;
-  if (FAILED(result) && serial == _keyboardOpenRequestSerial &&
-      generation == _keyboardOpenGeneration) {
-    _keyboardOpenPending = false;
-    _keyboardOpenPendingSinceTick = 0;
+  auto* self =
+      reinterpret_cast<WeaselTSF*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (self && (message == WM_TIMER || message == kKeyboardOpenCommitMessage)) {
+    // A host callback can reenter Deactivate while the command is in flight.
+    self->AddRef();
+    if (message == WM_TIMER) {
+      if (wParam == kKeyboardOpenRetryTimer)
+        self->_OnKeyboardOpenTimer();
+    } else {
+      self->_CommitDeferredKeyboardOpen();
+    }
+    self->Release();
+    return 0;
   }
-  return result;
+  return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
-HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
-                                              UINT64 requestSerial,
-                                              ITfContext* requestContext) {
-  if (_pThreadMgr == NULL || generation != _keyboardOpenGeneration ||
-      !_keyboardOpenPending || requestSerial != _keyboardOpenRequestSerial)
-    return S_FALSE;
-  _keyboardOpenPending = false;
-  _keyboardOpenPendingSinceTick = 0;
+bool WeaselTSF::_EnsureKeyboardOpenWindow() {
+  if (_keyboardOpenWindow)
+    return true;
 
-  // The profile option or focus may have changed while the edit session was
-  // queued. Never reopen a keyboard that now deliberately uses OPENCLOSE, nor
-  // apply an obsolete toggle to another focused document.
-  if (_isToOpenClose)
-    return S_FALSE;
-  com_ptr<ITfDocumentMgr> focusDocument;
-  com_ptr<ITfContext> focusContext;
-  if (_pThreadMgr->GetFocus(&focusDocument) != S_OK || !focusDocument ||
-      focusDocument->GetTop(&focusContext) != S_OK || !focusContext ||
-      focusContext != requestContext)
-    return S_FALSE;
-  // A second actor may already have reopened the keyboard while we waited.
-  if (_IsKeyboardOpen())
-    return S_FALSE;
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(&_KeyboardOpenWindowProc),
+                          &module))
+    return false;
 
-  // SetValue notifies synchronously. Suppress this self-write only, then
-  // restore the previous flag even when the compartment write fails.
-  const BOOL priorSuppression = _fSuppressOpenCloseSelfWrite;
-  _fSuppressOpenCloseSelfWrite = TRUE;
-  const HRESULT hr = _SetKeyboardOpen(TRUE);
-  _fSuppressOpenCloseSelfWrite = priorSuppression;
-  if (FAILED(hr)) {
-    LOG(ERROR) << "Deferred keyboard OPENCLOSE recovery failed, hr: "
-               << static_cast<long>(hr);
-    return hr;
+  const auto serial =
+      g_keyboardWindowClassSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+  _keyboardOpenWindowClassName =
+      L"WeaselTSF.KeyboardOpen." +
+      std::to_wstring(reinterpret_cast<std::uintptr_t>(module)) + L"." +
+      std::to_wstring(serial);
+
+  WNDCLASSW window_class{};
+  window_class.lpfnWndProc = _KeyboardOpenWindowProc;
+  window_class.hInstance = module;
+  window_class.lpszClassName = _keyboardOpenWindowClassName.c_str();
+  const ATOM atom = RegisterClassW(&window_class);
+  if (!atom) {
+    _keyboardOpenWindowClassName.clear();
+    FreeLibrary(module);
+    return false;
   }
 
-  // Do not publish the new ASCII mode until OPENCLOSE was reopened.
+  const HWND window = CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0, 0,
+                                      HWND_MESSAGE, nullptr, module, this);
+  if (!window) {
+    if (UnregisterClassW(MAKEINTATOM(atom), module))
+      FreeLibrary(module);
+    // On unregister failure keep the loader reference: the registered WNDPROC
+    // must never outlive the DLL that owns it.
+    _keyboardOpenWindowClassName.clear();
+    return false;
+  }
+
+  _keyboardOpenWindow = window;
+  _keyboardOpenWindowClassAtom = atom;
+  _keyboardOpenWindowModule = module;
+  return true;
+}
+
+void WeaselTSF::_CancelKeyboardOpenRequest() noexcept {
+  ++_keyboardOpenRequestSerial;
+  _keyboardOpenPending = false;
+  _keyboardOpenPendingSinceTick = 0;
+  _keyboardOpenRetries = 0;
+  _keyboardOpenCommitPending = false;
+  _keyboardOpenRequestContext = nullptr;
+  if (_keyboardOpenWindow)
+    KillTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer);
+}
+
+void WeaselTSF::_DestroyKeyboardOpenWindow() noexcept {
+  _CancelKeyboardOpenRequest();
+  if (_keyboardOpenWindow) {
+    if (IsWindow(_keyboardOpenWindow) && !DestroyWindow(_keyboardOpenWindow)) {
+      // Never leave a live WNDPROC pointing to a deactivated TIP.
+      SetWindowLongPtrW(_keyboardOpenWindow, GWLP_USERDATA, 0);
+      // The surviving window/class must also retain their DLL loader lease.
+      _keyboardOpenWindow = nullptr;
+      return;
+    }
+    _keyboardOpenWindow = nullptr;
+  }
+  if (_keyboardOpenWindowClassAtom) {
+    if (!UnregisterClassW(MAKEINTATOM(_keyboardOpenWindowClassAtom),
+                          _keyboardOpenWindowModule))
+      return;  // Keep the DLL loaded while its WNDPROC class still exists.
+    _keyboardOpenWindowClassAtom = 0;
+  }
+  _keyboardOpenWindowClassName.clear();
+  if (_keyboardOpenWindowModule) {
+    FreeLibrary(_keyboardOpenWindowModule);
+    _keyboardOpenWindowModule = nullptr;
+  }
+}
+
+bool WeaselTSF::_ScheduleKeyboardOpenRetry() noexcept {
+  if (!_keyboardOpenWindow || !_keyboardOpenRequestContext || _isToOpenClose ||
+      _keyboardOpenRetries >= kKeyboardOpenMaxRetries) {
+    _CancelKeyboardOpenRequest();
+    return false;
+  }
+
+  // The old edit session may still execute after its watchdog expires.
+  // Invalidate it before another session is queued.
+  ++_keyboardOpenRequestSerial;
+  _keyboardOpenPending = false;
+  _keyboardOpenPendingSinceTick = 0;
+  const UINT delay = kKeyboardOpenRetryDelaysMs[_keyboardOpenRetries++];
+  if (!SetTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer, delay, nullptr)) {
+    _CancelKeyboardOpenRequest();
+    return false;
+  }
+  return true;
+}
+
+void WeaselTSF::_OnKeyboardOpenTimer() {
+  if (!_keyboardOpenWindow)
+    return;
+  KillTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer);
+  if (_keyboardOpenCommitPending || !_keyboardOpenRequestContext)
+    return;
+
+  // A host can accept an asynchronous edit session and never invoke it.
+  // Queue the retry after the normal backoff; never run a second edit session
+  // directly inside the watchdog callback.
+  if (_keyboardOpenPending) {
+    // KillTimer does not retract an already-queued WM_TIMER. Ignore any
+    // leftover timer from a previous request until this lease really expires.
+    const ULONGLONG elapsed = GetTickCount64() - _keyboardOpenPendingSinceTick;
+    if (elapsed < kKeyboardOpenPendingRetryMs) {
+      const UINT remaining =
+          static_cast<UINT>(kKeyboardOpenPendingRetryMs - elapsed);
+      if (!SetTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer, remaining,
+                    nullptr))
+        _CancelKeyboardOpenRequest();
+      return;
+    }
+    _ScheduleKeyboardOpenRetry();
+    return;
+  }
+  if (_isToOpenClose || !_pThreadMgr) {
+    _CancelKeyboardOpenRequest();
+    return;
+  }
+
+  com_ptr<ITfDocumentMgr> document;
+  com_ptr<ITfContext> focused;
+  if (_pThreadMgr->GetFocus(&document) != S_OK || !document ||
+      document->GetTop(&focused) != S_OK ||
+      focused != _keyboardOpenRequestContext || _IsKeyboardOpen()) {
+    _CancelKeyboardOpenRequest();
+    return;
+  }
+
+  const HRESULT result = _RequestKeyboardOpenDeferred();
+  if (FAILED(result)) {
+    LOG(WARNING) << "Deferred keyboard recovery retry failed, hr: "
+                 << static_cast<long>(result);
+  }
+}
+
+void WeaselTSF::_CommitDeferredKeyboardOpen() {
+  if (!_keyboardOpenCommitPending || !_keyboardOpenRequestContext)
+    return;
+  if (!_pThreadMgr || _isToOpenClose) {
+    _CancelKeyboardOpenRequest();
+    return;
+  }
+  com_ptr<ITfDocumentMgr> document;
+  com_ptr<ITfContext> focused;
+  if (_pThreadMgr->GetFocus(&document) != S_OK || !document ||
+      document->GetTop(&focused) != S_OK ||
+      focused != _keyboardOpenRequestContext || !_IsKeyboardOpen()) {
+    _CancelKeyboardOpenRequest();
+    return;
+  }
+
+  // Commit exactly once, outside the TSF edit session. Reset before IPC so
+  // reentrant focus/compartment callbacks cannot replay an old command.
+  _CancelKeyboardOpenRequest();
   _status.ascii_mode = !_status.ascii_mode;
   if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
     _EnableLanguageBar(true);
@@ -345,6 +468,112 @@ HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
   if (_pEditSessionContext)
     m_client.ClearComposition();
   _UpdateLanguageBar(_status);
+}
+
+HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
+  if (!_pThreadMgr)
+    return E_UNEXPECTED;
+  if (_keyboardOpenPending || _keyboardOpenCommitPending)
+    return S_FALSE;
+
+  // A private message-only window supplies just the post-edit-session
+  // completion and bounded retry timer; TSF still owns edit-session ordering.
+  if (!_EnsureKeyboardOpenWindow())
+    return E_FAIL;
+
+  com_ptr<ITfDocumentMgr> document;
+  com_ptr<ITfContext> context;
+  if (_pThreadMgr->GetFocus(&document) != S_OK || !document ||
+      document->GetTop(&context) != S_OK || !context) {
+    _CancelKeyboardOpenRequest();
+    return E_FAIL;
+  }
+  if (_keyboardOpenRequestContext && _keyboardOpenRequestContext != context) {
+    _CancelKeyboardOpenRequest();
+    return S_FALSE;
+  }
+  _keyboardOpenRequestContext = context;
+
+  const UINT64 generation = _keyboardOpenGeneration;
+  const UINT64 serial = ++_keyboardOpenRequestSerial;
+  com_ptr<CForceKeyboardOpenEditSession> session;
+  session.Attach(
+      new CForceKeyboardOpenEditSession(this, context, generation, serial));
+  if (!session) {
+    _CancelKeyboardOpenRequest();
+    return E_OUTOFMEMORY;
+  }
+
+  _keyboardOpenPending = true;
+  _keyboardOpenPendingSinceTick = GetTickCount64();
+  if (!SetTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer,
+                static_cast<UINT>(kKeyboardOpenPendingRetryMs), nullptr)) {
+    _CancelKeyboardOpenRequest();
+    return E_FAIL;
+  }
+
+  HRESULT hrSession = E_FAIL;
+  const HRESULT hr = context->RequestEditSession(
+      _tfClientId, session, TF_ES_ASYNC | TF_ES_READ, &hrSession);
+  const HRESULT result = FAILED(hr) ? hr : hrSession;
+  if (FAILED(result) && generation == _keyboardOpenGeneration &&
+      serial == _keyboardOpenRequestSerial) {
+    KillTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer);
+    _keyboardOpenPending = false;
+    _keyboardOpenPendingSinceTick = 0;
+    _ScheduleKeyboardOpenRetry();
+  }
+  return result;
+}
+
+HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
+                                              UINT64 requestSerial,
+                                              ITfContext* requestContext) {
+  if (!_pThreadMgr || generation != _keyboardOpenGeneration ||
+      !_keyboardOpenPending || requestSerial != _keyboardOpenRequestSerial)
+    return S_FALSE;
+
+  _keyboardOpenPending = false;
+  _keyboardOpenPendingSinceTick = 0;
+  if (_keyboardOpenWindow)
+    KillTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer);
+
+  if (_isToOpenClose) {
+    _CancelKeyboardOpenRequest();
+    return S_FALSE;
+  }
+
+  com_ptr<ITfDocumentMgr> document;
+  com_ptr<ITfContext> focused;
+  if (_pThreadMgr->GetFocus(&document) != S_OK || !document ||
+      document->GetTop(&focused) != S_OK || !focused ||
+      focused != requestContext || focused != _keyboardOpenRequestContext) {
+    _CancelKeyboardOpenRequest();
+    return S_FALSE;
+  }
+  if (_IsKeyboardOpen()) {
+    _CancelKeyboardOpenRequest();
+    return S_FALSE;
+  }
+
+  const BOOL priorSuppression = _fSuppressOpenCloseSelfWrite;
+  _fSuppressOpenCloseSelfWrite = TRUE;
+  const HRESULT hr = _SetKeyboardOpen(TRUE);
+  _fSuppressOpenCloseSelfWrite = priorSuppression;
+  if (FAILED(hr)) {
+    LOG(ERROR) << "Deferred keyboard OPENCLOSE recovery failed, hr: "
+               << static_cast<long>(hr);
+    _ScheduleKeyboardOpenRetry();
+    return hr;
+  }
+
+  // Never hold a TSF edit-session lock across synchronous pipe/COM UI work.
+  _keyboardOpenCommitPending = true;
+  if (!_keyboardOpenWindow ||
+      !PostMessageW(_keyboardOpenWindow, kKeyboardOpenCommitMessage, 0, 0)) {
+    _CancelKeyboardOpenRequest();
+    return E_FAIL;
+  }
   return S_OK;
 }
 
