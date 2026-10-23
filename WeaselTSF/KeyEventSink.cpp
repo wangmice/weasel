@@ -168,6 +168,7 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
   if (fForeground)
     m_client.FocusIn();
   else {
+    _CancelKeyboardOpenRequest();
     // A response already emitted by Rime may still be waiting for its WRITE
     // edit session. Keep that FIFO intact: _AbortComposition advances the
     // engine epoch so stale state becomes inert while durable commits survive.

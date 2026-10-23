@@ -322,8 +322,8 @@ bool WeaselTSF::_EnsureKeyboardOpenWindow() {
     return false;
   }
 
-  const HWND window = CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0,
-                                     0, HWND_MESSAGE, nullptr, module, this);
+  const HWND window = CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0, 0,
+                                      HWND_MESSAGE, nullptr, module, this);
   if (!window) {
     if (UnregisterClassW(MAKEINTATOM(atom), module))
       FreeLibrary(module);
@@ -406,6 +406,18 @@ void WeaselTSF::_OnKeyboardOpenTimer() {
   // Queue the retry after the normal backoff; never run a second edit session
   // directly inside the watchdog callback.
   if (_keyboardOpenPending) {
+    // KillTimer does not retract an already-queued WM_TIMER. Ignore any
+    // leftover timer from a previous request until this lease really expires.
+    const ULONGLONG elapsed =
+        GetTickCount64() - _keyboardOpenPendingSinceTick;
+    if (elapsed < kKeyboardOpenPendingRetryMs) {
+      const UINT remaining =
+          static_cast<UINT>(kKeyboardOpenPendingRetryMs - elapsed);
+      if (!SetTimer(_keyboardOpenWindow, kKeyboardOpenRetryTimer, remaining,
+                    nullptr))
+        _CancelKeyboardOpenRequest();
+      return;
+    }
     _ScheduleKeyboardOpenRetry();
     return;
   }
