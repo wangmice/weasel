@@ -4,6 +4,8 @@
 #include "VHorizontalLayout.h"
 #include "VerticalLayout.h"
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <resource.h>
@@ -75,13 +77,19 @@ void LoadIconIfNeed(wstring& loaded_path,
   loaded_path.swap(path);
 }
 
+namespace {
+std::atomic<std::uint64_t> g_panelClassSerial{0};
+constexpr UINT kPanelDestroyWaitMs = 2000;
+}  // namespace
+
 struct WeaselUIUpdate {
   Context ctx;
   Status status;
 };
 
 WeaselPanel::WeaselPanel(UI& ui)
-    : m_hWnd(nullptr),
+    : m_uiState(ui.SharedState()),
+      m_hWnd(nullptr),
       m_ctx(ui.ctx()),
       m_layout(nullptr),
       m_pD2D(nullptr),
@@ -110,6 +118,76 @@ WeaselPanel::WeaselPanel(UI& ui)
   m_iconDisabled =
       (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_RELOAD), IMAGE_ICON,
                        STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
+}
+
+WeaselPanel::~WeaselPanel() {
+  // UI::Destroy keeps this entire object alive when owner-thread teardown
+  // times out; do not release a window class from a still-running WNDPROC.
+  if (m_hWnd && ::IsWindow(m_hWnd) && !DestroyWindow())
+    DEBUG << "WeaselPanel destroyed with live owner-thread window";
+  _UnregisterWindowClass();
+
+  if (!m_current_zhung_icon.empty())
+    DestroyIcon(m_iconEnabled);
+  if (!m_current_ascii_icon.empty())
+    DestroyIcon(m_iconAlpha);
+  if (!m_current_half_icon.empty())
+    DestroyIcon(m_iconHalf);
+  if (!m_current_full_icon.empty())
+    DestroyIcon(m_iconFull);
+}
+
+bool WeaselPanel::_RegisterWindowClass() {
+  if (m_windowClassAtom)
+    return true;
+
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(&WeaselPanel::WindowProc),
+                          &module))
+    return false;
+
+  // The module address and a monotonic class generation prevent collisions
+  // when the allocator reuses an old Panel address.
+  const auto moduleAddress = reinterpret_cast<std::uintptr_t>(module);
+  const auto serial =
+      g_panelClassSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+  m_windowClassName = L"WeaselPanel." + std::to_wstring(moduleAddress) + L"." +
+                      std::to_wstring(serial);
+
+  WNDCLASSW wc = {};
+  wc.lpfnWndProc = WeaselPanel::WindowProc;
+  wc.hInstance = module;
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.lpszClassName = m_windowClassName.c_str();
+  const ATOM atom = RegisterClassW(&wc);
+  if (!atom) {
+    // Unlike the old shared-name registration, CLASS_ALREADY_EXISTS cannot
+    // be accepted: it may refer to a stale callback from another DLL.
+    m_windowClassName.clear();
+    FreeLibrary(module);
+    return false;
+  }
+
+  m_windowClassModule = module;
+  m_windowClassAtom = atom;
+  return true;
+}
+
+void WeaselPanel::_UnregisterWindowClass() {
+  if (!m_windowClassAtom)
+    return;
+  if (!UnregisterClassW(MAKEINTATOM(m_windowClassAtom), m_windowClassModule)) {
+    // A surviving window can still invoke our WNDPROC. Fail closed by
+    // intentionally retaining the loader reference rather than unloading
+    // code reachable from the registered class.
+    DEBUG << "WeaselPanel: window class still in use at panel teardown";
+    return;
+  }
+  m_windowClassAtom = 0;
+  m_windowClassName.clear();
+  FreeLibrary(m_windowClassModule);
+  m_windowClassModule = nullptr;
 }
 
 BOOL WeaselPanel::IsWindow() const {
@@ -237,17 +315,34 @@ void WeaselPanel::_CancelAutoHide() {
     _ApplyVisibility(PanelVisibility::Hide, 0);
 }
 
-void WeaselPanel::DestroyWindow() {
-  // clear timers before releasing window resources
-  _ClearTimers();
+bool WeaselPanel::DestroyWindow(bool full) {
+  const HWND hwnd = m_hWnd;
+  if (hwnd && ::IsWindow(hwnd)) {
+    // The HWND and its Direct2D resources belong to the same UI thread.
+    // A worker must not destroy either object itself.
+    if (GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+      DWORD_PTR result = 0;
+      if (!SendMessageTimeoutW(hwnd, WM_WEASEL_DESTROY_OWNER, full, 0,
+                               SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                               kPanelDestroyWaitMs, &result))
+        return false;
+      return result != 0 && !::IsWindow(hwnd);
+    }
 
-  if (m_pD2D) {
-    m_pD2D->ReleaseWindowResources();
-    // mark D2D as detached from any window
-    m_pD2D->m_hWnd = nullptr;
+    _ClearTimers();
+    if (m_pD2D) {
+      m_pD2D->ReleaseWindowResources();
+      m_pD2D->m_hWnd = nullptr;
+    }
+    if (!::DestroyWindow(hwnd) && ::IsWindow(hwnd))
+      return false;
   }
-  ::DestroyWindow(m_hWnd);
   m_hWnd = nullptr;
+  // For a complete teardown, release the D2D generation on the HWND owner
+  // before returning to a foreign caller that will free the Panel object.
+  if (full)
+    ReleaseAllResources();
+  return true;
 }
 
 void WeaselPanel::ReleaseAllResources() {
@@ -516,23 +611,16 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
   } else {
     m_lastCursorPos = CPoint(-1, -1);
   }
-  HINSTANCE hInstance = GetModuleHandle(nullptr);
-  WNDCLASS wc = {};
-  wc.lpfnWndProc = WeaselPanel::WindowProc;
-  wc.hInstance = hInstance;
-  wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-  wc.lpszClassName = L"WeaselPanel";
-  ATOM atom = RegisterClass(&wc);
-  if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+  if (!_RegisterWindowClass())
     return FALSE;
-  }
   ThreadDpiAwarenessScope dpi_scope;
   const DWORD ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
                          (m_preview_mode ? 0 : WS_EX_TOPMOST) |
                          WS_EX_NOREDIRECTIONBITMAP;
-  m_hWnd = CreateWindowEx(
-      ex_style, L"WeaselPanel", L"WeaselPanel", WS_POPUP | WS_CLIPSIBLINGS,
-      CW_USEDEFAULT, CW_USEDEFAULT, 10, 10, parent, nullptr, hInstance, this);
+  m_hWnd =
+      CreateWindowExW(ex_style, MAKEINTATOM(m_windowClassAtom), L"WeaselPanel",
+                      WS_POPUP | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT,
+                      10, 10, parent, nullptr, m_windowClassModule, this);
   if (m_hWnd) {
     m_fullscreen_font_active = false;
     m_fullscreen_font_snapshot = {};
@@ -1399,6 +1487,8 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
                                 WPARAM wParam,
                                 LPARAM lParam) {
   switch (uMsg) {
+    case WM_WEASEL_DESTROY_OWNER:
+      return DestroyWindow(wParam != 0) ? 1 : 0;
     case WM_WEASEL_REFRESH:
       if (wParam)  // Internal recovery must not cancel the auto-hide timer.
         _Refresh();

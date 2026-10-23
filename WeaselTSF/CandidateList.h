@@ -51,6 +51,11 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   void UpdateInputPosition(RECT const& rc);
   void Destroy();
   void DestroyAll();
+  // Unlink the non-owning TIP pointer before the host's final COM Release.
+  // A detached candidate may remain externally referenced but cannot call
+  // back into a destroyed WeaselTSF or retain UI window callbacks.
+  void DetachOwner();
+  bool HasOwner() const { return _tsf != nullptr; }
   void StartUI(com_ptr<ITfContext> pContext);
   void EndUI();
   bool IsUIless() const { return _uiStarted && !_pbShow; }
@@ -66,6 +71,13 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   weasel::UIStyle& style();
 
  private:
+  struct DllLifetimeLease {
+    DllLifetimeLease();
+    ~DllLifetimeLease();
+  };
+
+  // Declared first so its destructor runs last, after UI and COM members.
+  DllLifetimeLease _dllLifetime;
   HWND _GetActiveWnd();
   HRESULT _UpdateUIElement();
 
@@ -75,8 +87,8 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
 
   std::unique_ptr<weasel::UI> _ui;
   DWORD _cRef;
-  // Non-owning back pointer: its lifetime is strictly nested in WeaselTSF;
-  // holding a COM reference here would create a reference cycle.
+  // Weak owner: DetachOwner invalidates this before WeaselTSF dies.
+  // A COM strong reference here would create a cycle with WeaselTSF::_cand.
   WeaselTSF* _tsf;
   DWORD uiid = 0;
   TfIntegratableCandidateListSelectionStyle _selectionStyle =

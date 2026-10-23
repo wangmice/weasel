@@ -33,7 +33,7 @@ BOOL UI::IsCountingDown() const {
   return pimpl_ && pimpl_->panel.IsCountingDown();
 };
 
-UI::UI() : pimpl_(nullptr), in_server_(false) {}
+UI::UI() : state_(std::make_shared<UISharedState>()) {}
 
 UI::~UI() {
   if (pimpl_)
@@ -49,20 +49,20 @@ void UI::UpdateInputPosition(RECT const& rc) {
 }
 void UI::Update(const Context& ctx, const Status& status) {
   if (!pimpl_) {
-    ctx_ = ctx;
-    status_ = status;
+    state_->ctx = ctx;
+    state_->status = status;
     return;
   }
   pimpl_->Update(ctx, status);
 }
 
 Context& UI::octx() {
-  return pimpl_ ? pimpl_->panel.PaintedContext() : ctx_;
+  return pimpl_ ? pimpl_->panel.PaintedContext() : state_->ctx;
 }
 
 void UI::SetStyle(const UIStyle& style) {
   if (!pimpl_) {
-    style_ = style;
+    state_->style = style;
     return;
   }
   pimpl_->SetStyle(style);
@@ -93,13 +93,17 @@ void UI::Hide() {
 }
 void UI::Destroy(bool full) {
   if (pimpl_) {
-    if (pimpl_->panel.IsWindow())
-      pimpl_->panel.DestroyWindow();
-    if (full) {
-      // Release the panel; shared devices remain available to other UI objects.
-      pimpl_->panel.ReleaseAllResources();
-      pimpl_.reset();
+    if (!pimpl_->panel.DestroyWindow(full)) {
+      if (full) {
+        // The HWND may have an in-flight callback. Keep the panel and its
+        // independently owned state alive rather than introducing UAF.
+        // Only this timeout/failed-owner case deliberately leaks UIImpl.
+        pimpl_.release();
+      }
+      return;
     }
+    if (full)
+      pimpl_.reset();
   }
 }
 bool UI::Create(HWND parent, bool preview_mode) {

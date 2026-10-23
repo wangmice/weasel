@@ -51,7 +51,7 @@ static bool open(const std::wstring& path) {
 
 CLangBarItemButton::CLangBarItemButton(WeaselTSF* pTextService,
                                        REFGUID guid,
-                                       weasel::UIStyle& style)
+                                       const weasel::UIStyle& style)
     : _status(0),
       _style(style),
       _current_schema_zhung_icon(),
@@ -66,8 +66,14 @@ CLangBarItemButton::CLangBarItemButton(WeaselTSF* pTextService,
 }
 
 CLangBarItemButton::~CLangBarItemButton() {
+  DetachOwner();
   _DestroyCachedIcons();
   DllRelease();
+}
+
+void CLangBarItemButton::DetachOwner() {
+  _pTextService = nullptr;
+  _pLangBarItemSink = nullptr;
 }
 
 STDMETHODIMP CLangBarItemButton::QueryInterface(REFIID riid, void** ppvObject) {
@@ -137,13 +143,16 @@ STDMETHODIMP CLangBarItemButton::GetTooltipString(BSTR* pbstrToolTip) {
 STDMETHODIMP CLangBarItemButton::OnClick(TfLBIClick click,
                                          POINT pt,
                                          const RECT* prcArea) {
+  if (!_pTextService)
+    return E_UNEXPECTED;
   if (click == TF_LBI_CLK_LEFT) {
     _pTextService->_HandleLangBarMenuSelect(
         ascii_mode ? ID_WEASELTRAY_DISABLE_ASCII : ID_WEASELTRAY_ENABLE_ASCII);
     ascii_mode = !ascii_mode;
-    if (_pLangBarItemSink) {
-      _pLangBarItemSink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
-    }
+    // Keep the sink alive across callbacks that may deactivate the TIP.
+    com_ptr<ITfLangBarItemSink> sink = _pLangBarItemSink;
+    if (sink)
+      sink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
   } else if (click == TF_LBI_CLK_RIGHT) {
     /* Open menu */
     HWND hwnd = _pTextService->_GetFocusedContextWindow();
@@ -162,7 +171,9 @@ STDMETHODIMP CLangBarItemButton::OnClick(TfLBIClick click,
           popupMenu, TPM_NONOTIFY | TPM_RETURNCMD | TPM_HORPOSANIMATION, pt.x,
           pt.y, hwnd, NULL);
       DestroyMenu(menu);
-      _pTextService->_HandleLangBarMenuSelect(wID);
+      // TrackPopupMenuEx runs a nested message pump; the TIP may deactivate.
+      if (_pTextService)
+        _pTextService->_HandleLangBarMenuSelect(wID);
     }
   }
   return S_OK;
@@ -177,6 +188,8 @@ STDMETHODIMP CLangBarItemButton::InitMenu(ITfMenu* pMenu) {
 }
 
 STDMETHODIMP CLangBarItemButton::OnMenuSelect(UINT wID) {
+  if (!_pTextService)
+    return E_UNEXPECTED;
   _pTextService->_HandleLangBarMenuSelect(wID);
   return S_OK;
 }
@@ -266,11 +279,22 @@ STDMETHODIMP CLangBarItemButton::UnadviseSink(DWORD dwCookie) {
   return S_OK;
 }
 
-void CLangBarItemButton::UpdateWeaselStatus(weasel::Status stat) {
+void CLangBarItemButton::UpdateWeaselStatus(weasel::Status stat,
+                                            const weasel::UIStyle& style) {
+  if (!_pTextService)
+    return;
   // 仅状态真变化才通知语言栏：图标内容由 ascii_mode 与 schema 图标路径
   // 惟一决定，状态位(_status)只经 SetLangbarStatus 变化（自带变化检测），
   // 无变化时 OnUpdate 只会让系统空跑 GetStatus/GetIcon
   bool changed = false;
+  if (_style.current_zhung_icon != style.current_zhung_icon ||
+      _style.current_ascii_icon != style.current_ascii_icon) {
+    // LanguageBar only consumes the two icon paths. Avoid copying the entire
+    // UIStyle on every status/keystroke update.
+    _style.current_zhung_icon = style.current_zhung_icon;
+    _style.current_ascii_icon = style.current_ascii_icon;
+    changed = true;
+  }
   if (stat.ascii_mode != ascii_mode) {
     ascii_mode = stat.ascii_mode;
     changed = true;
@@ -283,9 +307,9 @@ void CLangBarItemButton::UpdateWeaselStatus(weasel::Status stat) {
     _current_schema_ascii_icon = _style.current_ascii_icon;
     changed = true;
   }
-  if (changed && _pLangBarItemSink) {
-    _pLangBarItemSink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
-  }
+  com_ptr<ITfLangBarItemSink> sink = _pLangBarItemSink;
+  if (changed && sink)
+    sink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
 }
 
 void CLangBarItemButton::SetLangbarStatus(DWORD dwStatus, BOOL fSet) {
@@ -303,9 +327,9 @@ void CLangBarItemButton::SetLangbarStatus(DWORD dwStatus, BOOL fSet) {
     }
   }
 
-  if (isChange && _pLangBarItemSink) {
-    _pLangBarItemSink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
-  }
+  com_ptr<ITfLangBarItemSink> sink = _pLangBarItemSink;
+  if (isChange && sink)
+    sink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
 
   return;
 }
@@ -413,6 +437,7 @@ BOOL WeaselTSF::_InitLanguageBar() {
       new CLangBarItemButton(this, GUID_LBI_INPUTMODE, _cand->style()));
 
   if (pLangBarItemMgr->AddItem(_pLangBarButton) != S_OK) {
+    _pLangBarButton->DetachOwner();
     _pLangBarButton = NULL;
     return FALSE;
   }
@@ -429,7 +454,9 @@ void WeaselTSF::_UninitLanguageBar() {
   if (_pLangBarButton == NULL)
     return;
 
-  if (_pThreadMgr->QueryInterface(&pLangBarItemMgr) == S_OK) {
+  // Detach before RemoveItem's potential synchronous host reentrancy.
+  _pLangBarButton->DetachOwner();
+  if (_pThreadMgr && _pThreadMgr->QueryInterface(&pLangBarItemMgr) == S_OK) {
     pLangBarItemMgr->RemoveItem(_pLangBarButton);
   }
 
@@ -467,7 +494,7 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
     }
   }
 
-  _pLangBarButton->UpdateWeaselStatus(stat);
+  _pLangBarButton->UpdateWeaselStatus(stat, _cand->style());
 }
 
 void WeaselTSF::_ShowLanguageBar(BOOL show) {
