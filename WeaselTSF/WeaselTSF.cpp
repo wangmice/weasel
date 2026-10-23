@@ -97,7 +97,9 @@ STDMETHODIMP WeaselTSF::Activate(ITfThreadMgr* pThreadMgr,
 STDMETHODIMP WeaselTSF::Deactivate() {
   // Invalidate every pending keyboard restore before detaching the old TIP.
   ++_keyboardOpenGeneration;
+  ++_keyboardOpenRequestSerial;
   _keyboardOpenPending = false;
+  _keyboardOpenPendingSinceTick = 0;
   _InvalidatePendingUI();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
@@ -143,7 +145,9 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
     _cand.Attach(new CCandidateList(this));
   }
   ++_keyboardOpenGeneration;
+  ++_keyboardOpenRequestSerial;
   _keyboardOpenPending = false;
+  _keyboardOpenPendingSinceTick = 0;
   LoadWeaselLogLevelFromRegistry();
   com_ptr<ITfDocumentMgr> pDocMgrFocus;
   _activateFlags = dwFlags;
@@ -234,6 +238,10 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   return S_OK;
 }
 STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
+  // Cancel outstanding keyboard recovery when the thread loses focus.
+  ++_keyboardOpenRequestSerial;
+  _keyboardOpenPending = false;
+  _keyboardOpenPendingSinceTick = 0;
   // Thread focus loss invalidates composition state, not already emitted
   // commit events. _AbortComposition advances the engine epoch and preserves
   // durable queued commits for their original document context.

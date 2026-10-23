@@ -227,6 +227,10 @@ HRESULT WeaselTSF::_SetKeyboardOpen(BOOL fOpen) {
 }
 
 namespace {
+// A host may accept an async session but never run it after context disposal.
+// Permit retry on subsequent notifications without flooding its TSF queue.
+constexpr ULONGLONG kKeyboardOpenPendingRetryMs = 2000;
+
 // TF_ES_ASYNCDONTCARE may execute synchronously within OnChange, while
 // SetValue on that compartment is still forbidden (E_UNEXPECTED). Force an
 // asynchronous session and reject callbacks from a previous TIP activation.
@@ -254,38 +258,45 @@ class CForceKeyboardOpenEditSession : public CEditSession {
 HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
   if (_pThreadMgr == NULL)
     return E_UNEXPECTED;
-  // Multiple OnChange notifications can arrive before the asynchronous edit
-  // session runs. Coalesce them into a single pending recovery.
-  if (_keyboardOpenPending)
-    return S_FALSE;
-
-  // 借力的文档上下文：优先焦点文档 top（Ctrl+Space 即发生于焦点应用），
-  // 其次最近一次键处理的上下文
-  com_ptr<ITfContext> pContext;
-  com_ptr<ITfDocumentMgr> pDocMgrFocus;
-  if ((_pThreadMgr->GetFocus(&pDocMgrFocus) == S_OK) &&
-      (pDocMgrFocus != NULL)) {
-    pDocMgrFocus->GetTop(&pContext);
+  // Coalesce nearby notifications but let a later notification replace an
+  // edit session whose host accepted it without ever invoking the callback.
+  const ULONGLONG now = GetTickCount64();
+  if (_keyboardOpenPending) {
+    if (now - _keyboardOpenPendingSinceTick < kKeyboardOpenPendingRetryMs)
+      return S_FALSE;
+    // Invalidate the old callback before checking focus. It must never
+    // commit a mode toggle after this request's timeout.
+    ++_keyboardOpenRequestSerial;
+    _keyboardOpenPending = false;
+    _keyboardOpenPendingSinceTick = 0;
   }
-  if (pContext == NULL)
-    pContext = _pEditSessionContext;
-  if (pContext == NULL)
-    return E_FAIL;  // No context to schedule the delayed operation.
 
+  // Never borrow a stale edit-session context after this thread loses focus.
+  com_ptr<ITfDocumentMgr> pDocMgrFocus;
+  com_ptr<ITfContext> pContext;
+  if (_pThreadMgr->GetFocus(&pDocMgrFocus) != S_OK || !pDocMgrFocus ||
+      pDocMgrFocus->GetTop(&pContext) != S_OK || !pContext)
+    return E_FAIL;
+
+  const UINT64 generation = _keyboardOpenGeneration;
   const UINT64 serial = ++_keyboardOpenRequestSerial;
   com_ptr<CForceKeyboardOpenEditSession> pEditSession;
   pEditSession.Attach(new CForceKeyboardOpenEditSession(
-      this, pContext, _keyboardOpenGeneration, serial));
+      this, pContext, generation, serial));
   if (pEditSession == NULL)
     return E_OUTOFMEMORY;
 
   _keyboardOpenPending = true;
+  _keyboardOpenPendingSinceTick = now;
   HRESULT hrSession = E_FAIL;
   const HRESULT hr = pContext->RequestEditSession(
       _tfClientId, pEditSession, TF_ES_ASYNC | TF_ES_READ, &hrSession);
   const HRESULT result = FAILED(hr) ? hr : hrSession;
-  if (FAILED(result) && serial == _keyboardOpenRequestSerial)
+  if (FAILED(result) && serial == _keyboardOpenRequestSerial &&
+      generation == _keyboardOpenGeneration) {
     _keyboardOpenPending = false;
+    _keyboardOpenPendingSinceTick = 0;
+  }
   return result;
 }
 
@@ -296,6 +307,7 @@ HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
       !_keyboardOpenPending || requestSerial != _keyboardOpenRequestSerial)
     return S_FALSE;
   _keyboardOpenPending = false;
+  _keyboardOpenPendingSinceTick = 0;
 
   // The profile option or focus may have changed while the edit session was
   // queued. Never reopen a keyboard that now deliberately uses OPENCLOSE, nor
@@ -304,8 +316,8 @@ HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
     return S_FALSE;
   com_ptr<ITfDocumentMgr> focusDocument;
   com_ptr<ITfContext> focusContext;
-  if (_pThreadMgr->GetFocus(&focusDocument) == S_OK && focusDocument &&
-      focusDocument->GetTop(&focusContext) == S_OK && focusContext &&
+  if (_pThreadMgr->GetFocus(&focusDocument) != S_OK || !focusDocument ||
+      focusDocument->GetTop(&focusContext) != S_OK || !focusContext ||
       focusContext != requestContext)
     return S_FALSE;
   // A second actor may already have reopened the keyboard while we waited.
