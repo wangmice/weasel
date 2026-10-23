@@ -262,8 +262,10 @@ class CForceKeyboardOpenEditSession : public CEditSession {
 };
 }  // namespace
 
-LRESULT CALLBACK WeaselTSF::_KeyboardOpenWindowProc(
-    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK WeaselTSF::_KeyboardOpenWindowProc(HWND hwnd,
+                                                    UINT message,
+                                                    WPARAM wParam,
+                                                    LPARAM lParam) {
   if (message == WM_NCCREATE) {
     const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA,
@@ -275,10 +277,10 @@ LRESULT CALLBACK WeaselTSF::_KeyboardOpenWindowProc(
     return DefWindowProcW(hwnd, message, wParam, lParam);
   }
 
-  auto* self = reinterpret_cast<WeaselTSF*>(
-      GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (self &&
-      (message == WM_TIMER || message == kKeyboardOpenCommitMessage)) {
+  auto* self =
+      reinterpret_cast<WeaselTSF*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (self && (message == WM_TIMER ||
+               message == kKeyboardOpenCommitMessage)) {
     // A host callback can reenter Deactivate while the command is in flight.
     self->AddRef();
     if (message == WM_TIMER) {
@@ -321,13 +323,15 @@ bool WeaselTSF::_EnsureKeyboardOpenWindow() {
     return false;
   }
 
-  const HWND window = CreateWindowExW(
-      0, MAKEINTATOM(atom), L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, module,
-      this);
+  const HWND window =
+      CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
+                      nullptr, module, this);
   if (!window) {
-    UnregisterClassW(MAKEINTATOM(atom), module);
+    if (UnregisterClassW(MAKEINTATOM(atom), module))
+      FreeLibrary(module);
+    // On unregister failure keep the loader reference: the registered WNDPROC
+    // must never outlive the DLL that owns it.
     _keyboardOpenWindowClassName.clear();
-    FreeLibrary(module);
     return false;
   }
 
@@ -351,8 +355,7 @@ void WeaselTSF::_CancelKeyboardOpenRequest() noexcept {
 void WeaselTSF::_DestroyKeyboardOpenWindow() noexcept {
   _CancelKeyboardOpenRequest();
   if (_keyboardOpenWindow) {
-    if (IsWindow(_keyboardOpenWindow) &&
-        !DestroyWindow(_keyboardOpenWindow)) {
+    if (IsWindow(_keyboardOpenWindow) && !DestroyWindow(_keyboardOpenWindow)) {
       // Never leave a live WNDPROC pointing to a deactivated TIP.
       SetWindowLongPtrW(_keyboardOpenWindow, GWLP_USERDATA, 0);
       // The surviving window/class must also retain their DLL loader lease.
@@ -376,7 +379,8 @@ void WeaselTSF::_DestroyKeyboardOpenWindow() noexcept {
 
 bool WeaselTSF::_ScheduleKeyboardOpenRetry() noexcept {
   if (!_keyboardOpenWindow || !_keyboardOpenRequestContext ||
-      _isToOpenClose || _keyboardOpenRetries >= kKeyboardOpenMaxRetries) {
+      _isToOpenClose ||
+      _keyboardOpenRetries >= kKeyboardOpenMaxRetries) {
     _CancelKeyboardOpenRequest();
     return false;
   }
@@ -401,10 +405,13 @@ void WeaselTSF::_OnKeyboardOpenTimer() {
   if (_keyboardOpenCommitPending || !_keyboardOpenRequestContext)
     return;
 
-  // An accepted edit session may be discarded by a closing host context.
-  // Its callback is invalidated before a bounded replacement is requested.
-  if (_keyboardOpenPending && !_ScheduleKeyboardOpenRetry())
+  // A host can accept an asynchronous edit session and never invoke it.
+  // Queue the retry after the normal backoff; never run a second edit session
+  // directly inside the watchdog callback.
+  if (_keyboardOpenPending) {
+    _ScheduleKeyboardOpenRetry();
     return;
+  }
   if (_isToOpenClose || !_pThreadMgr) {
     _CancelKeyboardOpenRequest();
     return;
@@ -427,9 +434,12 @@ void WeaselTSF::_OnKeyboardOpenTimer() {
 }
 
 void WeaselTSF::_CommitDeferredKeyboardOpen() {
-  if (!_keyboardOpenCommitPending || !_keyboardOpenRequestContext ||
-      !_pThreadMgr || _isToOpenClose)
+  if (!_keyboardOpenCommitPending || !_keyboardOpenRequestContext)
     return;
+  if (!_pThreadMgr || _isToOpenClose) {
+    _CancelKeyboardOpenRequest();
+    return;
+  }
   com_ptr<ITfDocumentMgr> document;
   com_ptr<ITfContext> focused;
   if (_pThreadMgr->GetFocus(&document) != S_OK || !document ||
@@ -529,8 +539,7 @@ HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
   com_ptr<ITfContext> focused;
   if (_pThreadMgr->GetFocus(&document) != S_OK || !document ||
       document->GetTop(&focused) != S_OK || !focused ||
-      focused != requestContext ||
-      focused != _keyboardOpenRequestContext) {
+      focused != requestContext || focused != _keyboardOpenRequestContext) {
     _CancelKeyboardOpenRequest();
     return S_FALSE;
   }

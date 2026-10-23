@@ -121,9 +121,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   HRESULT _ApplyDeferredKeyboardOpen(UINT64 generation,
                                      UINT64 requestSerial,
                                      ITfContext* requestContext);
-  static LRESULT CALLBACK _KeyboardOpenWindowProc(HWND hwnd, UINT message,
-                                                   WPARAM wParam,
-                                                   LPARAM lParam);
+  static LRESULT CALLBACK _KeyboardOpenWindowProc(HWND hwnd,
+                                                  UINT message,
+                                                  WPARAM wParam,
+                                                  LPARAM lParam);
   bool _EnsureKeyboardOpenWindow();
   void _DestroyKeyboardOpenWindow() noexcept;
   void _CancelKeyboardOpenRequest() noexcept;

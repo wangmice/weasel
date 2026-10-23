@@ -44,6 +44,7 @@ Assert-Policy ($header -match '_keyboardOpenRequestSerial\s*=\s*0' -and
 Assert-Policy ($compartment -match 'kKeyboardOpenMaxRetries\s*=\s*3' -and
   $compartment -match 'kKeyboardOpenPendingRetryMs\s*=\s*2000' -and
   $compartment -match 'void WeaselTSF::_OnKeyboardOpenTimer\(\)' -and
+  $compartment -match 'if\s*\(_keyboardOpenPending\)\s*\{\s*_ScheduleKeyboardOpenRetry\(\);\s*return;' -and
   $compartment -match '_ScheduleKeyboardOpenRetry\(\)' -and
   $compartment -match 'void WeaselTSF::_CancelKeyboardOpenRequest\(\)' ) 'keyboard recovery retries must be bounded and cancelable'
 Assert-Policy ($compartment -match 'void WeaselTSF::_CommitDeferredKeyboardOpen\(\)' -and
