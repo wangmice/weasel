@@ -241,8 +241,8 @@ class CForceKeyboardOpenEditSession : public CEditSession {
         requestSerial_(requestSerial) {}
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) {
-    return _pTextService->_ApplyDeferredKeyboardOpen(
-        generation_, requestSerial_, _pContext);
+    return _pTextService->_ApplyDeferredKeyboardOpen(generation_,
+                                                     requestSerial_, _pContext);
   }
 
  private:
@@ -290,8 +290,8 @@ HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
 }
 
 HRESULT WeaselTSF::_ApplyDeferredKeyboardOpen(UINT64 generation,
-                                               UINT64 requestSerial,
-                                               ITfContext* requestContext) {
+                                              UINT64 requestSerial,
+                                              ITfContext* requestContext) {
   if (_pThreadMgr == NULL || generation != _keyboardOpenGeneration ||
       !_keyboardOpenPending || requestSerial != _keyboardOpenRequestSerial)
     return S_FALSE;
