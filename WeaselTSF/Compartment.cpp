@@ -281,8 +281,8 @@ HRESULT WeaselTSF::_RequestKeyboardOpenDeferred() {
   const UINT64 generation = _keyboardOpenGeneration;
   const UINT64 serial = ++_keyboardOpenRequestSerial;
   com_ptr<CForceKeyboardOpenEditSession> pEditSession;
-  pEditSession.Attach(new CForceKeyboardOpenEditSession(
-      this, pContext, generation, serial));
+  pEditSession.Attach(
+      new CForceKeyboardOpenEditSession(this, pContext, generation, serial));
   if (pEditSession == NULL)
     return E_OUTOFMEMORY;
 
