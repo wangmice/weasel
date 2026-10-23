@@ -322,8 +322,8 @@ bool WeaselTSF::_EnsureKeyboardOpenWindow() {
     return false;
   }
 
-  const HWND window = CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0, 0,
-                                     HWND_MESSAGE, nullptr, module, this);
+  const HWND window = CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0,
+                                     0, HWND_MESSAGE, nullptr, module, this);
   if (!window) {
     if (UnregisterClassW(MAKEINTATOM(atom), module))
       FreeLibrary(module);
