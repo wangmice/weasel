@@ -279,8 +279,7 @@ LRESULT CALLBACK WeaselTSF::_KeyboardOpenWindowProc(HWND hwnd,
 
   auto* self =
       reinterpret_cast<WeaselTSF*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (self && (message == WM_TIMER ||
-               message == kKeyboardOpenCommitMessage)) {
+  if (self && (message == WM_TIMER || message == kKeyboardOpenCommitMessage)) {
     // A host callback can reenter Deactivate while the command is in flight.
     self->AddRef();
     if (message == WM_TIMER) {
@@ -323,9 +322,8 @@ bool WeaselTSF::_EnsureKeyboardOpenWindow() {
     return false;
   }
 
-  const HWND window =
-      CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
-                      nullptr, module, this);
+  const HWND window = CreateWindowExW(0, MAKEINTATOM(atom), L"", 0, 0, 0, 0, 0,
+                                     HWND_MESSAGE, nullptr, module, this);
   if (!window) {
     if (UnregisterClassW(MAKEINTATOM(atom), module))
       FreeLibrary(module);
@@ -378,8 +376,7 @@ void WeaselTSF::_DestroyKeyboardOpenWindow() noexcept {
 }
 
 bool WeaselTSF::_ScheduleKeyboardOpenRetry() noexcept {
-  if (!_keyboardOpenWindow || !_keyboardOpenRequestContext ||
-      _isToOpenClose ||
+  if (!_keyboardOpenWindow || !_keyboardOpenRequestContext || _isToOpenClose ||
       _keyboardOpenRetries >= kKeyboardOpenMaxRetries) {
     _CancelKeyboardOpenRequest();
     return false;
