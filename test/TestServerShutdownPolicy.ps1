@@ -34,8 +34,8 @@ if ($afterLoop -match 'lock_guard\s+guard\(g_api_mutex\)' -or
 $logoffStart = $serverImpl.IndexOf('LRESULT ServerImpl::OnEndSystemSession(')
 $logoffEnd = $serverImpl.IndexOf('LRESULT ServerImpl::OnCommand(', $logoffStart)
 if ($logoffStart -lt 0 -or $logoffEnd -le $logoffStart -or
-    $serverImpl.Substring($logoffStart, $logoffEnd - $logoffStart) -notmatch '_RequestStop\(\)') {
-  throw 'WM_ENDSESSION must enter the bounded, nonblocking shutdown path'
+    $serverImpl.Substring($logoffStart, $logoffEnd - $logoffStart) -notmatch 'if\s*\(wParam\)\s*\{[\s\S]*?_RequestStop\(\)') {
+  throw 'WM_ENDSESSION must ignore cancelled logoff and use the nonblocking shutdown path'
 }
 
 $runtimeStart = $serverImpl.IndexOf('void ServerImpl::_StopRuntime()')

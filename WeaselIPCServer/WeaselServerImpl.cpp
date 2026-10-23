@@ -329,10 +329,13 @@ LRESULT ServerImpl::OnEndSystemSession(UINT uMsg,
                                        WPARAM wParam,
                                        LPARAM lParam,
                                        BOOL& bHandled) {
-  // WM_ENDSESSION is a control-plane stop request. Never wait here for a
-  // worker holding g_api_mutex: Run() drains workers under its hard shutdown
-  // watchdog before WeaselServerApp finalizes the RequestHandler.
-  _RequestStop();
+  // A cancelled logoff/shutdown sends WM_ENDSESSION with wParam == FALSE.
+  // Keep the running service alive when the system session will continue.
+  if (wParam) {
+    // Run() drains workers under the hard watchdog; never block here on
+    // g_api_mutex held by a business request.
+    _RequestStop();
+  }
   return 0;
 }
 
