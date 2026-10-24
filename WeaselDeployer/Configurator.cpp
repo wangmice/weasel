@@ -255,11 +255,8 @@ int Configurator::Run(bool installing) {
 
 int Configurator::UpdateWorkspace(bool report_errors,
                                   bool wait_for_install_startup) {
-  RimeOperationWatchdog deploy_watchdog;
-  if (!deploy_watchdog.Arm()) {
-    LOG(ERROR) << "Could not arm Rime workspace deployment watchdog.";
-    return 1;
-  }
+  // Deployment rewrites configs and upgrades user dictionaries through librime.
+  // These writes are not transaction-safe, so never hard-kill their process.
 
   weasel::ServerLifecycleLock lifecycle_lock;
   const DWORD lifecycle_wait_ms =
@@ -510,10 +507,9 @@ int Configurator::SyncUserData() {
       LOG(ERROR) << "Error synching user data.";
       retval = 1;
     }
-    // sync_user_data() is the one deployer operation here that intentionally
-    // starts librime's asynchronous maintenance worker. This method is invoked
-    // only by the isolated internal worker, whose process-level watchdog is
-    // the hard failure boundary for an unresponsive librime future.
+    // sync_user_data() starts librime's asynchronous maintenance worker.
+    // Wait for it to finish before releasing the lifecycle lock or resuming
+    // WeaselServer; force-terminating this worker could corrupt user data.
     rime->join_maintenance_thread();
   }
   if (!releaser.Finish())

@@ -15,8 +15,7 @@ namespace {
 constexpr wchar_t kInternalSyncWorkerOption[] = L"/internal-sync-worker";
 constexpr wchar_t kInstallerDeployOption[] = L"/install-deploy";
 constexpr DWORD kRimeOperationHardTimeoutMs = 15 * 60 * 1000;
-constexpr DWORD kSyncSupervisorGraceMs = 10 * 1000;
-constexpr DWORD kSyncTerminationWaitMs = 5 * 1000;
+constexpr DWORD kSyncSupervisorSoftTimeoutMs = 15 * 60 * 1000;
 
 DWORD WINAPI RimeOperationWatchdogProc(LPVOID param) noexcept {
   HANDLE cancel_event = static_cast<HANDLE>(param);
@@ -36,10 +35,7 @@ DWORD WINAPI RimeOperationWatchdogProc(LPVOID param) noexcept {
 struct RuntimeCleanup {
   bool com_initialized = false;
   bool module_initialized = false;
-  RimeOperationWatchdog watchdog;
-
   ~RuntimeCleanup() {
-    watchdog.Disarm();
     if (module_initialized)
       _Module.Term();
     if (com_initialized)
@@ -85,43 +81,34 @@ int RunIsolatedSyncWorker() {
   }
 
   CloseHandle(process.hThread);
-  const DWORD wait_result = WaitForSingleObject(
-      process.hProcess, kRimeOperationHardTimeoutMs + kSyncSupervisorGraceMs);
-  if (wait_result == WAIT_OBJECT_0) {
-    DWORD exit_code = ERROR_GEN_FAILURE;
-    const bool got_exit_code =
-        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
-    CloseHandle(process.hProcess);
-    if (!got_exit_code) {
-      LOG(ERROR) << "Could not read isolated Rime sync worker exit code.";
-      return 1;
-    }
-    return exit_code == 0 ? 0 : 1;
-  }
-
+  DWORD wait_result =
+      WaitForSingleObject(process.hProcess, kSyncSupervisorSoftTimeoutMs);
   if (wait_result == WAIT_TIMEOUT) {
-    LOG(ERROR) << "Isolated Rime sync worker exceeded the hard timeout.";
-  } else {
-    const DWORD wait_error = GetLastError();
+    // librime synchronizes dictionaries incrementally; terminating the
+    // worker could leave an incomplete merge or a truncated config file.
+    LOG(WARNING) << "Isolated Rime sync exceeded the soft timeout; waiting "
+                    "for completion to protect user data.";
+    wait_result = WaitForSingleObject(process.hProcess, INFINITE);
+  }
+  if (wait_result != WAIT_OBJECT_0) {
     LOG(ERROR) << "Waiting for isolated Rime sync worker failed, error: "
-               << wait_error;
+               << (wait_result == WAIT_FAILED ? GetLastError()
+                                              : ERROR_GEN_FAILURE);
+    // The worker may still be alive; its lifecycle lock continues to
+    // serialize Rime data mutations independently of the supervisor.
+    CloseHandle(process.hProcess);
+    return 1;
   }
 
-  // Fail closed on any supervisor wait anomaly. Do not resume maintenance
-  // here; only confirmed worker exit lets WeaselServer's owner-exit recovery
-  // decide whether it is safe to reinitialize Rime.
-  if (!TerminateProcess(process.hProcess, ERROR_TIMEOUT)) {
-    LOG(ERROR) << "Could not terminate failed Rime sync worker, error: "
-               << GetLastError();
-  }
-  const DWORD terminated =
-      WaitForSingleObject(process.hProcess, kSyncTerminationWaitMs);
-  if (terminated != WAIT_OBJECT_0) {
-    LOG(ERROR) << "Failed Rime sync worker did not exit promptly.";
-  }
-
+  DWORD exit_code = ERROR_GEN_FAILURE;
+  const bool got_exit_code =
+      GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
   CloseHandle(process.hProcess);
-  return 1;
+  if (!got_exit_code) {
+    LOG(ERROR) << "Could not read isolated Rime sync worker exit code.";
+    return 1;
+  }
+  return exit_code == 0 ? 0 : 1;
 }
 }  // namespace
 
@@ -221,10 +208,6 @@ static void DetachGuiConsole() {
 int wmain(int argc, wchar_t* argv[]) {
   const bool internal_sync_worker = IsInternalSyncWorker(argc, argv);
   RuntimeCleanup cleanup;
-  if (internal_sync_worker && !cleanup.watchdog.Arm()) {
-    LOG(ERROR) << "Could not arm Rime maintenance watchdog.";
-    return 1;
-  }
 
   if (!IsDictionaryCli(argc, argv)) {
     // GUI entry points are launched from the tray or Explorer. Keep those

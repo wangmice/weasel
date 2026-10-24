@@ -114,10 +114,6 @@ if ($updateBody -notmatch 'if\s*\(!rime->deploy_config_file\("weasel\.yaml",\s*"
 if ($updateBody -match 'rime->join_maintenance_thread\(\)') {
   throw 'UpdateWorkspace uses synchronous librime deployment tasks and must not retain an unbounded maintenance join'
 }
-if ($updateBody -notmatch 'RimeOperationWatchdog\s+deploy_watchdog' -or
-    $updateBody -notmatch 'deploy_watchdog\.Arm\(\)[\s\S]*?ServerLifecycleLock\s+lifecycle_lock') {
-  throw 'UpdateWorkspace must arm its hard watchdog before acquiring lifecycle ownership'
-}
 if ($updateBody -notmatch 'return\s+retval\s*;') {
   throw 'UpdateWorkspace must return its accumulated deployment result'
 }
