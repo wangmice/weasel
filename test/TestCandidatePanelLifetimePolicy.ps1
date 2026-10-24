@@ -175,74 +175,48 @@ if ($dispose -notmatch '_queue->InFlight\(\)' -or
     $applyState -notmatch 'ownsFlight\s*&&\s*\(terminalFailure\s*\|\|\s*!executed\)') {
   throw 'abandoned async candidate confirmation must retire only its own active flight'
 }
-# A queued cross-document handoff may be abandoned without DoEditSession.
-# Its destructor must not immediately schedule the same handoff again while
-# still retaining the old composition. Check flight ownership and ensure the
-# old composition is retired before advancing the FIFO, without affecting
-# a newer composition that reentered during EndUIElement.
+# A dropped cross-context handoff may only pause the old flight; retry is
+# triggered by the matching old-context OnEndEdit, not the COM destructor.
 $handoffStart = $composition.IndexOf('class CContextHandoffEditSession')
 $handoffEnd = $composition.IndexOf('void WeaselTSF::_EnqueueResponseApply(', $handoffStart)
 if ($handoffStart -lt 0 -or $handoffEnd -le $handoffStart) {
-  throw 'unable to isolate cross-context handoff edit session'
+  throw 'unable to locate handoff edit session and wait helper'
 }
 $handoff = $composition.Substring($handoffStart, $handoffEnd - $handoffStart)
 $handoffDisposeStart = $handoff.IndexOf('~CContextHandoffEditSession() override')
 $handoffExecuteStart = $handoff.IndexOf('STDMETHODIMP DoEditSession(', $handoffDisposeStart)
 if ($handoffDisposeStart -lt 0 -or $handoffExecuteStart -le $handoffDisposeStart) {
-  throw 'unable to isolate abandoned handoff disposal'
+  throw 'unable to isolate abandoned handoff destructor'
 }
 $handoffDispose = $handoff.Substring($handoffDisposeStart, $handoffExecuteStart - $handoffDisposeStart)
-if ($handoffDispose -notmatch '_queue->InFlight\(\)' -or
-    $handoffDispose -notmatch '_queue->FlightToken\(\)\s*==\s*_flightToken' -or
-    $handoffDispose -notmatch 'ShouldRetireAbandonedHandoff\(\s*_executed,\s*ownsFlight' -or
-    $handoffDispose -notmatch '_BeginAbandonedHandoffCleanup\(_pContext,\s*_pComposition\)' -or
-    $handoffDispose -match '_FinalizeComposition\(' -or
-    $composition -notmatch '_responseApplyQueue\.Pause\(\)' -or
-    $composition -notmatch 'class CAbandonedHandoffCleanupEditSession' -or
-    $composition -notmatch 'TF_ES_ASYNC\s*\|\s*TF_ES_READWRITE' -or
-    $composition -notmatch '_EndCompositionLocked\(\s*ec,\s*_pContext,\s*_pComposition,\s*TRUE,\s*FALSE\)' -or
-    $composition -notmatch '_responseApplyQueue\.Resume\(pauseToken\)' -or
-    $handoffDispose -notmatch '_CompleteFlight\(\)' -or
-    $handoff -notmatch '_executed\s*=\s*true' -or
-    $handoff -notmatch 'bool\s+_executed\s*=\s*false' -or
-    $applyState -notmatch '!executed\s*&&\s*ownsFlight\s*&&\s*sameComposition' -or
-    $composition -notmatch 'ShouldScheduleAbandonedHandoffCleanup\(' -or
-    $composition -notmatch 'ShouldRearmAbandonedHandoffCleanup\(' -or
-    $composition -notmatch '_abandonedHandoffDeferredSinceTick\s*=\s*GetTickCount64\(\)' -or
-    $composition -notmatch '_abandonedHandoffEndCallActive' -or
-    $composition -notmatch '_OnAbandonedHandoffEndReturned\(' -or
-    $composition -notmatch '_CancelAbandonedHandoffCleanup\(\);' -or
-    $composition -notmatch 'OnCompositionTerminated\([\s\S]*?_IsAbandonedHandoffCleanupCurrent\(pComposition' -or
-    $composition -notmatch '_FinishAbandonedHandoffCleanup\(pComposition' -or
-    $composition -notmatch '_IsAbandonedHandoffCleanupCurrent\(_pComposition' -or
-    $composition -notmatch 'ShouldScheduleAbandonedHandoffCleanup\(') {
-  throw 'abandoned handoff must release its old composition before advancing FIFO'
-}
-# All terminal handoff failures must preserve host composition identity.
-$handoffSchedStart = $composition.IndexOf('if (_IsComposing() && !_IsComposingInContext(next->context))')
-$handoffSchedEnd = $composition.IndexOf('auto request = _responseApplyQueue.TakeNext();', $handoffSchedStart)
-if ($handoffSchedStart -lt 0 -or $handoffSchedEnd -le $handoffSchedStart) {
-  throw 'unable to isolate handoff scheduling path'
-}
-$handoffSchedule = $composition.Substring($handoffSchedStart, $handoffSchedEnd - $handoffSchedStart)
-if ($handoffSchedule -notmatch 'auto settleFailedHandoff' -or
-    $handoffSchedule -notmatch '_responseApplyQueue\.FlightToken\(\)\s*!=\s*flightToken' -or
-    $handoffSchedule -notmatch '_BeginAbandonedHandoffCleanup\(previousContext,\s*previousComposition\)' -or
-    $handoffSchedule -match '_FinalizeComposition\(' -or
-    $handoffSchedule -notmatch 'settleFailedHandoff\(\)') {
-  throw 'terminal handoff failures must share old-context cleanup'
-}
-if ($composition -notmatch '_abandonedHandoffPauseToken\s*==\s*0\s*&&\s*_responseApplyQueue\.IsPaused\(\)' -or
-    $composition -notmatch 'void WeaselTSF::_OnAbandonedHandoffEndReturned\(' -or
-    $composition -notmatch 'if \(_abandonedHandoffEndCallActive\)') {
-  throw 'handoff cleanup pause and EndComposition callback must be reentrancy-safe'
-}
 $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
 $tsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
-if ($textEditSink -notmatch '_abandonedHandoffContext\s*==\s*pContext' -or
-    $textEditSink -notmatch '_ScheduleAbandonedHandoffCleanup\(\s*true\s*\)' -or
-    $tsfHeader -notmatch '_abandonedHandoffPauseToken\s*=\s*0') {
-  throw 'abandoned handoff must retain old-context cleanup identity and retry only from OnEndEdit'
+if ($handoffDispose -notmatch '_queue->InFlight\(\)' -or
+    $handoffDispose -notmatch '_queue->FlightToken\(\)\s*==\s*_flightToken' -or
+    $handoffDispose -notmatch 'ShouldWaitForAbandonedHandoff\(' -or
+    $handoffDispose -notmatch '_WaitForHandoffEdit\(_pContext,\s*_pComposition\)' -or
+    $handoffDispose -match '_FinalizeComposition\(' -or
+    $handoffDispose -notmatch '_CompleteFlight\(\)' -or
+    $handoff -notmatch 'bool\s+_executed\s*=\s*false' -or
+    $handoff -notmatch '_handoffWaitPauseToken\s*=\s*_responseApplyQueue\.Pause\(\)' -or
+    $handoff -notmatch '_responseApplyQueue\.Resume\(token\)' -or
+    $textEditSink -notmatch '_handoffWaitContext\s*==\s*pContext' -or
+    $textEditSink -notmatch '_ResumeHandoffWait\(\)' -or
+    $tsfHeader -notmatch '_handoffWaitPauseToken\s*=\s*0') {
+  throw 'abandoned handoff must wait for a matching old-context edit event'
+}
+$handoffScheduleStart = $composition.IndexOf('if (_IsComposing() && !_IsComposingInContext(next->context))')
+$handoffScheduleEnd = $composition.IndexOf('auto request = _responseApplyQueue.TakeNext();', $handoffScheduleStart)
+if ($handoffScheduleStart -lt 0 -or $handoffScheduleEnd -le $handoffScheduleStart) {
+  throw 'unable to locate handoff request scheduling path'
+}
+$handoffSchedule = $composition.Substring($handoffScheduleStart, $handoffScheduleEnd - $handoffScheduleStart)
+if ($handoffSchedule -notmatch 'if \(requestHr == TF_E_DISCONNECTED\)' -or
+    $handoffSchedule -notmatch 'requestHr == TF_E_LOCKED' -or
+    $handoffSchedule -notmatch '_responseApplyQueue\.FlightToken\(\)\s*==\s*flightToken' -or
+    $handoffSchedule -match '_ScheduleAbandonedHandoffCleanup\(' -or
+    $handoff -match 'CAbandonedHandoffCleanupEditSession') {
+  throw 'handoff must preserve the original bounded failure policy'
 }
 if ($candidate -notmatch 'void CCandidateList::MarkFinalizationAccepted\(UINT64 responseSerial\)' -or
     $candidate -notmatch '_finalization_accepted\s*=\s*false;' -or

@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <memory>
 
 namespace {
@@ -99,29 +100,87 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
          queue.PendingCount() == 0;
 }
 
-bool AbandonedHandoffCleanupPausesResponseFifo() {
-  weasel::tsf::SerialApplyQueue<std::shared_ptr<int>> queue;
-  queue.Push(std::make_shared<int>(7));
-  if (!queue.BeginBarrier())
+// Model TSF's COM behavior: RequestEditSession accepts a session, then the
+// host drops its last reference without ever calling DoEditSession. The TIP
+// must park the owning flight and never request again in the same Release
+// stack. Only the original context's OnEndEdit may release the barrier.
+struct FakeComHandoffHost {
+  weasel::tsf::SerialApplyQueue<std::shared_ptr<int>> fifo;
+  std::uint64_t waiting_token = 0;
+  unsigned edit_requests = 0;
+
+  bool DropAcceptedAsyncSession() {
+    if (!fifo.BeginBarrier())
+      return false;
+    const auto flight = fifo.FlightToken();
+    ++edit_requests;
+    // CContextHandoffEditSession::~CContextHandoffEditSession
+    // parks the queue before completing its owned flight.
+    waiting_token = fifo.Pause();
+    return fifo.Complete(flight);
+  }
+
+  void OnEndEdit(bool from_original_context) {
+    if (!from_original_context || waiting_token == 0)
+      return;
+    const auto token = waiting_token;
+    waiting_token = 0;
+    fifo.Resume(token);
+  }
+
+  bool OnOldCompositionTerminated() {
+    if (waiting_token == 0)
+      return false;
+    OnEndEdit(true);
+    return fifo.CanSchedule();
+  }
+};
+
+bool AbandonedHandoffFaultInjection() {
+  FakeComHandoffHost host;
+  host.fifo.Push(std::make_shared<int>(7));
+  host.fifo.Push(std::make_shared<int>(8));
+
+  if (!host.DropAcceptedAsyncSession() || host.edit_requests != 1 ||
+      !host.fifo.IsPaused() || host.fifo.CanSchedule())
     return false;
-  const auto handoffFlight = queue.FlightToken();
-  const auto cleanupPause = queue.Pause();
-  if (!queue.Complete(handoffFlight) || queue.CanSchedule() ||
-      queue.PendingCount() != 1)
+  const auto stale_pause_token = host.waiting_token;
+
+  // Additional responses and edits in other documents cannot recursively
+  // request the same abandoned handoff or lose pending durable text.
+  host.fifo.Push(std::make_shared<int>(9));
+  host.OnEndEdit(false);
+  if (host.edit_requests != 1 || !host.fifo.IsPaused() ||
+      host.fifo.PendingCount() != 3)
     return false;
 
-  // A discarded cleanup session must not reissue the same cross-context
-  // handoff while the old composition still belongs to the host.
-  queue.RequestRetry();
-  if (queue.CanSchedule() || !queue.ConsumeRetryRequest() ||
-      queue.Resume(cleanupPause + 1))
+  // The original document's next edit allows one new attempt; if that is
+  // also abandoned, the host must wait for another real edit notification.
+  host.OnEndEdit(true);
+  if (!host.fifo.CanSchedule() || !host.DropAcceptedAsyncSession() ||
+      host.edit_requests != 2 || !host.fifo.IsPaused() ||
+      host.fifo.Resume(stale_pause_token))
     return false;
-  if (!queue.Resume(cleanupPause) || !queue.CanSchedule())
+  if (!host.OnOldCompositionTerminated() || host.edit_requests != 2)
     return false;
-  auto pending = queue.TakeNext();
-  const auto applyFlight = queue.FlightToken();
-  return pending && *pending == 7 && queue.Complete(applyFlight) &&
-         queue.PendingCount() == 0;
+
+  for (int expected : {7, 8, 9}) {
+    auto next = host.fifo.TakeNext();
+    const auto token = host.fifo.FlightToken();
+    if (!next || *next != expected || !host.fifo.Complete(token))
+      return false;
+  }
+  if (host.fifo.PendingCount() != 0)
+    return false;
+
+  // Cancellation invalidates any host-held pause/flight token.
+  host.fifo.Push(std::make_shared<int>(10));
+  if (!host.DropAcceptedAsyncSession())
+    return false;
+  const auto canceled = host.waiting_token;
+  host.fifo.Reset();
+  return !host.fifo.Resume(canceled) && !host.fifo.InFlight() &&
+         !host.fifo.IsPaused() && host.fifo.PendingCount() == 0;
 }
 
 static_assert(
@@ -137,7 +196,7 @@ static_assert(!weasel::tsf::ShouldHandleCompositionContextEvent(true, false),
 struct ResponseApplyQueueRegressionGuard {
   ResponseApplyQueueRegressionGuard() {
     if (!ResponseApplyQueueIsSingleFlightAndFifo() ||
-        !AbandonedHandoffCleanupPausesResponseFifo()) {
+        !AbandonedHandoffFaultInjection()) {
       std::fputs("ordered response apply queue regression\n", stderr);
       std::abort();
     }

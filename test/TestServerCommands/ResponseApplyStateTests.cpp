@@ -15,11 +15,8 @@ using weasel::tsf::RetryBudget;
 using weasel::tsf::ScheduleFailureAction;
 using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
-using weasel::tsf::ShouldRetireAbandonedHandoff;
+using weasel::tsf::ShouldWaitForAbandonedHandoff;
 using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
-using weasel::tsf::ShouldScheduleAbandonedHandoffCleanup;
-using weasel::tsf::ShouldRearmAbandonedHandoffCleanup;
-using weasel::tsf::kAbandonedHandoffRetryCooldownMs;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                    ApplyFailureClass::Retryable,
@@ -65,34 +62,14 @@ static_assert(!ShouldClearCompositionRange(true, false),
 static_assert(!ShouldClearCompositionRange(false, true),
               "normal commit teardown must preserve its composition text");
 
-static_assert(ShouldRetireAbandonedHandoff(false, true, true),
-              "abandoned current async handoff must start cleanup");
-static_assert(ShouldScheduleAbandonedHandoffCleanup(false, 0),
-              "initial abandoned handoff cleanup can be requested");
-static_assert(ShouldScheduleAbandonedHandoffCleanup(false, 1),
-              "a later edit-end can retry after an abandoned cleanup");
-static_assert(!ShouldScheduleAbandonedHandoffCleanup(true, 1),
-              "an outstanding cleanup session must not be duplicated");
-static_assert(!ShouldScheduleAbandonedHandoffCleanup(false, kMaxApplyRetries),
-              "one cleanup burst must be bounded");
-static_assert(!ShouldRearmAbandonedHandoffCleanup(false, false,
-                                                 kAbandonedHandoffRetryCooldownMs),
-              "successful cleanup cannot rearm");
-static_assert(!ShouldRearmAbandonedHandoffCleanup(true, true,
-                                                 kAbandonedHandoffRetryCooldownMs),
-              "an outstanding cleanup cannot be duplicated");
-static_assert(!ShouldRearmAbandonedHandoffCleanup(true, false,
-                                                 kAbandonedHandoffRetryCooldownMs - 1),
-              "retry cooldown cannot be bypassed");
-static_assert(ShouldRearmAbandonedHandoffCleanup(true, false,
-                                                kAbandonedHandoffRetryCooldownMs),
-              "a later old-context edit may rearm exhausted cleanup");
-static_assert(!ShouldRetireAbandonedHandoff(true, true, true),
-              "completed handoffs must not retire a new composition");
-static_assert(!ShouldRetireAbandonedHandoff(false, false, true),
-              "old flight destructors cannot retire a newer handoff");
-static_assert(!ShouldRetireAbandonedHandoff(false, true, false),
-              "a no-longer-current composition must not be retired");
+static_assert(ShouldWaitForAbandonedHandoff(false, true, true),
+              "abandoned active handoff must wait for an old-context edit");
+static_assert(!ShouldWaitForAbandonedHandoff(true, true, true),
+              "executed handoffs must not wait");
+static_assert(!ShouldWaitForAbandonedHandoff(false, false, true),
+              "stale handoffs must not pause the next flight");
+static_assert(!ShouldWaitForAbandonedHandoff(false, true, false),
+              "replaced compositions must not be paused");
 
 static_assert(ShouldRetireCandidateOnApplyDispose(false, false, true),
               "abandoned asynchronous edits must release their candidate UI");

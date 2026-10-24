@@ -193,7 +193,7 @@ void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext,
   // An abandoned handoff exclusively owns its pause token. An unrelated
   // end-composition session cannot resume its queue barrier.
   const UINT64 pauseToken =
-      _abandonedHandoffPauseToken == 0 && _responseApplyQueue.IsPaused()
+      _handoffWaitPauseToken == 0 && _responseApplyQueue.IsPaused()
           ? _responseApplyQueue.PauseToken()
           : 0;
   CEndCompositionEditSession* pEditSession = new CEndCompositionEditSession(
@@ -702,14 +702,10 @@ class CContextHandoffEditSession : public CEditSession {
   ~CContextHandoffEditSession() override {
     const bool ownsFlight =
         _queue && _queue->InFlight() && _queue->FlightToken() == _flightToken;
-    if (weasel::tsf::ShouldRetireAbandonedHandoff(
+    if (weasel::tsf::ShouldWaitForAbandonedHandoff(
             _executed, ownsFlight,
-            _pTextService->_IsCurrentComposition(_pComposition))) {
-      // A write cookie is mandatory to end a live TSF composition. Pause
-      // response application and request an independent cleanup edit session,
-      // rather than just forgetting the old host composition.
-      _pTextService->_BeginAbandonedHandoffCleanup(_pContext, _pComposition);
-    }
+            _pTextService->_IsCurrentComposition(_pComposition)))
+      _pTextService->_WaitForHandoffEdit(_pContext, _pComposition);
     _CompleteFlight();
   }
 
@@ -726,9 +722,9 @@ class CContextHandoffEditSession : public CEditSession {
           _queue->RequestRetry();
         return hr;
       }
-      // Failed EndComposition must not be treated as a successful handoff.
-      // A valid edit cookie does not imply that the host composition ended.
-      _pTextService->_BeginAbandonedHandoffCleanup(_pContext, _pComposition);
+      _pTextService->_EndUI();
+      if (_pTextService->_IsCurrentComposition(_pComposition))
+        _pTextService->_FinalizeComposition();
       _CompleteFlight();
       return hr;
     }
@@ -749,177 +745,35 @@ class CContextHandoffEditSession : public CEditSession {
   bool _executed = false;
 };
 
-class CAbandonedHandoffCleanupEditSession : public CEditSession {
- public:
-  CAbandonedHandoffCleanupEditSession(com_ptr<WeaselTSF> pTextService,
-                                      com_ptr<ITfContext> pContext,
-                                      com_ptr<ITfComposition> pComposition,
-                                      UINT64 pauseToken)
-      : CEditSession(pTextService, pContext),
-        _pComposition(pComposition),
-        _pauseToken(pauseToken) {}
-
-  ~CAbandonedHandoffCleanupEditSession() override {
-    _pTextService->_OnAbandonedHandoffCleanupReleased(_pComposition,
-                                                      _pauseToken);
-  }
-
-  STDMETHODIMP DoEditSession(TfEditCookie ec) override {
-    if (!_pTextService->_IsAbandonedHandoffCleanupCurrent(_pComposition,
-                                                          _pauseToken))
-      return S_OK;
-    // EndComposition may synchronously notify OnCompositionTerminated.
-    // Do not resume the response FIFO until the outer EndComposition returns.
-    _pTextService->_OnAbandonedHandoffEndStarted(_pComposition, _pauseToken);
-    const HRESULT hr = _pTextService->_EndCompositionLocked(
-        ec, _pContext, _pComposition, TRUE, FALSE);
-    _pTextService->_OnAbandonedHandoffEndReturned(_pComposition, _pauseToken, hr);
-    return hr;
-  }
-
- private:
-  com_ptr<ITfComposition> _pComposition;
-  UINT64 _pauseToken;
-};
-
-void WeaselTSF::_BeginAbandonedHandoffCleanup(
-    com_ptr<ITfContext> context,
-    com_ptr<ITfComposition> composition) {
+// One outstanding old-context edit barrier; no additional edit session,
+// cooldown timer, retry counter, or second composition lifecycle.
+void WeaselTSF::_WaitForHandoffEdit(
+    com_ptr<ITfContext> context, com_ptr<ITfComposition> composition) {
   if (!context || !composition || !_IsCurrentComposition(composition) ||
-      _abandonedHandoffPauseToken != 0 || _responseApplyQueue.IsPaused())
+      _handoffWaitPauseToken != 0 || _responseApplyQueue.IsPaused())
     return;
-
-  _abandonedHandoffContext = context;
-  _abandonedHandoffComposition = composition;
-  _abandonedHandoffAttempts = 0;
-  _abandonedHandoffRequestOutstanding = false;
-  _abandonedHandoffDeferred = false;
-  _abandonedHandoffDeferredSinceTick = 0;
-  _abandonedHandoffEndCallActive = false;
-  _abandonedHandoffHostTerminated = false;
-  _abandonedHandoffPauseToken = _responseApplyQueue.Pause();
-  const UINT64 pauseToken = _abandonedHandoffPauseToken;
-
-  if (_GetUIContextDocument() == context)
-    _EndUI();
-  // EndUIElement can reenter focus loss / Deactivate. Never revive its old
-  // composition or request an edit session after that cleanup was canceled.
-  if (_IsAbandonedHandoffCleanupCurrent(composition, pauseToken))
-    _ScheduleAbandonedHandoffCleanup();
+  _handoffWaitContext = context;
+  _handoffWaitPauseToken = _responseApplyQueue.Pause();
 }
 
-bool WeaselTSF::_IsAbandonedHandoffCleanupCurrent(ITfComposition* composition,
-                                                  UINT64 pauseToken) const {
-  return pauseToken != 0 && _abandonedHandoffPauseToken == pauseToken &&
-         _abandonedHandoffComposition == composition;
-}
-
-void WeaselTSF::_ScheduleAbandonedHandoffCleanup(bool afterOldContextEdit) {
-  if (_abandonedHandoffPauseToken == 0 || !_abandonedHandoffContext ||
-      !_abandonedHandoffComposition || _abandonedHandoffRequestOutstanding)
+void WeaselTSF::_ResumeHandoffWait() {
+  if (_handoffWaitPauseToken == 0)
     return;
-
-  if (_abandonedHandoffDeferred) {
-    if (!afterOldContextEdit ||
-        !weasel::tsf::ShouldRearmAbandonedHandoffCleanup(
-            true, _abandonedHandoffRequestOutstanding,
-            GetTickCount64() - _abandonedHandoffDeferredSinceTick))
-      return;
-    _abandonedHandoffDeferred = false;
-    _abandonedHandoffAttempts = 0;
-  }
-  if (!weasel::tsf::ShouldScheduleAbandonedHandoffCleanup(
-          _abandonedHandoffRequestOutstanding, _abandonedHandoffAttempts))
-    return;
-
-  const UINT64 pauseToken = _abandonedHandoffPauseToken;
-  com_ptr<ITfComposition> composition = _abandonedHandoffComposition;
-  com_ptr<ITfContext> context = _abandonedHandoffContext;
-  com_ptr<CAbandonedHandoffCleanupEditSession> session;
-  session.Attach(new CAbandonedHandoffCleanupEditSession(
-      this, context, composition, pauseToken));
-  if (!session)
-    return;
-
-  ++_abandonedHandoffAttempts;
-  _abandonedHandoffRequestOutstanding = true;
-  HRESULT sessionHr = E_FAIL;
-  const HRESULT requestHr = context->RequestEditSession(
-      _tfClientId, session, TF_ES_ASYNC | TF_ES_READWRITE, &sessionHr);
-  if (requestHr == TF_E_DISCONNECTED) {
-    // A context removed from its document stack cannot retain an active
-    // composition in that document; no edit cookie can be obtained.
-    _FinishAbandonedHandoffCleanup(composition, pauseToken);
-  } else if (FAILED(requestHr) || sessionHr != TF_S_ASYNC) {
-    _OnAbandonedHandoffCleanupReleased(composition, pauseToken);
-    // OnEndEdit may give another opportunity; never retry recursively here.
-  }
-}
-
-void WeaselTSF::_OnAbandonedHandoffCleanupReleased(
-    ITfComposition* composition, UINT64 pauseToken) {
-  if (!_IsAbandonedHandoffCleanupCurrent(composition, pauseToken))
-    return;
-  _abandonedHandoffRequestOutstanding = false;
-  if (_abandonedHandoffAttempts >= weasel::tsf::kMaxApplyRetries &&
-      !_abandonedHandoffDeferred) {
-    _abandonedHandoffDeferred = true;
-    _abandonedHandoffDeferredSinceTick = GetTickCount64();
-  }
-}
-
-void WeaselTSF::_OnAbandonedHandoffEndStarted(
-    ITfComposition* composition, UINT64 pauseToken) {
-  if (_IsAbandonedHandoffCleanupCurrent(composition, pauseToken)) {
-    _abandonedHandoffEndCallActive = true;
-    _abandonedHandoffHostTerminated = false;
-  }
-}
-
-void WeaselTSF::_OnAbandonedHandoffEndReturned(
-    ITfComposition* composition, UINT64 pauseToken, HRESULT hr) {
-  if (!_IsAbandonedHandoffCleanupCurrent(composition, pauseToken))
-    return;
-  _abandonedHandoffEndCallActive = false;
-  if (SUCCEEDED(hr) || _abandonedHandoffHostTerminated)
-    _FinishAbandonedHandoffCleanup(composition, pauseToken);
-}
-
-void WeaselTSF::_FinishAbandonedHandoffCleanup(ITfComposition* composition,
-                                               UINT64 pauseToken) {
-  if (!_IsAbandonedHandoffCleanupCurrent(composition, pauseToken))
-    return;
-  if (_IsCurrentComposition(composition))
-    _FinalizeComposition();
-  _abandonedHandoffPauseToken = 0;
-  _abandonedHandoffRequestOutstanding = false;
-  _abandonedHandoffAttempts = 0;
-  _abandonedHandoffDeferred = false;
-  _abandonedHandoffDeferredSinceTick = 0;
-  _abandonedHandoffEndCallActive = false;
-  _abandonedHandoffHostTerminated = false;
-  _abandonedHandoffComposition.Release();
-  _abandonedHandoffContext.Release();
-  if (_responseApplyQueue.Resume(pauseToken))
+  const UINT64 token = _handoffWaitPauseToken;
+  _handoffWaitPauseToken = 0;
+  _handoffWaitContext.Release();
+  if (_responseApplyQueue.Resume(token))
     _ScheduleNextResponseApply(false);
 }
 
-void WeaselTSF::_CancelAbandonedHandoffCleanup() {
-  if (_abandonedHandoffPauseToken == 0)
+void WeaselTSF::_CancelHandoffWait() {
+  if (_handoffWaitPauseToken == 0)
     return;
-  const UINT64 pauseToken = _abandonedHandoffPauseToken;
-  _abandonedHandoffPauseToken = 0;
-  _abandonedHandoffRequestOutstanding = false;
-  _abandonedHandoffAttempts = 0;
-  _abandonedHandoffDeferred = false;
-  _abandonedHandoffDeferredSinceTick = 0;
-  _abandonedHandoffEndCallActive = false;
-  _abandonedHandoffHostTerminated = false;
-  _abandonedHandoffComposition.Release();
-  _abandonedHandoffContext.Release();
-  // Callers are already resetting/aborting the response pipeline. Resume
-  // locally without starting a pending response during teardown.
-  _responseApplyQueue.Resume(pauseToken);
+  const UINT64 token = _handoffWaitPauseToken;
+  _handoffWaitPauseToken = 0;
+  _handoffWaitContext.Release();
+  // Teardown decides whether pending responses survive. Never schedule here.
+  _responseApplyQueue.Resume(token);
 }
 
 void WeaselTSF::_EnqueueResponseApply(
@@ -981,40 +835,50 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
       return;
     }
 
-    // Every terminal handoff failure uses the same old-context cleanup.
-    // Retain host composition ownership until a real EndComposition result
-    // (or host notification) is known; never finalize locally on an error.
-    auto settleFailedHandoff = [&]() {
-      if (!_responseApplyQueue.InFlight() ||
-          _responseApplyQueue.FlightToken() != flightToken)
-        return;
-      if (_IsCurrentComposition(previousComposition))
-        _BeginAbandonedHandoffCleanup(previousContext, previousComposition);
-      if (_responseApplyQueue.Complete(flightToken))
-        _ScheduleNextResponseApply(false);
-    };
-
     HRESULT sessionHr = E_FAIL;
     const HRESULT requestHr = previousContext->RequestEditSession(
         _tfClientId, session, scheduleFlag | TF_ES_READWRITE, &sessionHr);
     if (FAILED(requestHr)) {
-      if (requestHr == TF_E_LOCKED &&
-          _responseApplyQueue.InFlight() &&
-          _responseApplyQueue.FlightToken() == flightToken &&
-          next->snapshot.retries.CanRetryHandoff()) {
+      if (requestHr == TF_E_DISCONNECTED) {
+        if (_responseApplyQueue.Complete(flightToken) &&
+            _IsCurrentComposition(previousComposition)) {
+          _EndUI();
+          _FinalizeComposition();
+          _ScheduleNextResponseApply(false);
+        }
+      } else if (requestHr == TF_E_LOCKED &&
+                 next->snapshot.retries.CanRetryHandoff()) {
         ++next->snapshot.retries.handoff_retries;
         if (_responseApplyQueue.Complete(flightToken))
           _responseApplyQueue.RequestRetry();
       } else {
-        settleFailedHandoff();
+        _responseApplyQueue.Complete(flightToken);
+        _EndUI();
+        if (_IsCurrentComposition(previousComposition))
+          _FinalizeComposition();
+        _ScheduleNextResponseApply(false);
       }
       return;
     }
 
-    if (sessionHr != TF_S_ASYNC &&
-        _responseApplyQueue.InFlight() &&
-        _responseApplyQueue.FlightToken() == flightToken)
-      settleFailedHandoff();
+    if (sessionHr == TS_E_READONLY && _responseApplyQueue.InFlight() &&
+        _responseApplyQueue.FlightToken() == flightToken) {
+      _responseApplyQueue.Complete(flightToken);
+      _EndUI();
+      if (_IsCurrentComposition(previousComposition))
+        _FinalizeComposition();
+      _ScheduleNextResponseApply(false);
+      return;
+    }
+
+    if (sessionHr != TF_S_ASYNC && _responseApplyQueue.InFlight() &&
+        _responseApplyQueue.FlightToken() == flightToken) {
+      _responseApplyQueue.Complete(flightToken);
+      _EndUI();
+      if (_IsCurrentComposition(previousComposition))
+        _FinalizeComposition();
+      _ScheduleNextResponseApply(false);
+    }
     return;
   }
 
@@ -1119,16 +983,10 @@ void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext,
 /* Composition State */
 STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
                                                 ITfComposition* pComposition) {
-  if (_IsAbandonedHandoffCleanupCurrent(pComposition,
-                                        _abandonedHandoffPauseToken)) {
-    // The host may notify while the cleanup's EndComposition call is still
-    // running. Record the result; the edit session owns final queue release.
-    if (_abandonedHandoffEndCallActive) {
-      _abandonedHandoffHostTerminated = true;
-      return S_OK;
-    }
-    _FinishAbandonedHandoffCleanup(pComposition,
-                                   _abandonedHandoffPauseToken);
+  if (_handoffWaitPauseToken != 0 && _IsCurrentComposition(pComposition)) {
+    _FinalizeComposition();
+    _EndUI();
+    _ResumeHandoffWait();
     return S_OK;
   }
   if (!_IsCurrentComposition(pComposition))
@@ -1145,7 +1003,7 @@ STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
 }
 
 void WeaselTSF::_AbortComposition(bool clear, DWORD clear_timeout_ms) {
-  _CancelAbandonedHandoffCleanup();
+  _CancelHandoffWait();
   _InvalidatePendingUI();
   _responseApplyQueue.AdvanceEpoch();
   m_client.ClearComposition(clear_timeout_ms);

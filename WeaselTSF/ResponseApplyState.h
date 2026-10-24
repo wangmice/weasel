@@ -45,30 +45,13 @@ constexpr bool ShouldRetireCandidateOnApplyDispose(bool executed,
   return ownsFlight && (terminalFailure || !executed);
 }
 
-// A host may release a queued asynchronous handoff without ever granting its
-// edit lock. Re-requesting immediately can loop forever without consuming the
-// retry budget. Only the still-current, unexecuted flight may initiate
-// bounded cleanup while the pending response FIFO remains paused.
-constexpr bool ShouldRetireAbandonedHandoff(bool executed,
-                                            bool ownsFlight,
-                                            bool sameComposition) {
+// A host may abandon a queued asynchronous handoff without granting an
+// edit lock. Its active flight can arm one old-context edit barrier; no
+// immediate same-stack request should be scheduled on COM destruction.
+constexpr bool ShouldWaitForAbandonedHandoff(bool executed,
+                                             bool ownsFlight,
+                                             bool sameComposition) {
   return !executed && ownsFlight && sameComposition;
-}
-
-inline constexpr std::uint64_t kAbandonedHandoffRetryCooldownMs = 500;
-
-constexpr bool ShouldScheduleAbandonedHandoffCleanup(bool outstanding,
-                                                     unsigned attempts) {
-  return !outstanding && attempts < kMaxApplyRetries;
-}
-
-// Budget exhaustion is deferred, not permanent. Only a later edit notification
-// on the same old context can rearm a new bounded burst.
-constexpr bool ShouldRearmAbandonedHandoffCleanup(bool deferred,
-                                                  bool outstanding,
-                                                  std::uint64_t elapsed_ms) {
-  return deferred && !outstanding &&
-         elapsed_ms >= kAbandonedHandoffRetryCooldownMs;
 }
 
 enum class ScheduleFailureAction : std::uint8_t {

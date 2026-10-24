@@ -201,20 +201,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // Publish UI data only for the extent request that owns this generation.
   void _FlushPendingUI(UINT64 pendingUIGeneration);
   void _FinalizeComposition();
-  void _BeginAbandonedHandoffCleanup(com_ptr<ITfContext> context,
-                                     com_ptr<ITfComposition> composition);
-  bool _IsAbandonedHandoffCleanupCurrent(ITfComposition* composition,
-                                         UINT64 pauseToken) const;
-  void _ScheduleAbandonedHandoffCleanup(bool afterOldContextEdit = false);
-  void _OnAbandonedHandoffCleanupReleased(ITfComposition* composition,
-                                          UINT64 pauseToken);
-  void _OnAbandonedHandoffEndStarted(ITfComposition* composition,
-                                     UINT64 pauseToken);
-  void _OnAbandonedHandoffEndReturned(ITfComposition* composition,
-                                      UINT64 pauseToken, HRESULT hr);
-  void _FinishAbandonedHandoffCleanup(ITfComposition* composition,
-                                      UINT64 pauseToken);
-  void _CancelAbandonedHandoffCleanup();
+  void _WaitForHandoffEdit(com_ptr<ITfContext> context,
+                           com_ptr<ITfComposition> composition);
+  void _ResumeHandoffWait();
+  void _CancelHandoffWait();
   void _AbortComposition(bool clear = true, DWORD clear_timeout_ms = 0);
 
   /* Language bar */
@@ -433,18 +423,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   UINT64 _parsedSerial = 0;
   weasel::tsf::SerialApplyQueue<std::shared_ptr<ResponseApplyRequest>>
       _responseApplyQueue;
-  // An abandoned cross-context handoff must not advance to a new document
-  // while the old host composition remains active. Bounded cleanup attempts
-  // are resumed by its old document's OnEndEdit, never a recursive loop.
-  UINT64 _abandonedHandoffPauseToken = 0;
-  com_ptr<ITfContext> _abandonedHandoffContext;
-  com_ptr<ITfComposition> _abandonedHandoffComposition;
-  unsigned _abandonedHandoffAttempts = 0;
-  bool _abandonedHandoffRequestOutstanding = false;
-  bool _abandonedHandoffDeferred = false;
-  ULONGLONG _abandonedHandoffDeferredSinceTick = 0;
-  bool _abandonedHandoffEndCallActive = false;
-  bool _abandonedHandoffHostTerminated = false;
+  // A dropped asynchronous handoff waits for an old-context edit notification.
+  // The barrier is not a second TSF composition or a cleanup edit session.
+  UINT64 _handoffWaitPauseToken = 0;
+  com_ptr<ITfContext> _handoffWaitContext;
   // 复用的响应解析器：deserializer 注册表只建一次（Require 幂等），
   // 每次解析前重指目标；目标指针仅在 _ConsumeResponse 执行期间有效
   weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr, nullptr};
