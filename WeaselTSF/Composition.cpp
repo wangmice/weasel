@@ -747,8 +747,8 @@ class CContextHandoffEditSession : public CEditSession {
 
 // One outstanding old-context edit barrier; no additional edit session,
 // cooldown timer, retry counter, or second composition lifecycle.
-void WeaselTSF::_WaitForHandoffEdit(
-    com_ptr<ITfContext> context, com_ptr<ITfComposition> composition) {
+void WeaselTSF::_WaitForHandoffEdit(com_ptr<ITfContext> context,
+                                    com_ptr<ITfComposition> composition) {
   if (!context || !composition || !_IsCurrentComposition(composition) ||
       _handoffWaitPauseToken != 0 || _responseApplyQueue.IsPaused())
     return;
