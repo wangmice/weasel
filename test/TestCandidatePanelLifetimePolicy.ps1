@@ -240,7 +240,7 @@ if ($composition -notmatch '_abandonedHandoffPauseToken\s*==\s*0\s*&&\s*_respons
 $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
 $tsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
 if ($textEditSink -notmatch '_abandonedHandoffContext\s*==\s*pContext' -or
-    $textEditSink -notmatch '_ScheduleAbandonedHandoffCleanup\(\)' -or
+    $textEditSink -notmatch '_ScheduleAbandonedHandoffCleanup\(\s*true\s*\)' -or
     $tsfHeader -notmatch '_abandonedHandoffPauseToken\s*=\s*0') {
   throw 'abandoned handoff must retain old-context cleanup identity and retry only from OnEndEdit'
 }
