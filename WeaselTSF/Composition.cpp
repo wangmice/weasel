@@ -696,11 +696,28 @@ class CContextHandoffEditSession : public CEditSession {
         _flightToken(flightToken),
         _queue(queue) {}
 
-  ~CContextHandoffEditSession() override { _CompleteFlight(); }
+  ~CContextHandoffEditSession() override {
+    const bool ownsFlight = _queue && _queue->InFlight() &&
+                            _queue->FlightToken() == _flightToken;
+    if (weasel::tsf::ShouldRetireAbandonedHandoff(
+            _executed, ownsFlight,
+            _pTextService->_IsCurrentComposition(_pComposition))) {
+      // The host discarded the async handoff without giving us an edit
+      // cookie. Do not immediately request the same unexecutable handoff.
+      // Retire only the UI belonging to its old context, and abandon local
+      // composition ownership so the queued new-context response can advance.
+      if (_pTextService->_GetUIContextDocument() == _pContext)
+        _pTextService->_EndUI();
+      if (_pTextService->_IsCurrentComposition(_pComposition))
+        _pTextService->_FinalizeComposition();
+    }
+    _CompleteFlight();
+  }
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
     if (!_queue || !_queue->InFlight() || _queue->FlightToken() != _flightToken)
       return S_OK;
+    _executed = true;
     const HRESULT hr = _pTextService->_EndCompositionLocked(
         ec, _pContext, _pComposition, TRUE, TRUE);
     if (FAILED(hr)) {
@@ -730,6 +747,7 @@ class CContextHandoffEditSession : public CEditSession {
   std::shared_ptr<WeaselTSF::ResponseApplyRequest> _request;
   UINT64 _flightToken;
   ResponseApplyQueue* _queue;
+  bool _executed = false;
 };
 
 void WeaselTSF::_EnqueueResponseApply(

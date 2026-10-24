@@ -16,6 +16,7 @@ using weasel::tsf::ScheduleFailureAction;
 using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
 using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
+using weasel::tsf::ShouldRetireAbandonedHandoff;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                    ApplyFailureClass::Retryable,
@@ -60,6 +61,15 @@ static_assert(!ShouldClearCompositionRange(true, false),
               "a stale async end session must never clear committed text");
 static_assert(!ShouldClearCompositionRange(false, true),
               "normal commit teardown must preserve its composition text");
+
+static_assert(ShouldRetireAbandonedHandoff(false, true, true),
+              "abandoned current async handoff must unblock its FIFO");
+static_assert(!ShouldRetireAbandonedHandoff(true, true, true),
+              "completed handoffs must not retire a new composition");
+static_assert(!ShouldRetireAbandonedHandoff(false, false, true),
+              "old flight destructors cannot retire a newer handoff");
+static_assert(!ShouldRetireAbandonedHandoff(false, true, false),
+              "a no-longer-current composition must not be retired");
 
 static_assert(ShouldRetireCandidateOnApplyDispose(false, false, true),
               "abandoned asynchronous edits must release their candidate UI");

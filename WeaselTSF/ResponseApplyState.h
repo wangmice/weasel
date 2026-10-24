@@ -45,6 +45,16 @@ constexpr bool ShouldRetireCandidateOnApplyDispose(bool executed,
   return ownsFlight && (terminalFailure || !executed);
 }
 
+// A host may release a queued asynchronous handoff without ever granting its
+// edit lock. Re-requesting immediately can loop forever without consuming the
+// retry budget. Only the still-current, unexecuted flight may give up its
+// abandoned composition ownership and advance the pending response queue.
+constexpr bool ShouldRetireAbandonedHandoff(bool executed,
+                                           bool ownsFlight,
+                                           bool sameComposition) {
+  return !executed && ownsFlight && sameComposition;
+}
+
 enum class ScheduleFailureAction : std::uint8_t {
   RetryLater,
   Drop,

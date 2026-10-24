@@ -170,6 +170,34 @@ if ($dispose -notmatch '_queue->InFlight\(\)' -or
     $applyState -notmatch 'ownsFlight\s*&&\s*\(terminalFailure\s*\|\|\s*!executed\)') {
   throw 'abandoned async candidate confirmation must retire only its own active flight'
 }
+# A queued cross-document handoff may be abandoned without DoEditSession.
+# Its destructor must not immediately schedule the same handoff again while
+# still retaining the old composition. Check flight ownership and ensure the
+# old composition is retired before advancing the FIFO, without affecting
+# a newer composition that reentered during EndUIElement.
+$handoffStart = $composition.IndexOf('class CContextHandoffEditSession')
+$handoffEnd = $composition.IndexOf('void WeaselTSF::_EnqueueResponseApply(', $handoffStart)
+if ($handoffStart -lt 0 -or $handoffEnd -le $handoffStart) {
+  throw 'unable to isolate cross-context handoff edit session'
+}
+$handoff = $composition.Substring($handoffStart, $handoffEnd - $handoffStart)
+$handoffDisposeStart = $handoff.IndexOf('~CContextHandoffEditSession() override')
+$handoffExecuteStart = $handoff.IndexOf('STDMETHODIMP DoEditSession(', $handoffDisposeStart)
+if ($handoffDisposeStart -lt 0 -or $handoffExecuteStart -le $handoffDisposeStart) {
+  throw 'unable to isolate abandoned handoff disposal'
+}
+$handoffDispose = $handoff.Substring($handoffDisposeStart, $handoffExecuteStart - $handoffDisposeStart)
+if ($handoffDispose -notmatch '_queue->InFlight\(\)' -or
+    $handoffDispose -notmatch '_queue->FlightToken\(\)\s*==\s*_flightToken' -or
+    $handoffDispose -notmatch 'ShouldRetireAbandonedHandoff\(\s*_executed,\s*ownsFlight' -or
+    $handoffDispose -notmatch '_GetUIContextDocument\(\)\s*==\s*_pContext' -or
+    $handoffDispose -notmatch '_IsCurrentComposition\(_pComposition\)\)\s*_pTextService->_FinalizeComposition\(\)' -or
+    $handoffDispose -notmatch '_CompleteFlight\(\)' -or
+    $handoff -notmatch '_executed\s*=\s*true' -or
+    $handoff -notmatch 'bool\s+_executed\s*=\s*false' -or
+    $applyState -notmatch '!executed\s*&&\s*ownsFlight\s*&&\s*sameComposition') {
+  throw 'abandoned handoff must release its old composition before advancing FIFO'
+}
 if ($candidate -notmatch 'void CCandidateList::MarkFinalizationAccepted\(UINT64 responseSerial\)' -or
     $candidate -notmatch '_finalization_accepted\s*=\s*false;' -or
     $selection -notmatch 'CandidateSelectResult::LegacyResponse[\s\S]*?_pendingCommit\.size\(\)\s*>\s*previous_commit_length') {
