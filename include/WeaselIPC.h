@@ -63,11 +63,11 @@ enum class KeyEventResult {
 // Candidate confirmation distinguishes a definite rejection/non-delivery from
 // an ambiguous response failure. Never replay a potentially delivered choice.
 enum class CandidateSelectResult {
-  Selected,       // A new server acknowledged successful Rime selection.
-  LegacyResponse, // An older server returned a body but no success code.
-  Rejected,       // Completed transaction, but Rime did not select.
-  NotDelivered,   // The request definitely did not reach the server.
-  Ambiguous,      // The request may have executed; do not retry automatically.
+  Selected,        // A new server acknowledged successful Rime selection.
+  LegacyResponse,  // An older server returned a body but no success code.
+  Rejected,        // Completed transaction, but Rime did not select.
+  NotDelivered,    // The request definitely did not reach the server.
+  Ambiguous,       // The request may have executed; do not retry automatically.
 };
 
 // Kept in the response body instead of the scalar DWORD result so an older
@@ -161,7 +161,9 @@ struct RequestHandler {
   virtual void ClearComposition(DWORD session_id) {}
   virtual bool SelectCandidateOnCurrentPage(size_t index,
                                             DWORD session_id,
-                                            EatLine eat) { return false; }
+                                            EatLine eat) {
+    return false;
+  }
   virtual bool HighlightCandidateOnCurrentPage(size_t index,
                                                DWORD session_id,
                                                EatLine eat) {

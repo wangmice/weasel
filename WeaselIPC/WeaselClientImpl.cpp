@@ -234,8 +234,8 @@ bool ClientImpl::ClearComposition(DWORD timeout_ms) {
   if (!_Active())
     return false;
 
-  LRESULT ret = _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId(),
-                             timeout_ms);
+  LRESULT ret =
+      _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId(), timeout_ms);
   return ret != 0;
 }
 

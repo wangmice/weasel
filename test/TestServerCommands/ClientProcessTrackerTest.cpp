@@ -151,7 +151,6 @@ class FakeProcessBackend : public weasel::ClientProcessTracker::Backend {
       std::make_shared<LifetimeCounters>();
 };
 
-
 // An exit notification can beat completion of registered-wait construction.
 // No retirement may free Process until WatchExit returns and its watch is
 // published. If the process died meanwhile, Resolve must not issue a token.

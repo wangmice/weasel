@@ -257,7 +257,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   /* ui callback functions private */
   weasel::CandidateSelectResult _SelectCandidateOnCurrentPage(
-      size_t index, com_ptr<ITfContext> context);
+      size_t index,
+      com_ptr<ITfContext> context);
   void _HandleMouseHoverEvent(const size_t index);
   void _HandleMousePageEvent(bool* const nextPage, bool* const scrollNextPage);
   /* TSF Related */

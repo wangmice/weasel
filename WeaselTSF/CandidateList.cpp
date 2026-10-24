@@ -196,8 +196,8 @@ STDMETHODIMP CCandidateList::GetCurrentPage(UINT* puPage) {
 STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
   if (!_tsf)
     return E_UNEXPECTED;
-  if ((!_uiStarted && !_registration_in_progress) ||
-      !_pContextDocument || _finalization_started)
+  if ((!_uiStarted && !_registration_in_progress) || !_pContextDocument ||
+      _finalization_started)
     return E_FAIL;
   auto& cinfo = _ui->ctx().cinfo;
   // Reject indices without a candidate: highlighted feeds fixed-size arrays
@@ -231,8 +231,7 @@ STDMETHODIMP CCandidateList::Finalize(void) {
   com_ptr<ITfDocumentMgr> focused_document;
   com_ptr<ITfContext> focused_context;
   if (!thread_mgr || FAILED(thread_mgr->GetFocus(&focused_document)) ||
-      !focused_document ||
-      FAILED(focused_document->GetTop(&focused_context)) ||
+      !focused_document || FAILED(focused_document->GetTop(&focused_context)) ||
       focused_context != _pContextDocument)
     return E_FAIL;
 
@@ -571,7 +570,8 @@ void WeaselTSF::_DeleteCandidateList() {
 }
 
 CandidateSelectResult WeaselTSF::_SelectCandidateOnCurrentPage(
-    size_t index, com_ptr<ITfContext> context) {
+    size_t index,
+    com_ptr<ITfContext> context) {
   if (!context || !m_client.IsSessionActive())
     return CandidateSelectResult::NotDelivered;
 
@@ -639,9 +639,9 @@ void WeaselTSF::HandleUICallback(size_t* const sel,
                                  bool* const next,
                                  bool* const scroll_next) {
   if (sel)
-    _SelectCandidateOnCurrentPage(
-        *sel, _pCandidateUIContext ? _pCandidateUIContext
-                                  : _pEditSessionContext);
+    _SelectCandidateOnCurrentPage(*sel, _pCandidateUIContext
+                                            ? _pCandidateUIContext
+                                            : _pEditSessionContext);
   else if (hov)
     _HandleMouseHoverEvent(*hov);
   else if (next || scroll_next)

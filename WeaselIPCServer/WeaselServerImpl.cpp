@@ -1091,8 +1091,8 @@ void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
   try {
     // Copy the handler into the worker: it must not reference anything
     // on this thread's stack.
-    auto worker = std::make_shared<boost::thread>(
-        [this, worker_id, pipe, handler] {
+    auto worker =
+        std::make_shared<boost::thread>([this, worker_id, pipe, handler] {
           _ProcessPipeThread(worker_id, pipe, handler);
         });
     it->second.thread = std::move(worker);
