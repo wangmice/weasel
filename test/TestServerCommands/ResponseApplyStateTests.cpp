@@ -15,6 +15,7 @@ using weasel::tsf::RetryBudget;
 using weasel::tsf::ScheduleFailureAction;
 using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
+using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                    ApplyFailureClass::Retryable,
@@ -59,6 +60,17 @@ static_assert(!ShouldClearCompositionRange(true, false),
               "a stale async end session must never clear committed text");
 static_assert(!ShouldClearCompositionRange(false, true),
               "normal commit teardown must preserve its composition text");
+
+static_assert(ShouldRetireCandidateOnApplyDispose(false, false, true),
+              "abandoned asynchronous edits must release their candidate UI");
+static_assert(ShouldRetireCandidateOnApplyDispose(true, true, true),
+              "terminal apply failures must release their candidate UI");
+static_assert(!ShouldRetireCandidateOnApplyDispose(true, false, true),
+              "successfully executed edits must not retire a new UIElement");
+static_assert(!ShouldRetireCandidateOnApplyDispose(false, false, false),
+              "a stale edit session must not retire another flight's UI");
+static_assert(!ShouldRetireCandidateOnApplyDispose(false, true, false),
+              "restored retries must keep their candidate UI until handled");
 
 static_assert(
     ShouldPublishCandidateImmediately(true),

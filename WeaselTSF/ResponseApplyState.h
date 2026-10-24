@@ -36,6 +36,15 @@ constexpr bool CanRetryApplyFailure(ApplyProgress progress,
          failure == ApplyFailureClass::Retryable && retries < kMaxApplyRetries;
 }
 
+// Destruction without DoEditSession means the host abandoned an asynchronous
+// request. Only its current flight may retire the accepted candidate UI;
+// RestoreFront retries and stale edit sessions must leave it untouched.
+constexpr bool ShouldRetireCandidateOnApplyDispose(bool executed,
+                                                  bool terminalFailure,
+                                                  bool ownsFlight) {
+  return ownsFlight && (terminalFailure || !executed);
+}
+
 enum class ScheduleFailureAction : std::uint8_t {
   RetryLater,
   Drop,

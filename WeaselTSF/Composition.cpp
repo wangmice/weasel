@@ -612,13 +612,18 @@ class CApplyResponseEditSession : public CEditSession {
         _queue(queue) {}
 
   ~CApplyResponseEditSession() override {
-    if (_resetOnDispose && _queue && _queue->InFlight() &&
-        _queue->FlightToken() == _flightToken) {
-      if (_ShouldResetEngine())
-        _pTextService->_AbortComposition();
-      else if (_request)
-        _pTextService->_RetireUnappliedCandidateFinalization(
-            _request->context, _request->snapshot.identity.serial);
+    const bool ownsFlight = _queue && _queue->InFlight() &&
+                            _queue->FlightToken() == _flightToken;
+    if (ownsFlight && _resetOnDispose && _ShouldResetEngine()) {
+      _pTextService->_AbortComposition();
+    } else if (_request &&
+               weasel::tsf::ShouldRetireCandidateOnApplyDispose(
+                   _executed, _resetOnDispose, ownsFlight)) {
+      // An accepted async edit session can be destroyed without ever
+      // receiving DoEditSession. Retire only its matching UIElement so the
+      // host cannot be left with a permanently locked Finalize.
+      _pTextService->_RetireUnappliedCandidateFinalization(
+          _request->context, _request->snapshot.identity.serial);
     }
     _CompleteFlight();
   }

@@ -150,6 +150,26 @@ if ($selectedBranch -match 'Destroy\(' -or
     $composition -notmatch '_RetireUnappliedCandidateFinalization\(') {
   throw 'acknowledged multi-stage selection must renew UI only after TSF response apply'
 }
+# Host implementations may discard an accepted TF_S_ASYNC edit session without
+# entering DoEditSession. On final COM Release, only the current flight may
+# retire the matching candidate confirmation; restored retries and stale
+# sessions must never close a newer candidate generation.
+$applyState = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\ResponseApplyState.h') -Raw
+$disposeStart = $composition.IndexOf('~CApplyResponseEditSession() override')
+$disposeEnd = $composition.IndexOf('STDMETHODIMP DoEditSession(', $disposeStart)
+if ($disposeStart -lt 0 -or $disposeEnd -le $disposeStart) {
+  throw 'unable to isolate abandoned response edit session disposal'
+}
+$dispose = $composition.Substring($disposeStart, $disposeEnd - $disposeStart)
+if ($dispose -notmatch '_queue->InFlight\(\)' -or
+    $dispose -notmatch '_queue->FlightToken\(\)\s*==\s*_flightToken' -or
+    $dispose -notmatch 'ShouldRetireCandidateOnApplyDispose\(\s*_executed,\s*_resetOnDispose,\s*ownsFlight\)' -or
+    $dispose -notmatch '_RetireUnappliedCandidateFinalization\(' -or
+    $dispose -notmatch '_request->snapshot\.identity\.serial' -or
+    $dispose -notmatch '_CompleteFlight\(\)' -or
+    $applyState -notmatch 'ownsFlight\s*&&\s*\(terminalFailure\s*\|\|\s*!executed\)') {
+  throw 'abandoned async candidate confirmation must retire only its own active flight'
+}
 if ($candidate -notmatch 'void CCandidateList::MarkFinalizationAccepted\(UINT64 responseSerial\)' -or
     $candidate -notmatch '_finalization_accepted\s*=\s*false;' -or
     $selection -notmatch 'CandidateSelectResult::LegacyResponse[\s\S]*?_pendingCommit\.size\(\)\s*>\s*previous_commit_length') {
