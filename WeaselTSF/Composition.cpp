@@ -896,9 +896,14 @@ void WeaselTSF::_CompleteResponseApply() {
   _ScheduleNextResponseApply(false);
 }
 
-void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext) {
+void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext,
+                                   bool* has_new_commit) {
   const UINT64 previousSerial = _parsedSerial;
+  const std::size_t previous_commit_length = _pendingCommit.size();
   _ConsumeResponseIfFresh();
+  if (has_new_commit)
+    *has_new_commit = _parsedSerial != previousSerial &&
+                      _pendingCommit.size() > previous_commit_length;
   _pEditSessionContext = pContext;
 
   if (_parsedSerial == previousSerial)

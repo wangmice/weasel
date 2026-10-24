@@ -852,14 +852,15 @@ DWORD ServerImpl::OnClearComposition(WEASEL_IPC_COMMAND uMsg,
 DWORD ServerImpl::OnSelectCandidateOnCurrentPage(WEASEL_IPC_COMMAND uMsg,
                                                  DWORD wParam,
                                                  DWORD lParam) {
-  if (m_pRequestHandler) {
-    auto eat = [this](std::wstring& msg) -> bool {
-      *channel << msg;
-      return true;
-    };
-    m_pRequestHandler->SelectCandidateOnCurrentPage(wParam, lParam, eat);
-  }
-  return 0;
+  if (!m_pRequestHandler)
+    return 0;
+  auto eat = [this](std::wstring& msg) -> bool {
+    *channel << msg;
+    return true;
+  };
+  return m_pRequestHandler->SelectCandidateOnCurrentPage(wParam, lParam, eat)
+             ? 1
+             : 0;
 }
 
 DWORD ServerImpl::OnHighlightCandidateOnCurrentPage(WEASEL_IPC_COMMAND uMsg,

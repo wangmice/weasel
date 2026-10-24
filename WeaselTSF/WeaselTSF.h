@@ -168,7 +168,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                             com_ptr<ITfContext> pContext,
                             com_ptr<ITfComposition> pComposition,
                             const std::wstring& text);
-  void _UpdateComposition(com_ptr<ITfContext> pContext);
+  void _UpdateComposition(com_ptr<ITfContext> pContext,
+                          bool* has_new_commit = nullptr);
   bool _ConsumeResponse(LPWSTR buffer, DWORD length);
   void _ConsumeResponseIfFresh();
   HRESULT _ApplyResponseSnapshot(TfEditCookie ec,
@@ -255,8 +256,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   static constexpr DWORD kSessionEstablishmentTimeoutMs = 1000;
 
   /* ui callback functions private */
-  bool _SelectCandidateOnCurrentPage(size_t index,
-                                     com_ptr<ITfContext> context);
+  weasel::CandidateSelectResult _SelectCandidateOnCurrentPage(
+      size_t index, com_ptr<ITfContext> context);
   void _HandleMouseHoverEvent(const size_t index);
   void _HandleMousePageEvent(bool* const nextPage, bool* const scrollNextPage);
   /* TSF Related */

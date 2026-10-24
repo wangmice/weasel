@@ -196,7 +196,8 @@ STDMETHODIMP CCandidateList::GetCurrentPage(UINT* puPage) {
 STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
   if (!_tsf)
     return E_UNEXPECTED;
-  if (!_uiStarted || !_pContextDocument || _finalization_started)
+  if ((!_uiStarted && !_registration_in_progress) ||
+      !_pContextDocument || _finalization_started)
     return E_FAIL;
   auto& cinfo = _ui->ctx().cinfo;
   // Reject indices without a candidate: highlighted feeds fixed-size arrays
@@ -211,6 +212,15 @@ STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
 STDMETHODIMP CCandidateList::Finalize(void) {
   if (!_tsf)
     return E_UNEXPECTED;
+  if (_registration_in_progress) {
+    // BeginUIElement may invoke this before an element ID has been returned.
+    // Defer confirmation until after BeginUIElement completes registration.
+    if (!_pContextDocument || _deferred_finalize ||
+        _ui->ctx().cinfo.candies.empty())
+      return E_FAIL;
+    _deferred_finalize = true;
+    return S_OK;
+  }
   if (!_uiStarted || !_pContextDocument || _finalization_started ||
       _tsf->_pCandidateUIContext != _pContextDocument)
     return E_FAIL;
@@ -234,15 +244,22 @@ STDMETHODIMP CCandidateList::Finalize(void) {
   // Set the guard before transport/UI updates: EndUIElement may reenter this
   // COM object, and one candidate generation must not commit twice.
   _finalization_started = true;
-  const bool selected = _tsf->_SelectCandidateOnCurrentPage(
+  const auto result = _tsf->_SelectCandidateOnCurrentPage(
       static_cast<size_t>(cinfo.highlighted), _pContextDocument);
-  if (!selected) {
-    // The request may have reached Rime even if its response was lost.
-    // Do not allow a second Finalize to submit the same candidate twice.
+  if (result == CandidateSelectResult::Selected) {
+    Destroy();
+    return S_OK;
+  }
+  if (result == CandidateSelectResult::NotDelivered ||
+      result == CandidateSelectResult::Rejected) {
+    // No candidate was selected. The host may correct its selection and retry.
+    _finalization_started = false;
     return E_FAIL;
   }
+  // The candidate may have been selected despite a lost response: do not
+  // leave a permanently locked UI or permit the host to submit it twice.
   Destroy();
-  return S_OK;
+  return E_FAIL;
 }
 
 STDMETHODIMP CCandidateList::Abort(void) {
@@ -434,11 +451,23 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
   // BeginUIElement may synchronously query GetDocumentMgr, so bind the exact
   // response/composition target before registering the UIElement.
   _pContextDocument = pContext;
+  _registration_in_progress = true;
+  _deferred_finalize = false;
   _finalization_started = false;
   _pbShow = TRUE;
 
-  if (FAILED(pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid))) {
+  const HRESULT begin_result =
+      pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
+  _registration_in_progress = false;
+  if (FAILED(begin_result)) {
+    _deferred_finalize = false;
     _pContextDocument = nullptr;
+    return;
+  }
+  if (_pContextDocument != pContext) {
+    // Focus/teardown may have reentered during BeginUIElement.
+    _deferred_finalize = false;
+    pUIElementMgr->EndUIElement(uiid);
     return;
   }
   _uiStarted = true;
@@ -453,9 +482,14 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
       _ui_warmed_up = true;
     }
   }
+  if (_deferred_finalize) {
+    _deferred_finalize = false;
+    Finalize();
+  }
 }
 
 void CCandidateList::EndUI() {
+  _deferred_finalize = false;
   if (!_uiStarted) {
     _pContextDocument = nullptr;
     return;
@@ -507,9 +541,11 @@ void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {
 }
 
 void WeaselTSF::_StartUI(com_ptr<ITfContext> pContext) {
+  // BeginUIElement may synchronously invoke SetSelection/Finalize. Publish
+  // ownership before the call, then reconcile with the actual UI state.
+  _pCandidateUIContext = pContext;
   _cand->StartUI(pContext);
-  if (pContext)
-    _pCandidateUIContext = pContext;
+  _pCandidateUIContext = _cand->GetContextDocument();
 }
 
 void WeaselTSF::_EndUI() {
@@ -534,23 +570,30 @@ void WeaselTSF::_DeleteCandidateList() {
   _pCandidateUIContext = nullptr;
 }
 
-bool WeaselTSF::_SelectCandidateOnCurrentPage(
+CandidateSelectResult WeaselTSF::_SelectCandidateOnCurrentPage(
     size_t index, com_ptr<ITfContext> context) {
   if (!context || !m_client.IsSessionActive())
-    return false;
+    return CandidateSelectResult::NotDelivered;
 
-  // Older WeaselServer generations return zero even after successfully
-  // dispatching a candidate selection. Verify a fresh, parsed response rather
-  // than using that legacy result code as an acknowledgement.
   const UINT64 previous_serial = m_client.ResponseSerial();
-  m_client.SelectCandidateOnCurrentPage(index);
-  if (m_client.ResponseSerial() == previous_serial)
-    return false;
+  const auto result = m_client.SelectCandidateOnCurrentPageEx(index);
+  if (result == CandidateSelectResult::NotDelivered ||
+      result == CandidateSelectResult::Rejected ||
+      result == CandidateSelectResult::Ambiguous)
+    return result;
 
-  // The selection response carries the commit and current context. Apply it
-  // to the document that owned this candidate, never a newly focused one.
-  _UpdateComposition(context);
-  return _parsedSerial == m_client.ResponseSerial();
+  const UINT64 received_serial = m_client.ResponseSerial();
+  if (received_serial == previous_serial)
+    return CandidateSelectResult::Ambiguous;
+
+  // Old servers don't report Rime's selection result. Only trust a legacy
+  // body if it actually adds a new commit. New servers return the Rime result.
+  bool has_new_commit = false;
+  _UpdateComposition(context, &has_new_commit);
+  if (_parsedSerial != received_serial ||
+      (result == CandidateSelectResult::LegacyResponse && !has_new_commit))
+    return CandidateSelectResult::Ambiguous;
+  return CandidateSelectResult::Selected;
 }
 
 void WeaselTSF::_HandleMousePageEvent(bool* const nextPage,

@@ -398,16 +398,21 @@ void RimeWithWeaselHandler::ClearComposition(WeaselSessionId ipc_id) {
   m_active_session = ipc_id;
 }
 
-void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(size_t index,
+bool RimeWithWeaselHandler::SelectCandidateOnCurrentPage(size_t index,
                                                          WeaselSessionId ipc_id,
                                                          EatLine eat) {
   DLOG(INFO) << "select candidate on current page, ipc_id = " << ipc_id
              << ", index = " << index;
-  if (m_disabled)
-    return;
-  rime_api->select_candidate_on_current_page(to_session_id(ipc_id), index);
+  if (m_disabled || !_ValidateRimeSession(ipc_id, false))
+    return false;
+  if (!rime_api->select_candidate_on_current_page(to_session_id(ipc_id), index))
+    return false;
+  // Rime has already accepted this selection. The response can be applied
+  // asynchronously by TSF, but a failure to deliver it must not trigger an
+  // automatic replay of the same candidate.
   _Respond(ipc_id, eat);
   _UpdateUI(ipc_id);
+  return true;
 }
 
 bool RimeWithWeaselHandler::HighlightCandidateOnCurrentPage(

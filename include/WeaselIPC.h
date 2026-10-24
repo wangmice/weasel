@@ -60,6 +60,16 @@ enum class KeyEventResult {
   TransportError,
 };
 
+// Candidate confirmation distinguishes a definite rejection/non-delivery from
+// an ambiguous response failure. Never replay a potentially delivered choice.
+enum class CandidateSelectResult {
+  Selected,       // A new server acknowledged successful Rime selection.
+  LegacyResponse, // An older server returned a body but no success code.
+  Rejected,       // Completed transaction, but Rime did not select.
+  NotDelivered,   // The request definitely did not reach the server.
+  Ambiguous,      // The request may have executed; do not retry automatically.
+};
+
 // Kept in the response body instead of the scalar DWORD result so an older
 // client still sees FALSE and releases the key rather than swallowing it.
 constexpr wchar_t kInvalidSessionResponseField[] = L"session.invalid=1";
@@ -149,9 +159,9 @@ struct RequestHandler {
   }
   virtual void CommitComposition(DWORD session_id, EatLine eat) {}
   virtual void ClearComposition(DWORD session_id) {}
-  virtual void SelectCandidateOnCurrentPage(size_t index,
+  virtual bool SelectCandidateOnCurrentPage(size_t index,
                                             DWORD session_id,
-                                            EatLine eat) {}
+                                            EatLine eat) { return false; }
   virtual bool HighlightCandidateOnCurrentPage(size_t index,
                                                DWORD session_id,
                                                EatLine eat) {
@@ -226,6 +236,7 @@ class Client {
   bool ClearComposition(DWORD timeout_ms);
   // 选择当前页面编号为index的候选
   bool SelectCandidateOnCurrentPage(size_t index);
+  CandidateSelectResult SelectCandidateOnCurrentPageEx(size_t index);
   // 高亮当前页面编号为index的候选
   bool HighlightCandidateOnCurrentPage(size_t index);
   // 翻页，backward = true 向前翻，false向后翻

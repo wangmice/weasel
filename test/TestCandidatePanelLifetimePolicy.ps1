@@ -32,7 +32,7 @@ if ($tsf -notmatch 'WeaselTSF::~WeaselTSF\(\)[\s\S]*?_cand->DetachOwner\(\)' -or
   throw 'TIP must detach on deactivate/destruction and allocate fresh candidate upon reactivation'
 }
 if ($candidate -notmatch 'CCandidateList::Abort\([\s\S]*?if\s*\(!_tsf\)' -or
-    $candidate -notmatch 'CCandidateList::FinalizeExactCompositionString\([\s\S]*?if\s*\(!_tsf\)' -or
+    $candidate -notmatch 'CCandidateList::FinalizeExactCompositionString\([\s\S]*?(?:if\s*\(!_tsf\)|return\s+_tsf\s*\?\s*E_NOTIMPL\s*:\s*E_UNEXPECTED)' -or
     $candidate -notmatch 'CCandidateList::StartUI\([\s\S]*?if\s*\(!_tsf') {
   throw 'host-retained candidate interfaces must safely reject detached-owner operations'
 }
@@ -80,21 +80,39 @@ if ($finalize -notmatch '_finalization_started\s*=\s*true' -or
     $finalize -notmatch '_SelectCandidateOnCurrentPage\(' -or
     $finalize -notmatch '_pCandidateUIContext\s*!=\s*_pContextDocument' -or
     $finalize -notmatch 'GetFocus\(' -or
-    $finalize -notmatch 'if\s*\(!selected\)' -or
-    $finalize -notmatch 'Destroy\(\);[\s\S]*?return S_OK') {
-  throw 'UI-less candidate Finalize must commit once to the owning document before closing'
+    $finalize -notmatch 'CandidateSelectResult::Selected' -or
+    $finalize -notmatch 'CandidateSelectResult::NotDelivered' -or
+    $finalize -notmatch 'CandidateSelectResult::Rejected' -or
+    $finalize -notmatch '_finalization_started\s*=\s*false' -or
+    $finalize -notmatch 'Destroy\(\);[\s\S]*?return E_FAIL') {
+  throw 'candidate Finalize must retry only definite failures and retire ambiguous confirmations'
+}
+if ($finalize -notmatch '_registration_in_progress' -or
+    $finalize -notmatch '_deferred_finalize\s*=\s*true' -or
+    $candidate -notmatch '_registration_in_progress\s*=\s*true' -or
+    $candidate -notmatch 'BeginUIElement\(this,' -or
+    $candidate -notmatch 'if\s*\(_deferred_finalize\)\s*\{[\s\S]*?Finalize\(\)') {
+  throw 'BeginUIElement reentrant confirmation must be deferred until registration completes'
 }
 if ($candidate -notmatch 'CCandidateList::SetIntegrationStyle\([\s\S]*?E_NOTIMPL' -or
     $candidate -notmatch 'CCandidateList::OnKeyDown\([\s\S]*?\*pIsEaten\s*=\s*FALSE' -or
     $candidate -match 'FinalizeExactCompositionString\(\)[\s\S]*?_AbortComposition\(false\)') {
   throw 'unsupported integrated candidate handling must not claim keys or mutate composition'
 }
-# Old servers return zero even for completed candidate selections. Requiring a
-# nonzero return would break rolling upgrades and existing mouse selection.
-if ($candidate -notmatch 'previous_serial\s*=\s*m_client\.ResponseSerial\(\)' -or
-    $candidate -notmatch 'm_client\.SelectCandidateOnCurrentPage\(index\)' -or
-    $candidate -notmatch 'return _parsedSerial\s*==\s*m_client\.ResponseSerial\(\)') {
-  throw 'candidate selection must use a fresh parsed response, not legacy zero IPC return values'
+# A new server confirms Rime selection; old zero-valued replies are accepted
+# only when an independently parsed response contains newly committed text.
+$clientImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
+$rime = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\RimeWithWeasel.cpp') -Raw
+$server = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
+if ($candidate -notmatch 'SelectCandidateOnCurrentPageEx\(index\)' -or
+    $candidate -notmatch 'CandidateSelectResult::LegacyResponse\s*&&\s*!has_new_commit' -or
+    $clientImpl -notmatch 'error\.request_may_have_been_delivered' -or
+    $clientImpl -notmatch 'CandidateSelectResult::NotDelivered' -or
+    $clientImpl -notmatch 'CandidateSelectResult::Ambiguous' -or
+    $clientImpl -notmatch 'CandidateSelectResult::LegacyResponse' -or
+    $rime -notmatch 'if\s*\(!rime_api->select_candidate_on_current_page\(' -or
+    $server -notmatch 'return\s+m_pRequestHandler->SelectCandidateOnCurrentPage\(') {
+  throw 'candidate selection must distinguish Rime rejection, uncertain transport and legacy response'
 }
 
 Write-Host 'Candidate COM and panel window-class lifetime policy: PASS'

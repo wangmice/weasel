@@ -333,6 +333,12 @@ class SessionHandler : public weasel::RequestHandler {
       Sleep(1500);
     return TRUE;
   }
+  bool SelectCandidateOnCurrentPage(size_t index,
+                                    DWORD id,
+                                    EatLine eat) override {
+    ++candidate_selection_calls;
+    return select_candidate_success && sessions.count(id) && index == 0;
+  }
   void SetOption(DWORD id, const std::string& opt, bool val) override {
     last_session = id;
     last_option = opt;
@@ -346,6 +352,8 @@ class SessionHandler : public weasel::RequestHandler {
   std::atomic<int> echo_calls{0};
   std::atomic<int> sessions_created{0};
   std::atomic<int> accepted_keys{0};
+  bool select_candidate_success = false;
+  std::atomic<int> candidate_selection_calls{0};
   std::atomic<bool> delay_key_reply{false};
   std::atomic<int> invalid_keys{0};
   std::atomic<int> option_calls{0};
@@ -353,6 +361,29 @@ class SessionHandler : public weasel::RequestHandler {
   std::string last_option;
   bool last_value = false;
 };
+
+static void test_candidate_selection_acknowledgement() {
+  SessionHandler handler;
+  handler.sessions.insert(7);
+  weasel::ServerImpl server;
+  server.SetRequestHandler(&handler);
+
+  handler.select_candidate_success = true;
+  check(server.OnSelectCandidateOnCurrentPage(
+            WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, 0, 7) == 1,
+        "server acknowledges selection accepted by Rime");
+  handler.select_candidate_success = false;
+  check(server.OnSelectCandidateOnCurrentPage(
+            WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, 0, 7) == 0,
+        "server rejects a candidate that Rime did not select");
+  handler.select_candidate_success = true;
+  check(server.OnSelectCandidateOnCurrentPage(
+            WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, 1, 7) == 0 &&
+            server.OnSelectCandidateOnCurrentPage(
+                WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, 0, 8) == 0 &&
+            handler.candidate_selection_calls == 4,
+        "invalid candidate or session does not yield a successful ack");
+}
 
 static void test_server_runtime_state_tracks_maintenance() {
   SessionHandler handler;
@@ -699,6 +730,7 @@ int main() {
   test_session_id_allocator_survives_maintenance_clear();
   test_pending_ui_generation_rejects_stale_extent();
   test_server_runtime_state_tracks_maintenance();
+  test_candidate_selection_acknowledgement();
   test_pipe_ascii_commands();
   test_window_ascii_commands();
   test_unavailable_private_server_stays_isolated();
