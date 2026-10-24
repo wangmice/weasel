@@ -39,6 +39,21 @@ if ($waitIndex -lt 0 -or $fallbackShutdownIndex -lt 0 -or $fallbackShutdownIndex
   throw 'process-exit wait must come only after the no-pipe fallback has requested shutdown'
 }
 
+# Recovering an authenticated Starting generation invalidates any pipe
+# connection to that old process. Do not rediscover it after forced exit.
+$startingRecoveryStart = $restart.IndexOf('const bool recovered_starting =')
+$startingRecoveryEnd = $restart.IndexOf('    if (connected) {', $startingRecoveryStart)
+if ($startingRecoveryStart -lt 0 -or $startingRecoveryEnd -le $startingRecoveryStart) {
+  throw 'unable to isolate Starting recovery before normal restart'
+}
+$startingRecovery = $restart.Substring(
+  $startingRecoveryStart, $startingRecoveryEnd - $startingRecoveryStart
+)
+if ($restart -notmatch 'bool\s+connected\s*=\s*client\.Connect\(\)' -or
+    $startingRecovery -notmatch 'client\.Disconnect\(\);\s*connected\s*=\s*false;\s*CloseHandle\(running_server\)') {
+  throw 'successful Starting recovery must discard the stale pipe connection'
+}
+
 # A runnable rollback requires both the setup executable and the server binary.
 $restoreStart = $installer.IndexOf('Function RestorePreviousProgramBackup')
 $restoreEnd = $installer.IndexOf('FunctionEnd', $restoreStart)
