@@ -66,4 +66,42 @@ if ($serverImpl -notmatch 'if\s*\(m_runtimeStopped\)\s*return;' -or
   throw 'complete runtime teardown must remain idempotent after a successful drain'
 }
 
+
+# Window messages may enqueue Rime work but must never execute or wait for it.
+$header = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.h') -Raw
+$colorStart = $serverImpl.IndexOf('LRESULT ServerImpl::OnColorChange(')
+$colorEnd = $serverImpl.IndexOf('LRESULT ServerImpl::OnCreate(', $colorStart)
+$commandStart = $serverImpl.IndexOf('LRESULT ServerImpl::OnCommand(')
+$commandEnd = $serverImpl.IndexOf('LRESULT ServerImpl::_HandleCommand(', $commandStart)
+if ($colorStart -lt 0 -or $colorEnd -le $colorStart -or
+    $commandStart -lt 0 -or $commandEnd -le $commandStart) {
+  throw 'unable to isolate window-level Rime entry points'
+}
+$colorPath = $serverImpl.Substring($colorStart, $colorEnd - $colorStart)
+$commandPath = $serverImpl.Substring($commandStart, $commandEnd - $commandStart)
+if ($colorPath -match 'g_api_mutex|UpdateColorTheme\(' -or
+    $commandPath -match 'g_api_mutex|SetOption\(') {
+  throw 'window message handlers must never wait for or execute Rime'
+}
+if ($colorPath -notmatch '_QueueControlTask\(' -or
+    $commandPath -notmatch '_QueueControlTask\(') {
+  throw 'window Rime requests must be queued to the owned control worker'
+}
+if ($header -notmatch 'kMaxControlTasks\s*=\s*64' -or
+    $serverImpl -notmatch 'm_controlTasks\.size\(\)\s*>=\s*kMaxControlTasks' -or
+    $serverImpl -notmatch 'm_controlTasks\.pop_front\(\)') {
+  throw 'control queue must be bounded, with pending tasks coalesced'
+}
+if ($serverImpl -notmatch 'm_sessionEpoch\.fetch_add\(' -or
+    $serverImpl -notmatch 'm_sessionEpoch\.load\([\s\S]*?task\.session_epoch') {
+  throw 'targeted ASCII work must reject invalidated session generations'
+}
+$controlStop = $runtimeStop.IndexOf('_StopControlWorker();')
+if ($controlStop -lt 0 -or $arm -ge $controlStop -or $controlStop -ge $stopPipe) {
+  throw 'control worker must drain within the existing watchdog before pipe teardown'
+}
+if ($serverImpl -notmatch '_StopControlWorker\(\)[\s\S]*?m_controlWorker\.join\(\)') {
+  throw 'owned control worker must join before RequestHandler/UI teardown'
+}
+
 Write-Host 'Server shutdown policy: PASS'

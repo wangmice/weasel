@@ -1,8 +1,14 @@
 #pragma once
 #include <WeaselIPC.h>
 #include <WeaselInteractionPolicy.h>
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <Winnt.h>   // for security attributes constants
 #include <aclapi.h>  // for ACL
 #include <boost/thread.hpp>
@@ -119,8 +125,23 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
 
   void _Finailize();
   void _OnClientProcessExit(ClientProcessToken token);
-  // Caller must hold g_api_mutex for commands that change handler options.
+  // IPC callers hold g_api_mutex; window ASCII commands are queued instead.
   LRESULT _HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled);
+
+  enum class ControlTaskKind { Color, Ascii };
+  struct ControlTask {
+    ControlTaskKind kind = ControlTaskKind::Color;
+    DWORD session_id = 0;
+    bool value = false;
+    std::uint64_t session_epoch = 0;
+  };
+  static constexpr std::size_t kMaxControlTasks = 64;
+  bool _StartControlWorker();
+  void _StopControlWorker();
+  void _SetControlSuspended(bool suspended);
+  void _QueueControlTask(ControlTask task);
+  void _RequeueDeferredControlTask(ControlTask task);
+  void _RunControlWorker();
   /* Bound the complete asynchronous runtime teardown with one hard watchdog. */
   void _StopRuntime();
   /* Interrupt and join the pipe listener and its workers; idempotent. */
@@ -162,7 +183,17 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
    * (below Win8.1), and OnUpdateInputPosition then keeps physical coords */
   PPhysicalToLogicalPointForPerMonitorDPI
       m_pPhysicalToLogicalPointForPerMonitorDPI;
-  BOOL m_darkMode;
+  BOOL m_darkMode;  // Window-thread desired theme
+  std::atomic<int> m_appliedDarkMode;  // Last successfully applied theme
+  // Session generation invalidates queued targeted ASCII commands after
+  // session creation/disposal, process exit or maintenance.
+  std::atomic<std::uint64_t> m_sessionEpoch{0};
+  std::mutex m_controlMutex;
+  std::condition_variable m_controlCv;
+  std::deque<ControlTask> m_controlTasks;
+  std::thread m_controlWorker;
+  bool m_controlSuspended = false;
+  bool m_controlStopping = false;
   bool m_runtimeStopped = false;
 };
 
