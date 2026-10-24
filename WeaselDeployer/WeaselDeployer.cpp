@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include <WeaselUtility.h>
 #include <WeaselIPC.h>
+#include <cstdlib>
 #include <fstream>
 #include <vector>
 #include "WeaselDeployer.h"
@@ -16,21 +17,6 @@ constexpr wchar_t kInternalSyncWorkerOption[] = L"/internal-sync-worker";
 constexpr wchar_t kInstallerDeployOption[] = L"/install-deploy";
 constexpr DWORD kRimeOperationHardTimeoutMs = 15 * 60 * 1000;
 constexpr DWORD kSyncSupervisorSoftTimeoutMs = 15 * 60 * 1000;
-
-DWORD WINAPI RimeOperationWatchdogProc(LPVOID param) noexcept {
-  HANDLE cancel_event = static_cast<HANDLE>(param);
-  const DWORD wait_result =
-      WaitForSingleObject(cancel_event, kRimeOperationHardTimeoutMs);
-  CloseHandle(cancel_event);
-
-  if (wait_result != WAIT_OBJECT_0) {
-    // librime deployment work is not cancellable. Once the hard deadline
-    // expires, process exit is the only boundary that can prove local Rime
-    // work has stopped before WeaselServer is allowed to recover maintenance.
-    TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
-  }
-  return 0;
-}
 
 struct RuntimeCleanup {
   bool com_initialized = false;
@@ -116,38 +102,61 @@ RimeOperationWatchdog::~RimeOperationWatchdog() {
   Disarm();
 }
 
+DWORD WINAPI RimeOperationWatchdog::ThreadProc(LPVOID context) noexcept {
+  auto* watchdog = static_cast<RimeOperationWatchdog*>(context);
+  const DWORD wait_result =
+      WaitForSingleObject(watchdog->cancel_event_, kRimeOperationHardTimeoutMs);
+  if (wait_result != WAIT_OBJECT_0) {
+    Decision expected = Decision::Armed;
+    if (watchdog->decision_.compare_exchange_strong(
+            expected, Decision::Firing, std::memory_order_acq_rel)) {
+      // Only the thread that owns the timeout decision may terminate.
+      // An already-disarmed watchdog must never kill a later operation.
+      TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+      std::abort();  // Fail closed if process termination unexpectedly returns.
+    }
+  }
+  return 0;
+}
+
 bool RimeOperationWatchdog::Arm() noexcept {
-  if (cancel_event_)
+  if (thread_)
     return true;
 
   HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!cancel_event)
     return false;
 
-  HANDLE watchdog_event = nullptr;
-  if (!DuplicateHandle(GetCurrentProcess(), cancel_event, GetCurrentProcess(),
-                       &watchdog_event, SYNCHRONIZE, FALSE, 0)) {
-    CloseHandle(cancel_event);
-    return false;
-  }
-
-  HANDLE thread = CreateThread(nullptr, 0, RimeOperationWatchdogProc,
-                               watchdog_event, 0, nullptr);
-  if (!thread) {
-    CloseHandle(watchdog_event);
-    CloseHandle(cancel_event);
-    return false;
-  }
-
-  CloseHandle(thread);
   cancel_event_ = cancel_event;
+  decision_.store(Decision::Armed, std::memory_order_release);
+  thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
+  if (!thread_) {
+    decision_.store(Decision::Disarmed, std::memory_order_release);
+    CloseHandle(cancel_event_);
+    cancel_event_ = nullptr;
+    return false;
+  }
   return true;
 }
 
 void RimeOperationWatchdog::Disarm() noexcept {
-  if (!cancel_event_)
+  if (!thread_)
     return;
-  SetEvent(cancel_event_);
+
+  Decision expected = Decision::Armed;
+  const bool disarmed = decision_.compare_exchange_strong(
+      expected, Decision::Disarmed, std::memory_order_acq_rel);
+  if (disarmed && !SetEvent(cancel_event_))
+    std::abort();
+
+  // This join is on the dedicated watchdog, not a librime worker. When
+  // disarm wins, it ensures the old thread is gone before returning.
+  const DWORD joined = WaitForSingleObject(thread_, INFINITE);
+  if (joined != WAIT_OBJECT_0 || !disarmed)
+    std::abort();  // A committed termination must not be reported as disarmed.
+
+  CloseHandle(thread_);
+  thread_ = nullptr;
   CloseHandle(cancel_event_);
   cancel_event_ = nullptr;
 }
