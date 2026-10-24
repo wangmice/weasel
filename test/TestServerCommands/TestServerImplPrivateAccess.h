@@ -15,6 +15,20 @@ class ServerImplTestAccess {
 
   static void StopPipeServer(ServerImpl& server) { server._StopPipeServer(); }
 
+  static bool StartControlWorker(ServerImpl& server) {
+    return server._StartControlWorker();
+  }
+
+  static void StopControlWorker(ServerImpl& server) {
+    server._StopControlWorker();
+  }
+
+  static void RegisterControlSession(ServerImpl& server, DWORD session_id) {
+    std::lock_guard<std::mutex> lock(server.m_controlMutex);
+    server.m_controlSessions[session_id] = ServerImpl::ControlSession{
+        ++server.m_nextControlSessionGeneration, std::nullopt};
+  }
+
   static void SetRuntimeState(ServerImpl& server, ServerRuntimeState* state) {
     server.m_runtimeState = state;
   }

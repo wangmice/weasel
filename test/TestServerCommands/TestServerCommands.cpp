@@ -493,35 +493,78 @@ static void test_pipe_ascii_commands() {
 
 static void test_window_ascii_commands() {
   SessionHandler handler;
+  // Exercise both the real tray's global command (lParam=0) and an explicit
+  // session-targeted command. The latter needs a live session generation,
+  // otherwise the production worker intentionally drops stale commands.
+  handler.sessions.insert(43);
+  weasel::ServerRuntimeState runtime{};
+  runtime.version = weasel::kServerRuntimeStateVersion;
+  runtime.process_id = GetCurrentProcessId();
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Ready);
+  runtime.process_creation_time = 1;
+
   weasel::ServerImpl server;
   server.SetRequestHandler(&handler);
-  for (UINT command :
-       {ID_WEASELTRAY_ENABLE_ASCII, ID_WEASELTRAY_DISABLE_ASCII}) {
-    std::promise<void> started;
-    auto ready = started.get_future();
-    std::promise<void> completed;
-    auto done = completed.get_future();
-    BOOL handled = TRUE;
-    int before = handler.option_calls;
-    std::unique_lock lock(g_api_mutex);
-    std::thread window_thread([&] {
-      started.set_value();
-      server.OnCommand(WM_COMMAND, command, 43, handled);
-      completed.set_value();
-    });
-    ready.wait();
-    check(done.wait_for(std::chrono::milliseconds(100)) ==
-                  std::future_status::timeout &&
-              handler.option_calls == before,
-          "window command waits for the pipe dispatcher's API lock");
-    lock.unlock();
-    window_thread.join();
-    check(handled && handler.option_calls == before + 1 &&
-              handler.last_session == 43 &&
-              handler.last_option == "ascii_mode" &&
-              handler.last_value == (command == ID_WEASELTRAY_ENABLE_ASCII),
-          "window command sets the requested option exactly once");
+  weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
+  weasel::ServerImplTestAccess::RegisterControlSession(server, 43);
+  const bool worker_started =
+      weasel::ServerImplTestAccess::StartControlWorker(server);
+  check(worker_started, "window control worker starts for asynchronous commands");
+  if (!worker_started) {
+    weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
+    return;
   }
+
+  for (DWORD session_id : {0u, 43u}) {
+    for (UINT command :
+         {ID_WEASELTRAY_ENABLE_ASCII, ID_WEASELTRAY_DISABLE_ASCII}) {
+      const int before = handler.option_calls.load();
+      std::promise<BOOL> completed;
+      auto done = completed.get_future();
+
+      // Simulate a pipe request holding the Rime API lock. Posting the window
+      // command must complete even while its worker cannot enter SetOption.
+      std::unique_lock lock(g_api_mutex);
+      std::thread window_thread([&, session_id, command] {
+        BOOL handled = TRUE;
+        server.OnCommand(WM_COMMAND, command, session_id, handled);
+        completed.set_value(handled);
+      });
+
+      const bool returned_without_api_lock =
+          done.wait_for(std::chrono::milliseconds(500)) ==
+              std::future_status::ready;
+      const bool not_applied_under_api_lock =
+          handler.option_calls.load() == before;
+
+      // Always release the lock before joining, even if behavior regresses,
+      // so the test fails rather than deadlocking the entire test process.
+      lock.unlock();
+      window_thread.join();
+      check(returned_without_api_lock && not_applied_under_api_lock &&
+                done.get() == TRUE,
+            "window command returns without waiting for the API lock");
+
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (handler.option_calls.load() == before &&
+             std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+      // SetOption publishes its state before incrementing option_calls.
+      // Observing the atomic counter therefore makes the state visible.
+      const bool applied_once =
+          handler.option_calls.load() == before + 1 &&
+          handler.last_session == session_id &&
+          handler.last_option == "ascii_mode" &&
+          handler.last_value == (command == ID_WEASELTRAY_ENABLE_ASCII);
+      check(applied_once,
+            "window command executes asynchronously and applies the option once");
+    }
+  }
+
+  weasel::ServerImplTestAccess::StopControlWorker(server);
+  weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
 static bool connect_with_retry(weasel::Client& client) {
