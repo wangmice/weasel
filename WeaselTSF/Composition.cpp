@@ -613,8 +613,12 @@ class CApplyResponseEditSession : public CEditSession {
 
   ~CApplyResponseEditSession() override {
     if (_resetOnDispose && _queue && _queue->InFlight() &&
-        _queue->FlightToken() == _flightToken && _ShouldResetEngine()) {
-      _pTextService->_AbortComposition();
+        _queue->FlightToken() == _flightToken) {
+      if (_ShouldResetEngine())
+        _pTextService->_AbortComposition();
+      else if (_request)
+        _pTextService->_RetireUnappliedCandidateFinalization(
+            _request->context, _request->snapshot.identity.serial);
     }
     _CompleteFlight();
   }
@@ -833,6 +837,7 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
   if (!request)
     return;
   const UINT64 flightToken = _responseApplyQueue.FlightToken();
+  com_ptr<ITfContext> failedContext = request->context;
   const auto failureIdentity = request->snapshot.identity;
   const bool failureHasCommit = !request->snapshot.commit.empty();
   auto shouldResetRequestEngine = [&]() {
@@ -842,10 +847,12 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
   auto settleTerminalFailure = [&]() {
     if (!_responseApplyQueue.Complete(flightToken))
       return;
-    if (shouldResetRequestEngine())
+    if (shouldResetRequestEngine()) {
       _AbortComposition();
-    else
+    } else {
+      _RetireUnappliedCandidateFinalization(failedContext, failureIdentity.serial);
       _ScheduleNextResponseApply(false);
+    }
   };
 
   com_ptr<CApplyResponseEditSession> session;
@@ -896,14 +903,13 @@ void WeaselTSF::_CompleteResponseApply() {
   _ScheduleNextResponseApply(false);
 }
 
+void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext) {
+  _UpdateComposition(pContext, _parsedSerial);
+}
+
 void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext,
-                                   bool* has_new_commit) {
-  const UINT64 previousSerial = _parsedSerial;
-  const std::size_t previous_commit_length = _pendingCommit.size();
+                                   UINT64 previousSerial) {
   _ConsumeResponseIfFresh();
-  if (has_new_commit)
-    *has_new_commit = _parsedSerial != previousSerial &&
-                      _pendingCommit.size() > previous_commit_length;
   _pEditSessionContext = pContext;
 
   if (_parsedSerial == previousSerial)

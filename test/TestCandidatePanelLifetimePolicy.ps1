@@ -113,6 +113,49 @@ if ($setSelection -notmatch '_registration_in_progress' -or
     $candidateHeader -match '_deferred_finalize') {
   throw 'registration may update selection but cannot retain a pending confirm'
 }
+# A confirmed Finalize must not destroy a new candidate generation created by
+# a synchronously applied response. The edit-session owner retires/reopens the
+# UI only after verifying the response still belongs to the original document.
+$editSession = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\EditSession.cpp') -Raw
+$composition = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Composition.cpp') -Raw
+$selectionStart = $candidate.IndexOf('CandidateSelectResult WeaselTSF::_SelectCandidateOnCurrentPage(')
+$selectionEnd = $candidate.IndexOf('void WeaselTSF::_HandleMousePageEvent(', $selectionStart)
+if ($selectionStart -lt 0 -or $selectionEnd -le $selectionStart) {
+  throw 'unable to isolate acknowledged selection response ordering'
+}
+$selection = $candidate.Substring($selectionStart, $selectionEnd - $selectionStart)
+$selectedBranch = $finalize.Substring(
+  $finalize.IndexOf('if (result == CandidateSelectResult::Selected)'),
+  $finalize.IndexOf('if (result == CandidateSelectResult::NotDelivered') -
+    $finalize.IndexOf('if (result == CandidateSelectResult::Selected)')
+)
+if ($selectedBranch -match 'Destroy\(' -or
+    $selectedBranch -notmatch 'return S_OK;' -or
+    $selection.IndexOf('_ConsumeResponseIfFresh()') -lt 0 -or
+    $selection.IndexOf('_cand->MarkFinalizationAccepted(received_serial)') -lt 0 -or
+    $selection.IndexOf('_UpdateComposition(context, previous_parsed_serial)') -lt 0 -or
+    -not ($selection.IndexOf('_ConsumeResponseIfFresh()') -lt
+          $selection.IndexOf('_cand->MarkFinalizationAccepted(received_serial)') -and
+          $selection.IndexOf('_cand->MarkFinalizationAccepted(received_serial)') -lt
+          $selection.IndexOf('_UpdateComposition(context, previous_parsed_serial)')) -or
+    $candidateHeader -notmatch 'HasAcceptedFinalization\(UINT64\s+responseSerial\)' -or
+    $candidateHeader -notmatch '_finalization_response_serial\s*==\s*responseSerial' -or
+    $editSession -notmatch 'HasAcceptedFinalization\(snapshot\.identity\.serial\)' -or
+    $composition -notmatch '_RetireUnappliedCandidateFinalization\(failedContext,\s*failureIdentity\.serial\)' -or
+    $selection -notmatch 'previous_parsed_serial\s*=\s*_parsedSerial;[\s\S]*?_ConsumeResponseIfFresh\(\)' -or
+    $composition -notmatch '_UpdateComposition\(com_ptr<ITfContext> pContext,\s*UINT64 previousSerial\)' -or
+    $editSession -notmatch 'ShouldRenewCandidateUIAfterFinalization\(' -or
+    $editSession -notmatch '_EndUI\(\);\s*_FlushPendingUI\(pendingUIGeneration\);\s*_StartUI\(pContext\);\s*_UpdateUI\(\*context, status\)' -or
+    $candidate -notmatch 'WeaselTSF::_RetireUnappliedCandidateFinalization\(' -or
+    $composition -notmatch '_RetireUnappliedCandidateFinalization\(') {
+  throw 'acknowledged multi-stage selection must renew UI only after TSF response apply'
+}
+if ($candidate -notmatch 'void CCandidateList::MarkFinalizationAccepted\(UINT64 responseSerial\)' -or
+    $candidate -notmatch '_finalization_accepted\s*=\s*false;' -or
+    $selection -notmatch 'CandidateSelectResult::LegacyResponse[\s\S]*?_pendingCommit\.size\(\)\s*>\s*previous_commit_length') {
+  throw 'ambiguous legacy replies must not acknowledge and renew the candidate UI'
+}
+
 if ($candidate -notmatch 'CCandidateList::SetIntegrationStyle\([\s\S]*?E_NOTIMPL' -or
     $candidate -notmatch 'CCandidateList::OnKeyDown\([\s\S]*?\*pIsEaten\s*=\s*FALSE' -or
     $candidate -match 'FinalizeExactCompositionString\(\)[\s\S]*?_AbortComposition\(false\)') {
@@ -124,7 +167,7 @@ $clientImpl = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientI
 $rime = Get-Content -LiteralPath (Join-Path $repo 'RimeWithWeasel\RimeWithWeasel.cpp') -Raw
 $server = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPCServer\WeaselServerImpl.cpp') -Raw
 if ($candidate -notmatch 'SelectCandidateOnCurrentPageEx\(index\)' -or
-    $candidate -notmatch 'CandidateSelectResult::LegacyResponse\s*&&\s*!has_new_commit' -or
+    $candidate -notmatch 'CandidateSelectResult::LegacyResponse\s*&&' -or
     $clientImpl -notmatch 'error\.request_may_have_been_delivered' -or
     $clientImpl -notmatch 'CandidateSelectResult::NotDelivered' -or
     $clientImpl -notmatch 'CandidateSelectResult::Ambiguous' -or

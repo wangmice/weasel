@@ -240,16 +240,23 @@ STDMETHODIMP CCandidateList::Finalize(void) {
   // Set the guard before transport/UI updates: EndUIElement may reenter this
   // COM object, and one candidate generation must not commit twice.
   _finalization_started = true;
+  _finalization_accepted = false;
+  _finalization_response_serial = 0;
   const auto result = _tsf->_SelectCandidateOnCurrentPage(
       static_cast<size_t>(cinfo.highlighted), _pContextDocument);
   if (result == CandidateSelectResult::Selected) {
-    Destroy();
+    // The TSF response may already have applied synchronously, possibly
+    // starting the next candidate generation. Do not destroy that new UI.
+    // The response-apply path closes this generation, and reopens one only
+    // if Rime is still composing.
     return S_OK;
   }
   if (result == CandidateSelectResult::NotDelivered ||
       result == CandidateSelectResult::Rejected) {
     // No candidate was selected. The host may correct its selection and retry.
     _finalization_started = false;
+    _finalization_accepted = false;
+    _finalization_response_serial = 0;
     return E_FAIL;
   }
   // The candidate may have been selected despite a lost response: do not
@@ -449,6 +456,8 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
   _pContextDocument = pContext;
   _registration_in_progress = true;
   _finalization_started = false;
+  _finalization_accepted = false;
+  _finalization_response_serial = 0;
   _pbShow = TRUE;
 
   const HRESULT begin_result =
@@ -478,6 +487,8 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
 }
 
 void CCandidateList::EndUI() {
+  _finalization_accepted = false;
+  _finalization_response_serial = 0;
   if (!_uiStarted) {
     _pContextDocument = nullptr;
     return;
@@ -528,6 +539,13 @@ void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {
   _cand->UpdateUI(ctx, status);
 }
 
+void CCandidateList::MarkFinalizationAccepted(UINT64 responseSerial) {
+  if (_tsf && _uiStarted && _finalization_started && responseSerial != 0) {
+    _finalization_accepted = true;
+    _finalization_response_serial = responseSerial;
+  }
+}
+
 void WeaselTSF::_StartUI(com_ptr<ITfContext> pContext) {
   // BeginUIElement may synchronously invoke SetSelection/Finalize. Publish
   // ownership before the call, then reconcile with the actual UI state.
@@ -539,6 +557,13 @@ void WeaselTSF::_StartUI(com_ptr<ITfContext> pContext) {
 void WeaselTSF::_EndUI() {
   _cand->EndUI();
   _pCandidateUIContext = nullptr;
+}
+
+void WeaselTSF::_RetireUnappliedCandidateFinalization(
+    ITfContext* context, UINT64 responseSerial) {
+  if (_cand->HasAcceptedFinalization(responseSerial) &&
+      _pCandidateUIContext == context)
+    _EndUI();
 }
 
 void WeaselTSF::_ShowUI() {
@@ -575,14 +600,30 @@ CandidateSelectResult WeaselTSF::_SelectCandidateOnCurrentPage(
   if (received_serial == previous_serial)
     return CandidateSelectResult::Ambiguous;
 
-  // Old servers don't report Rime's selection result. Only trust a legacy
-  // body if it actually adds a new commit. New servers return the Rime result.
-  bool has_new_commit = false;
-  _UpdateComposition(context, &has_new_commit);
-  if (_parsedSerial != received_serial ||
-      (result == CandidateSelectResult::LegacyResponse && !has_new_commit))
+  // Determine acceptance before scheduling the response: RequestEditSession
+  // may execute synchronously and must know whether this confirmation was
+  // actually acknowledged before it retires/reopens a UIElement.
+  const UINT64 previous_parsed_serial = _parsedSerial;
+  const size_t previous_commit_length = _pendingCommit.size();
+  _ConsumeResponseIfFresh();
+  if (_parsedSerial != received_serial)
     return CandidateSelectResult::Ambiguous;
-  return CandidateSelectResult::Selected;
+
+  // Legacy servers return zero even for accepted selections. Without their
+  // explicit acknowledgement, only fresh committed text proves success.
+  const bool accepted =
+      result == CandidateSelectResult::Selected ||
+      (result == CandidateSelectResult::LegacyResponse &&
+       _pendingCommit.size() > previous_commit_length);
+  if (accepted)
+    _cand->MarkFinalizationAccepted(received_serial);
+
+  // Even an unconfirmed legacy reply may contain updated Rime state. Always
+  // enqueue the parsed response; only acknowledged confirmations renew the
+  // UIElement generation.
+  _UpdateComposition(context, previous_parsed_serial);
+  return accepted ? CandidateSelectResult::Selected
+                  : CandidateSelectResult::Ambiguous;
 }
 
 void WeaselTSF::_HandleMousePageEvent(bool* const nextPage,

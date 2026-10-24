@@ -168,8 +168,11 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                             com_ptr<ITfContext> pContext,
                             com_ptr<ITfComposition> pComposition,
                             const std::wstring& text);
+  void _UpdateComposition(com_ptr<ITfContext> pContext);
+  // Variant for call sites that had to parse the response before scheduling
+  // TSF apply (candidate confirmation may apply synchronously).
   void _UpdateComposition(com_ptr<ITfContext> pContext,
-                          bool* has_new_commit = nullptr);
+                          UINT64 previously_parsed_serial);
   bool _ConsumeResponse(LPWSTR buffer, DWORD length);
   void _ConsumeResponseIfFresh();
   HRESULT _ApplyResponseSnapshot(TfEditCookie ec,
@@ -213,6 +216,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _EndUI();
   void _ShowUI();
   void _HideUI();
+  // A confirmed candidate selection with an unapplyable TSF response must
+  // retire its old UIElement instead of leaving Finalize permanently locked.
+  void _RetireUnappliedCandidateFinalization(ITfContext* context,
+                                              UINT64 responseSerial);
   com_ptr<ITfContext> _GetUIContextDocument();
 
   /* Display Attribute */
