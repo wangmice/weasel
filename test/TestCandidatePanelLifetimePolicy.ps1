@@ -68,4 +68,33 @@ if ($panel -match 'GetModuleHandle\(nullptr\);\s*WNDCLASS' -or
     $panel -match 'ERROR_CLASS_ALREADY_EXISTS\)') {
   throw 'window class must not silently reuse an EXE-owned or stale callback'
 }
+# UI-less host selection must use the real Rime selection/commit path and
+# preserve its original document. Unsupported integration must never eat keys.
+$finalizeStart = $candidate.IndexOf('STDMETHODIMP CCandidateList::Finalize(void)')
+$finalizeEnd = $candidate.IndexOf('STDMETHODIMP CCandidateList::Abort(void)', $finalizeStart)
+if ($finalizeStart -lt 0 -or $finalizeEnd -le $finalizeStart) {
+  throw 'unable to isolate candidate Finalize'
+}
+$finalize = $candidate.Substring($finalizeStart, $finalizeEnd - $finalizeStart)
+if ($finalize -notmatch '_finalization_started\s*=\s*true' -or
+    $finalize -notmatch '_SelectCandidateOnCurrentPage\(' -or
+    $finalize -notmatch '_pCandidateUIContext\s*!=\s*_pContextDocument' -or
+    $finalize -notmatch 'GetFocus\(' -or
+    $finalize -notmatch 'if\s*\(!selected\)' -or
+    $finalize -notmatch 'Destroy\(\);[\s\S]*?return S_OK') {
+  throw 'UI-less candidate Finalize must commit once to the owning document before closing'
+}
+if ($candidate -notmatch 'CCandidateList::SetIntegrationStyle\([\s\S]*?E_NOTIMPL' -or
+    $candidate -notmatch 'CCandidateList::OnKeyDown\([\s\S]*?\*pIsEaten\s*=\s*FALSE' -or
+    $candidate -match 'FinalizeExactCompositionString\(\)[\s\S]*?_AbortComposition\(false\)') {
+  throw 'unsupported integrated candidate handling must not claim keys or mutate composition'
+}
+# Old servers return zero even for completed candidate selections. Requiring a
+# nonzero return would break rolling upgrades and existing mouse selection.
+if ($candidate -notmatch 'previous_serial\s*=\s*m_client\.ResponseSerial\(\)' -or
+    $candidate -notmatch 'm_client\.SelectCandidateOnCurrentPage\(index\)' -or
+    $candidate -notmatch 'return _parsedSerial\s*==\s*m_client\.ResponseSerial\(\)') {
+  throw 'candidate selection must use a fresh parsed response, not legacy zero IPC return values'
+}
+
 Write-Host 'Candidate COM and panel window-class lifetime policy: PASS'

@@ -96,6 +96,7 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
 
   BOOL _pbShow;
   bool _uiStarted = false;
+  bool _finalization_started = false;
   weasel::UIStyle _style;
   bool _ui_warmed_up = false;
 

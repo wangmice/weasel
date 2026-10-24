@@ -232,6 +232,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
  private:
   friend class WeaselTSFTestAccess;
+  friend class CCandidateList;
 
   // A healthy physical key should never let a wedged server pin the host
   // callback for the pipe's one-second default. This only changes the wait
@@ -250,7 +251,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   static constexpr DWORD kSessionEstablishmentTimeoutMs = 1000;
 
   /* ui callback functions private */
-  void _SelectCandidateOnCurrentPage(const size_t index);
+  bool _SelectCandidateOnCurrentPage(size_t index,
+                                     com_ptr<ITfContext> context);
   void _HandleMouseHoverEvent(const size_t index);
   void _HandleMousePageEvent(bool* const nextPage, bool* const scrollNextPage);
   /* TSF Related */
