@@ -173,7 +173,7 @@ STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground) {
     // edit session. Keep that FIFO intact: _AbortComposition advances the
     // engine epoch so stale state becomes inert while durable commits survive.
     m_client.FocusOut();
-    _AbortComposition();
+    _AbortComposition(true, kFocusLossClearTimeoutMs);
   }
 
   return S_OK;

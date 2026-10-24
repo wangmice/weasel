@@ -935,10 +935,10 @@ STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
   return S_OK;
 }
 
-void WeaselTSF::_AbortComposition(bool clear) {
+void WeaselTSF::_AbortComposition(bool clear, DWORD clear_timeout_ms) {
   _InvalidatePendingUI();
   _responseApplyQueue.AdvanceEpoch();
-  m_client.ClearComposition();
+  m_client.ClearComposition(clear_timeout_ms);
 
   const bool hadComposition = _IsComposing();
   if (hadComposition) {

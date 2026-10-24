@@ -222,6 +222,8 @@ class Client {
   bool CommitComposition();
   // 清除正在編輯的文字
   bool ClearComposition();
+  // 焦点退出等宿主回调可限制本次清除 IPC 的等待时间；零值保持默认预算
+  bool ClearComposition(DWORD timeout_ms);
   // 选择当前页面编号为index的候选
   bool SelectCandidateOnCurrentPage(size_t index);
   // 高亮当前页面编号为index的候选

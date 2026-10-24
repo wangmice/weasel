@@ -197,7 +197,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // Publish UI data only for the extent request that owns this generation.
   void _FlushPendingUI(UINT64 pendingUIGeneration);
   void _FinalizeComposition();
-  void _AbortComposition(bool clear = true);
+  void _AbortComposition(bool clear = true, DWORD clear_timeout_ms = 0);
 
   /* Language bar */
   HWND _GetFocusedContextWindow();
@@ -238,6 +238,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // callback for the pipe's one-second default. This only changes the wait
   // bound; the successful hot path performs the same single IPC transaction.
   static constexpr DWORD kKeyEventTransactionTimeoutMs = 100;
+
+  // Losing focus runs synchronously inside a host callback. Keep only this
+  // composition-clear IPC on a short budget; ordinary clears retain 3000 ms.
+  static constexpr DWORD kFocusLossClearTimeoutMs = 100;
 
   // Keep transport discovery/reconnect on the physical-key path very short so
   // a missing or dead server cannot pin the host UI thread.

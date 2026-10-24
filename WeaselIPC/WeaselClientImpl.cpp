@@ -227,10 +227,15 @@ bool ClientImpl::CommitComposition() {
 }
 
 bool ClientImpl::ClearComposition() {
+  return ClearComposition(0);
+}
+
+bool ClientImpl::ClearComposition(DWORD timeout_ms) {
   if (!_Active())
     return false;
 
-  LRESULT ret = _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId());
+  LRESULT ret = _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId(),
+                             timeout_ms);
   return ret != 0;
 }
 
@@ -557,6 +562,10 @@ bool Client::CommitComposition() {
 
 bool Client::ClearComposition() {
   return m_pImpl->ClearComposition();
+}
+
+bool Client::ClearComposition(DWORD timeout_ms) {
+  return m_pImpl->ClearComposition(timeout_ms);
 }
 
 bool Client::SelectCandidateOnCurrentPage(size_t index) {
