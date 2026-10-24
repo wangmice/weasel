@@ -79,7 +79,6 @@ namespace {
 // deadline.
 constexpr DWORD kServerTransitionTimeoutMs = 45000;
 constexpr DWORD kDeployerOperationTimeoutMs = 15 * 60 * 1000 + 10 * 1000;
-constexpr DWORD kDeployerTerminationWaitMs = 5000;
 constexpr DWORD kElevationCommandTimeoutMs = 60 * 60 * 1000;
 
 enum class DeployerRunResult {
@@ -227,31 +226,19 @@ DeployerRunResult RunDeployer(const std::wstring& dir) {
   }
 
   if (wait_result == WAIT_TIMEOUT) {
-    LOG(ERROR) << "WeaselDeployer exceeded the deployment timeout.";
+    LOG(ERROR) << "WeaselDeployer exceeded the deployment timeout; "
+                  "leaving it to complete to protect user data.";
   } else {
     const DWORD wait_error = GetLastError();
     LOG(ERROR) << "Waiting for WeaselDeployer failed, error: " << wait_error;
   }
 
-  // Deployment mutates Rime data while owning server maintenance. Never roll
-  // back registry/profile state or restart the server until the deployer is
-  // confirmed dead. If termination cannot be confirmed, fail closed and leave
-  // the existing maintenance owner in charge of recovery.
-  if (!TerminateProcess(process, ERROR_TIMEOUT)) {
-    LOG(ERROR) << "Could not terminate failed WeaselDeployer, error: "
-               << GetLastError();
-  }
-
-  const DWORD stopped =
-      WaitForSingleObject(process, kDeployerTerminationWaitMs);
+  // Deployment can rewrite non-transactional Rime configs and dictionaries.
+  // A timeout or failed wait does not confirm the child's exit: do not kill
+  // the deployer or roll back/restart the server while it may still own
+  // maintenance and be modifying user data.
   CloseHandle(process);
-  if (stopped != WAIT_OBJECT_0) {
-    LOG(ERROR) << "WeaselDeployer is still running after termination request; "
-                  "skipping rollback and server restart.";
-    return DeployerRunResult::FailedStillRunning;
-  }
-
-  return DeployerRunResult::FailedStopped;
+  return DeployerRunResult::FailedStillRunning;
 }
 }  // namespace
 
@@ -387,7 +374,7 @@ static int CustomInstall(bool installing) {
   const DeployerRunResult deploy_result = RunDeployer(dir);
   if (deploy_result != DeployerRunResult::Success) {
     if (deploy_result == DeployerRunResult::FailedStillRunning) {
-      // A live deployer may still own maintenance and mutate Rime data. Do not
+      // The deployer may still own maintenance and mutate Rime data. Do not
       // restore registry/profile state or restart WeaselServer underneath it.
       return 1;
     }
