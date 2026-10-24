@@ -94,20 +94,6 @@ class ServerShutdownWatchdog {
   HANDLE cancel_event_ = nullptr;
 };
 
-class SynchronousPipeIoScope {
- public:
-  explicit SynchronousPipeIoScope(std::atomic_bool& pending)
-      : pending_(pending) {
-    pending_.store(true, std::memory_order_release);
-  }
-  ~SynchronousPipeIoScope() {
-    pending_.store(false, std::memory_order_release);
-  }
-
- private:
-  std::atomic_bool& pending_;
-};
-
 bool WaitForPrimaryPipeReady() noexcept {
   const std::wstring pipe_name = GetPipeName();
   const ULONGLONG deadline = GetTickCount64() + kPrimaryPipeReadyTimeoutMs;
@@ -1062,18 +1048,10 @@ void PipeServer::DrainWorkers() {
     for (auto& pair : m_workers) {
       auto& entry = pair.second;
       if (!entry.finished) {
-        // CancelSynchronousIo is thread-wide, not handle-specific. Only use
-        // it while this worker explicitly marks that it is inside the
-        // synchronous pipe ReadFile/WriteFile window; never cancel unrelated
-        // synchronous I/O that a request handler (for example librime) may be
-        // performing on the same worker thread.
-        if (entry.pipe_io_pending &&
-            entry.pipe_io_pending->load(std::memory_order_acquire) &&
-            entry.thread && entry.thread->joinable()) {
-          const auto native_thread = entry.thread->native_handle();
-          if (native_thread)
-            ::CancelSynchronousIo(native_thread);
-        }
+        // Only cancel operations on this connection's pipe handle. A
+        // worker may have left pipe ReadFile/WriteFile and entered librime
+        // since shutdown sampled its state; thread-wide cancellation could
+        // abort unrelated user-dictionary or config file I/O.
         ::CancelIoEx(entry.pipe, NULL);
         ::DisconnectNamedPipe(entry.pipe);
       }
@@ -1104,9 +1082,8 @@ void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
   // close the pipe. Once the thread exists, its slot is guaranteed to exist;
   // because m_workers_mutex is still held, an immediately finishing worker
   // can only enter _MarkWorkerFinished() after thread ownership is published.
-  auto pipe_io_pending = std::make_shared<std::atomic_bool>(false);
-  auto [it, inserted] = m_workers.emplace(
-      worker_id, WorkerEntry{pipe, nullptr, pipe_io_pending, false});
+  auto [it, inserted] =
+      m_workers.emplace(worker_id, WorkerEntry{pipe, nullptr, false});
   if (!inserted)
     throw static_cast<DWORD>(ERROR_ALREADY_EXISTS);
 
@@ -1114,8 +1091,8 @@ void PipeServer::_LaunchWorker(HANDLE pipe, ServerHandler const& handler) {
     // Copy the handler into the worker: it must not reference anything
     // on this thread's stack.
     auto worker = std::make_shared<boost::thread>(
-        [this, worker_id, pipe, pipe_io_pending, handler] {
-          _ProcessPipeThread(worker_id, pipe, pipe_io_pending, handler);
+        [this, worker_id, pipe, handler] {
+          _ProcessPipeThread(worker_id, pipe, handler);
         });
     it->second.thread = std::move(worker);
   } catch (...) {
@@ -1181,22 +1158,14 @@ PipeServer::ServerRunner PipeServer::GetServerRunner(
   return [handler, this]() { Listen(handler); };
 }
 
-void PipeServer::_ProcessPipeThread(
-    WorkerId worker_id,
-    HANDLE pipe,
-    const std::shared_ptr<std::atomic_bool>& pipe_io_pending,
-    ServerHandler const& handler) {
+void PipeServer::_ProcessPipeThread(WorkerId worker_id,
+                                    HANDLE pipe,
+                                    ServerHandler const& handler) {
   try {
     for (;;) {
       Res msg;
-      {
-        SynchronousPipeIoScope io_scope(*pipe_io_pending);
-        _Receive(pipe, &msg, sizeof(msg));
-      }
-      handler(msg, [this, pipe, pipe_io_pending](Msg resp) {
-        SynchronousPipeIoScope io_scope(*pipe_io_pending);
-        _Send(pipe, resp);
-      });
+      _Receive(pipe, &msg, sizeof(msg));
+      handler(msg, [this, pipe](Msg resp) { _Send(pipe, resp); });
     }
   } catch (...) {
   }

@@ -445,25 +445,17 @@ if ($drainStart -lt 0 -or $drainEnd -le $drainStart) {
   throw 'unable to isolate PipeServer::DrainWorkers'
 }
 $drainWorkers = $serverImpl.Substring($drainStart, $drainEnd - $drainStart)
-$cancelSync = $drainWorkers.IndexOf('::CancelSynchronousIo')
-$cancelAsync = $drainWorkers.IndexOf('::CancelIoEx')
-$disconnect = $drainWorkers.IndexOf('::DisconnectNamedPipe')
+$cancelPipe = $drainWorkers.IndexOf('::CancelIoEx(entry.pipe, NULL)')
+$disconnect = $drainWorkers.IndexOf('::DisconnectNamedPipe(entry.pipe)')
 $join = $drainWorkers.IndexOf('worker->join()')
-if ($cancelSync -lt 0 -or $cancelAsync -lt 0 -or $disconnect -lt 0 -or $join -lt 0 -or
-    -not ($cancelSync -lt $cancelAsync -and $cancelAsync -lt $disconnect -and $disconnect -lt $join)) {
-  throw 'worker drain must cancel synchronous I/O, cancel overlapped I/O, disconnect, then join'
+if ($cancelPipe -lt 0 -or $disconnect -lt 0 -or $join -lt 0 -or
+    -not ($cancelPipe -lt $disconnect -and $disconnect -lt $join)) {
+  throw 'worker drain must cancel only pipe-handle I/O, disconnect, then join'
 }
-if ($drainWorkers -notmatch 'entry\.pipe_io_pending[\s\S]*?load\(std::memory_order_acquire\)[\s\S]*?entry\.thread[\s\S]*?native_handle\(\)[\s\S]*?::CancelSynchronousIo') {
-  throw 'worker drain must cancel synchronous I/O only while the owning worker is marked inside pipe I/O'
-}
-$workerStart = $serverImpl.IndexOf('void PipeServer::_ProcessPipeThread')
-if ($workerStart -lt 0) {
-  throw 'unable to isolate PipeServer::_ProcessPipeThread'
-}
-$workerBody = $serverImpl.Substring($workerStart)
-if ($pipeServerHeader -notmatch 'shared_ptr<std::atomic_bool>\s+pipe_io_pending' -or
-    ([regex]::Matches($workerBody, 'SynchronousPipeIoScope\s+io_scope\(\*pipe_io_pending\)')).Count -ne 2) {
-  throw 'worker receive and response send must explicitly mark only their synchronous pipe I/O windows'
+if ($drainWorkers -match '::CancelSynchronousIo\s*\(' -or
+    $serverImpl -match 'SynchronousPipeIoScope|pipe_io_pending' -or
+    $pipeServerHeader -match 'pipe_io_pending') {
+  throw 'worker shutdown must not use thread-wide I/O cancellation or sampled I/O flags'
 }
 if ($serverImpl -notmatch 'ERROR_ACCESS_DENIED[\s\S]*?return') {
   throw 'legacy alias listener must stop after a permanent cross-session access denial'
