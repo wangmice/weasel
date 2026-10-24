@@ -15,6 +15,8 @@ using weasel::tsf::RetryBudget;
 using weasel::tsf::ScheduleFailureAction;
 using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
+using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
+using weasel::tsf::ShouldWaitForAbandonedHandoff;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                    ApplyFailureClass::Retryable,
@@ -59,6 +61,26 @@ static_assert(!ShouldClearCompositionRange(true, false),
               "a stale async end session must never clear committed text");
 static_assert(!ShouldClearCompositionRange(false, true),
               "normal commit teardown must preserve its composition text");
+
+static_assert(ShouldWaitForAbandonedHandoff(false, true, true),
+              "abandoned active handoff must wait for an old-context edit");
+static_assert(!ShouldWaitForAbandonedHandoff(true, true, true),
+              "executed handoffs must not wait");
+static_assert(!ShouldWaitForAbandonedHandoff(false, false, true),
+              "stale handoffs must not pause the next flight");
+static_assert(!ShouldWaitForAbandonedHandoff(false, true, false),
+              "replaced compositions must not be paused");
+
+static_assert(ShouldRetireCandidateOnApplyDispose(false, false, true),
+              "abandoned asynchronous edits must release their candidate UI");
+static_assert(ShouldRetireCandidateOnApplyDispose(true, true, true),
+              "terminal apply failures must release their candidate UI");
+static_assert(!ShouldRetireCandidateOnApplyDispose(true, false, true),
+              "successfully executed edits must not retire a new UIElement");
+static_assert(!ShouldRetireCandidateOnApplyDispose(false, false, false),
+              "a stale edit session must not retire another flight's UI");
+static_assert(!ShouldRetireCandidateOnApplyDispose(false, true, false),
+              "restored retries must keep their candidate UI until handled");
 
 static_assert(
     ShouldPublishCandidateImmediately(true),

@@ -99,6 +99,7 @@ STDMETHODIMP WeaselTSF::Deactivate() {
   // Invalidate every pending keyboard restore before detaching the old TIP.
   ++_keyboardOpenGeneration;
   _DestroyKeyboardOpenWindow();
+  _CancelHandoffWait();
   _InvalidatePendingUI();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
@@ -151,6 +152,7 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
 
   // Treat each TSF activation as a fresh response-apply epoch. This also
   // recovers cleanly from hosts that reactivate after a partial teardown.
+  _CancelHandoffWait();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
   _pCandidateUIContext = nullptr;
@@ -240,7 +242,7 @@ STDMETHODIMP WeaselTSF::OnKillThreadFocus() {
   // Thread focus loss invalidates composition state, not already emitted
   // commit events. _AbortComposition advances the engine epoch and preserves
   // durable queued commits for their original document context.
-  _AbortComposition();
+  _AbortComposition(true, kFocusLossClearTimeoutMs);
   return S_OK;
 }
 BOOL WeaselTSF::_InitThreadFocusSink() {
@@ -281,6 +283,7 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
     _ShowLanguageBar(TRUE);
     _UpdateLanguageBar(_status);
   } else {
+    _CancelHandoffWait();
     _InvalidatePendingUI();
     _responseApplyQueue.Reset();
     _pendingCommit.clear();

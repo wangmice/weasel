@@ -36,6 +36,24 @@ constexpr bool CanRetryApplyFailure(ApplyProgress progress,
          failure == ApplyFailureClass::Retryable && retries < kMaxApplyRetries;
 }
 
+// Destruction without DoEditSession means the host abandoned an asynchronous
+// request. Only its current flight may retire the accepted candidate UI;
+// RestoreFront retries and stale edit sessions must leave it untouched.
+constexpr bool ShouldRetireCandidateOnApplyDispose(bool executed,
+                                                   bool terminalFailure,
+                                                   bool ownsFlight) {
+  return ownsFlight && (terminalFailure || !executed);
+}
+
+// A host may abandon a queued asynchronous handoff without granting an
+// edit lock. Its active flight can arm one old-context edit barrier; no
+// immediate same-stack request should be scheduled on COM destruction.
+constexpr bool ShouldWaitForAbandonedHandoff(bool executed,
+                                             bool ownsFlight,
+                                             bool sameComposition) {
+  return !executed && ownsFlight && sameComposition;
+}
+
 enum class ScheduleFailureAction : std::uint8_t {
   RetryLater,
   Drop,

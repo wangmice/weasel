@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "WeaselTSF.h"
 #include "CandidateList.h"
+#include "AsyncUiPolicy.h"
 
 HRESULT WeaselTSF::_ApplyResponseSnapshot(
     TfEditCookie ec,
@@ -168,6 +169,17 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
         _InvalidatePendingUI();
         return hr;
       }
+    }
+
+    // Host Finalize closes one logical candidate generation. A successful
+    // selection may leave Rime composing (including commit + new preedit).
+    // Do not retire the old element until the response actually reaches the
+    // correct document, and publish the new candidates before BeginUIElement
+    // so a synchronous host query never observes the previous page.
+    if (weasel::tsf::ShouldRenewCandidateUIAfterFinalization(
+            _cand->HasAcceptedFinalization(snapshot.identity.serial),
+            _pCandidateUIContext == pContext, status.composing)) {
+      _RenewCandidateUI(pContext, pendingUIGeneration, *context, status);
     }
 
     if (weasel::tsf::ShouldPublishCandidateImmediately(_cand->IsUIless()))

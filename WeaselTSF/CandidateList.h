@@ -58,6 +58,14 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   bool HasOwner() const { return _tsf != nullptr; }
   void StartUI(com_ptr<ITfContext> pContext);
   void EndUI();
+  // The Rime selection was acknowledged; wait for its TSF response to apply
+  // before retiring the old UIElement or registering the next generation.
+  void MarkFinalizationAccepted(UINT64 responseSerial);
+  bool HasAcceptedFinalization(UINT64 responseSerial) const {
+    return responseSerial != 0 && _uiStarted && _finalization_started &&
+           _finalization_accepted &&
+           _finalization_response_serial == responseSerial;
+  }
   bool IsUIless() const { return _uiStarted && !_pbShow; }
 
   com_ptr<ITfContext> GetContextDocument();
@@ -96,6 +104,10 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
 
   BOOL _pbShow;
   bool _uiStarted = false;
+  bool _registration_in_progress = false;
+  bool _finalization_started = false;
+  bool _finalization_accepted = false;
+  UINT64 _finalization_response_serial = 0;
   weasel::UIStyle _style;
   bool _ui_warmed_up = false;
 

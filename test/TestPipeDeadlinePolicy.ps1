@@ -4,6 +4,8 @@ $repo = Split-Path -Parent $PSScriptRoot
 $pipeCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\PipeChannel.cpp') -Raw
 $pipeHeader = Get-Content -LiteralPath (Join-Path $repo 'include\PipeChannel.h') -Raw
 $clientCpp = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.cpp') -Raw
+$clientImplHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselIPC\WeaselClientImpl.h') -Raw
+$composition = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\Composition.cpp') -Raw
 $clientHeader = Get-Content -LiteralPath (Join-Path $repo 'include\WeaselIPC.h') -Raw
 $tsf = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.cpp') -Raw
 $tsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
@@ -158,6 +160,40 @@ if ($startSessionBody -notmatch 'RemainingTransactionTime\(deadline\)[\s\S]*?WEA
 }
 if ($startSessionBody -notmatch 'RemainingTransactionTime\(deadline\)[\s\S]*?WEASEL_IPC_START_SESSION[\s\S]*?remaining') {
   throw 'START_SESSION must consume only the budget left after Echo/client-info staging'
+}
+
+
+# Focus loss is a synchronous host callback, not a normal state-changing
+# command. Its composition cleanup must not inherit the default 3000 ms IPC
+# wait, while all other _AbortComposition callers retain the default budget.
+if ($tsfHeader -notmatch 'kFocusLossClearTimeoutMs\s*=\s*100' -or
+    $tsfHeader -notmatch '_AbortComposition\(bool\s+clear\s*=\s*true,\s*DWORD\s+clear_timeout_ms\s*=\s*0\)') {
+  throw 'TSF focus cleanup must expose a dedicated 100 ms timeout without changing the default'
+}
+if ($clientHeader -notmatch 'bool\s+ClearComposition\(DWORD\s+timeout_ms\)' -or
+    $clientImplHeader -notmatch 'bool\s+ClearComposition\(DWORD\s+timeout_ms\)' -or
+    $clientCpp -notmatch 'ClientImpl::ClearComposition\(\)[\s\S]*?return\s+ClearComposition\(0\)' -or
+    $clientCpp -notmatch 'ClientImpl::ClearComposition\(DWORD\s+timeout_ms\)[\s\S]*?WEASEL_IPC_CLEAR_COMPOSITION,\s*0,\s*_SessionId\(\),\s*timeout_ms' -or
+    $clientCpp -notmatch 'Client::ClearComposition\(DWORD\s+timeout_ms\)[\s\S]*?m_pImpl->ClearComposition\(timeout_ms\)') {
+  throw 'bounded composition clear must propagate its budget without altering legacy calls'
+}
+if ($composition -notmatch 'void\s+WeaselTSF::_AbortComposition\(bool\s+clear,\s*DWORD\s+clear_timeout_ms\)' -or
+    $composition -notmatch 'm_client\.ClearComposition\(clear_timeout_ms\)') {
+  throw 'composition cleanup must forward the selected clear timeout'
+}
+$lostThreadFocus = $tsf.IndexOf('STDMETHODIMP WeaselTSF::OnKillThreadFocus()')
+$nextThreadFocus = $tsf.IndexOf('BOOL WeaselTSF::_InitThreadFocusSink()', $lostThreadFocus)
+$lostKeyFocus = $keySink.IndexOf('STDMETHODIMP WeaselTSF::OnSetFocus(BOOL fForeground)')
+$nextKeyFocus = $keySink.IndexOf('STDMETHODIMP WeaselTSF::OnTestKeyDown(', $lostKeyFocus)
+if ($lostThreadFocus -lt 0 -or $nextThreadFocus -le $lostThreadFocus -or
+    $lostKeyFocus -lt 0 -or $nextKeyFocus -le $lostKeyFocus) {
+  throw 'unable to isolate TSF focus-loss callbacks'
+}
+$threadFocusBody = $tsf.Substring($lostThreadFocus, $nextThreadFocus - $lostThreadFocus)
+$keyFocusBody = $keySink.Substring($lostKeyFocus, $nextKeyFocus - $lostKeyFocus)
+if ($threadFocusBody -notmatch '_AbortComposition\(true,\s*kFocusLossClearTimeoutMs\)' -or
+    $keyFocusBody -notmatch 'm_client\.FocusOut\(\);\s*_AbortComposition\(true,\s*kFocusLossClearTimeoutMs\)') {
+  throw 'both TSF focus-loss callbacks must use the short composition-clear budget'
 }
 
 Write-Host 'Pipe deadline policy: PASS'

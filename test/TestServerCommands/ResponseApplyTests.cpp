@@ -1,5 +1,6 @@
 #include "../../WeaselTSF/stdafx.h"
 #include "../../WeaselTSF/ResponseApply.h"
+#include "../../WeaselTSF/AsyncUiPolicy.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -9,6 +10,16 @@ namespace {
 
 using weasel::tsf::BuildResponseApplyPlan;
 using weasel::tsf::MakeResponseApplySnapshot;
+using weasel::tsf::ShouldRenewCandidateUIAfterFinalization;
+
+static_assert(ShouldRenewCandidateUIAfterFinalization(true, true, true),
+              "acknowledged selection continuing composition must renew UI");
+static_assert(!ShouldRenewCandidateUIAfterFinalization(true, true, false),
+              "selection ending composition must not reopen candidates");
+static_assert(!ShouldRenewCandidateUIAfterFinalization(true, false, true),
+              "a stale response must not reopen UI in another context");
+static_assert(!ShouldRenewCandidateUIAfterFinalization(false, true, true),
+              "ambiguous/legacy-unconfirmed selection must not renew UI");
 
 static_assert(
     [] {

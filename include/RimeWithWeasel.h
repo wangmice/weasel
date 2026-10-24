@@ -73,7 +73,7 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                                EatLine eat);
   virtual void CommitComposition(WeaselSessionId ipc_id, EatLine eat);
   virtual void ClearComposition(WeaselSessionId ipc_id);
-  virtual void SelectCandidateOnCurrentPage(size_t index,
+  virtual bool SelectCandidateOnCurrentPage(size_t index,
                                             WeaselSessionId ipc_id,
                                             EatLine eat);
   virtual bool HighlightCandidateOnCurrentPage(size_t index,

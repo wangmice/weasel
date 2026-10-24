@@ -323,7 +323,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
   // its singleton before waiting for the recovery worker's lifecycle lock.
   {
     weasel::Client client;
-    const bool connected = client.Connect();
+    bool connected = client.Connect();
 
     weasel::ServerLifecycleLock restart_lifecycle;
     if ((connected || running_server) && !restart_lifecycle.Acquire(0)) {
@@ -343,7 +343,10 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
         return 1;
       }
 
+      // The authenticated Starting generation has exited. The original
+      // pipe connection is now stale and must not trigger rediscovery.
       client.Disconnect();
+      connected = false;
       CloseHandle(running_server);
       running_server = nullptr;
       running_window = nullptr;

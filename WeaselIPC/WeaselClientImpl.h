@@ -32,7 +32,9 @@ class ClientImpl {
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   bool CommitComposition();
   bool ClearComposition();
+  bool ClearComposition(DWORD timeout_ms);
   bool SelectCandidateOnCurrentPage(size_t index);
+  CandidateSelectResult SelectCandidateOnCurrentPageEx(size_t index);
   bool HighlightCandidateOnCurrentPage(size_t index);
   bool ChangePage(bool backward);
   void UpdateInputPosition(RECT const& rc);

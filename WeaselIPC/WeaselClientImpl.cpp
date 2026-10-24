@@ -227,19 +227,53 @@ bool ClientImpl::CommitComposition() {
 }
 
 bool ClientImpl::ClearComposition() {
+  return ClearComposition(0);
+}
+
+bool ClientImpl::ClearComposition(DWORD timeout_ms) {
   if (!_Active())
     return false;
 
-  LRESULT ret = _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId());
+  LRESULT ret =
+      _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId(), timeout_ms);
   return ret != 0;
 }
 
 bool ClientImpl::SelectCandidateOnCurrentPage(size_t index) {
-  if (!_Active())
-    return false;
-  LRESULT ret = _SendMessage(WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, index,
-                             _SessionId());
-  return ret != 0;
+  const auto result = SelectCandidateOnCurrentPageEx(index);
+  return result == CandidateSelectResult::Selected ||
+         result == CandidateSelectResult::LegacyResponse;
+}
+
+CandidateSelectResult ClientImpl::SelectCandidateOnCurrentPageEx(size_t index) {
+  const UINT request_session = _SessionId();
+  if (!_Connected() || request_session == 0)
+    return CandidateSelectResult::NotDelivered;
+
+  const UINT64 previous_serial = channel.ResponseSerial();
+  DWORD result = 0;
+  try {
+    PipeMessage request{WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE,
+                        static_cast<DWORD>(index), request_session};
+    result = channel.Transact(request, kStateChangingTransactionTimeoutMs);
+  } catch (const PipeTransactionError& error) {
+    _ClearSessionIdIf(request_session);
+    return error.request_may_have_been_delivered
+               ? CandidateSelectResult::Ambiguous
+               : CandidateSelectResult::NotDelivered;
+  } catch (...) {
+    _ClearSessionIdIf(request_session);
+    return CandidateSelectResult::Ambiguous;
+  }
+
+  if (!_Connected() || _SessionId() != request_session)
+    return CandidateSelectResult::Ambiguous;
+  if (result == 1)
+    return CandidateSelectResult::Selected;
+  // Old servers return zero even after selecting and emitting a response.
+  if (result == 0 && channel.ResponseSerial() != previous_serial)
+    return CandidateSelectResult::LegacyResponse;
+  return CandidateSelectResult::Rejected;
 }
 
 bool ClientImpl::HighlightCandidateOnCurrentPage(size_t index) {
@@ -559,8 +593,16 @@ bool Client::ClearComposition() {
   return m_pImpl->ClearComposition();
 }
 
+bool Client::ClearComposition(DWORD timeout_ms) {
+  return m_pImpl->ClearComposition(timeout_ms);
+}
+
 bool Client::SelectCandidateOnCurrentPage(size_t index) {
   return m_pImpl->SelectCandidateOnCurrentPage(index);
+}
+
+CandidateSelectResult Client::SelectCandidateOnCurrentPageEx(size_t index) {
+  return m_pImpl->SelectCandidateOnCurrentPageEx(index);
 }
 
 bool Client::HighlightCandidateOnCurrentPage(size_t index) {

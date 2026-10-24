@@ -196,6 +196,9 @@ STDMETHODIMP CCandidateList::GetCurrentPage(UINT* puPage) {
 STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
   if (!_tsf)
     return E_UNEXPECTED;
+  if ((!_uiStarted && !_registration_in_progress) || !_pContextDocument ||
+      _finalization_started)
+    return E_FAIL;
   auto& cinfo = _ui->ctx().cinfo;
   // Reject indices without a candidate: highlighted feeds fixed-size arrays
   // downstream (GetCandidateRect). Leaving the previous selection intact on
@@ -207,8 +210,59 @@ STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
 }
 
 STDMETHODIMP CCandidateList::Finalize(void) {
+  if (!_tsf)
+    return E_UNEXPECTED;
+  // A host can call Finalize synchronously from BeginUIElement. Until
+  // registration returns, no valid UIElement ID exists to end and the
+  // result of an eventual selection cannot be reported to this caller.
+  // Reject early confirmation instead of queuing it and returning S_OK.
+  if (_registration_in_progress)
+    return E_FAIL;
+  if (!_uiStarted || !_pContextDocument || _finalization_started ||
+      _tsf->_pCandidateUIContext != _pContextDocument)
+    return E_FAIL;
+
+  // An externally retained UIElement must not commit into a different
+  // focused document after its original composition lost focus.
+  com_ptr<ITfThreadMgr> thread_mgr = _tsf->_GetThreadMgr();
+  com_ptr<ITfDocumentMgr> focused_document;
+  com_ptr<ITfContext> focused_context;
+  if (!thread_mgr || FAILED(thread_mgr->GetFocus(&focused_document)) ||
+      !focused_document || FAILED(focused_document->GetTop(&focused_context)) ||
+      focused_context != _pContextDocument)
+    return E_FAIL;
+
+  const auto& cinfo = _ui->ctx().cinfo;
+  if (cinfo.highlighted < 0 ||
+      static_cast<size_t>(cinfo.highlighted) >= cinfo.candies.size())
+    return E_FAIL;
+
+  // Set the guard before transport/UI updates: EndUIElement may reenter this
+  // COM object, and one candidate generation must not commit twice.
+  _finalization_started = true;
+  _finalization_accepted = false;
+  _finalization_response_serial = 0;
+  const auto result = _tsf->_SelectCandidateOnCurrentPage(
+      static_cast<size_t>(cinfo.highlighted), _pContextDocument);
+  if (result == CandidateSelectResult::Selected) {
+    // The TSF response may already have applied synchronously, possibly
+    // starting the next candidate generation. Do not destroy that new UI.
+    // The response-apply path closes this generation, and reopens one only
+    // if Rime is still composing.
+    return S_OK;
+  }
+  if (result == CandidateSelectResult::NotDelivered ||
+      result == CandidateSelectResult::Rejected) {
+    // No candidate was selected. The host may correct its selection and retry.
+    _finalization_started = false;
+    _finalization_accepted = false;
+    _finalization_response_serial = 0;
+    return E_FAIL;
+  }
+  // The candidate may have been selected despite a lost response: do not
+  // leave a permanently locked UI or permit the host to submit it twice.
   Destroy();
-  return S_OK;
+  return E_FAIL;
 }
 
 STDMETHODIMP CCandidateList::Abort(void) {
@@ -220,11 +274,15 @@ STDMETHODIMP CCandidateList::Abort(void) {
 }
 
 STDMETHODIMP CCandidateList::SetIntegrationStyle(GUID guidIntegrationStyle) {
-  return S_OK;
+  // We do not implement search-box keyboard integration. Advertising support
+  // would cause the host to route keys into an unimplemented OnKeyDown.
+  return _tsf ? E_NOTIMPL : E_UNEXPECTED;
 }
 
 STDMETHODIMP CCandidateList::GetSelectionStyle(
     TfIntegratableCandidateListSelectionStyle* ptfSelectionStyle) {
+  if (!ptfSelectionStyle)
+    return E_POINTER;
   *ptfSelectionStyle = _selectionStyle;
   return S_OK;
 }
@@ -234,10 +292,10 @@ STDMETHODIMP CCandidateList::OnKeyDown(WPARAM wParam,
                                        BOOL* pIsEaten) {
   if (!pIsEaten)
     return E_POINTER;
-  *pIsEaten = _tsf != nullptr;
-  if (!_tsf)
-    return E_UNEXPECTED;
-  return S_OK;
+  // No integrated key handler is installed; leave navigation/confirmation to
+  // the host rather than claiming to have processed the key.
+  *pIsEaten = FALSE;
+  return _tsf ? S_OK : E_UNEXPECTED;
 }
 
 STDMETHODIMP CCandidateList::ShowCandidateNumbers(BOOL* pIsShow) {
@@ -246,10 +304,8 @@ STDMETHODIMP CCandidateList::ShowCandidateNumbers(BOOL* pIsShow) {
 }
 
 STDMETHODIMP CCandidateList::FinalizeExactCompositionString() {
-  if (!_tsf)
-    return E_UNEXPECTED;
-  _tsf->_AbortComposition(false);
-  return E_NOTIMPL;
+  // Unsupported: do not mutate composition state while reporting E_NOTIMPL.
+  return _tsf ? E_NOTIMPL : E_UNEXPECTED;
 }
 
 void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
@@ -398,10 +454,22 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
   // BeginUIElement may synchronously query GetDocumentMgr, so bind the exact
   // response/composition target before registering the UIElement.
   _pContextDocument = pContext;
+  _registration_in_progress = true;
+  _finalization_started = false;
+  _finalization_accepted = false;
+  _finalization_response_serial = 0;
   _pbShow = TRUE;
 
-  if (FAILED(pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid))) {
+  const HRESULT begin_result =
+      pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
+  _registration_in_progress = false;
+  if (FAILED(begin_result)) {
     _pContextDocument = nullptr;
+    return;
+  }
+  if (_pContextDocument != pContext) {
+    // Focus/teardown may have reentered during BeginUIElement.
+    pUIElementMgr->EndUIElement(uiid);
     return;
   }
   _uiStarted = true;
@@ -419,6 +487,8 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
 }
 
 void CCandidateList::EndUI() {
+  _finalization_accepted = false;
+  _finalization_response_serial = 0;
   if (!_uiStarted) {
     _pContextDocument = nullptr;
     return;
@@ -469,15 +539,56 @@ void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {
   _cand->UpdateUI(ctx, status);
 }
 
+void CCandidateList::MarkFinalizationAccepted(UINT64 responseSerial) {
+  if (_tsf && _uiStarted && _finalization_started && responseSerial != 0) {
+    _finalization_accepted = true;
+    _finalization_response_serial = responseSerial;
+  }
+}
+
 void WeaselTSF::_StartUI(com_ptr<ITfContext> pContext) {
+  // BeginUIElement may synchronously invoke SetSelection/Finalize. Publish
+  // ownership before the call, then reconcile with the actual UI state.
+  _pCandidateUIContext = pContext;
   _cand->StartUI(pContext);
-  if (pContext)
-    _pCandidateUIContext = pContext;
+  _pCandidateUIContext = _cand->GetContextDocument();
 }
 
 void WeaselTSF::_EndUI() {
   _cand->EndUI();
   _pCandidateUIContext = nullptr;
+}
+
+void WeaselTSF::_RenewCandidateUI(com_ptr<ITfContext> pContext,
+                                  UINT64 pendingUIGeneration,
+                                  const Context& ctx,
+                                  const Status& status) {
+  // A previously registered UIElement may remain referenced by the host
+  // after EndUIElement. Never register that same COM instance again: a late
+  // Finalize on the old pointer could otherwise select the next generation.
+  const UIStyle nextStyle = _cand->style();
+  com_ptr<CCandidateList> oldCandidate = _cand;
+  _EndUI();
+  oldCandidate->DetachOwner();
+
+  com_ptr<CCandidateList> newCandidate;
+  newCandidate.Attach(new CCandidateList(this));
+  _cand = newCandidate;
+  _cand->style() = nextStyle;
+
+  // Publish the new response into the new object's UI before BeginUIElement,
+  // which may query its candidate strings synchronously.
+  _FlushPendingUI(pendingUIGeneration);
+  _StartUI(pContext);
+  if (_cand == newCandidate && newCandidate->HasOwner())
+    _UpdateUI(ctx, status);
+}
+
+void WeaselTSF::_RetireUnappliedCandidateFinalization(ITfContext* context,
+                                                      UINT64 responseSerial) {
+  if (_cand->HasAcceptedFinalization(responseSerial) &&
+      _pCandidateUIContext == context)
+    _EndUI();
 }
 
 void WeaselTSF::_ShowUI() {
@@ -497,12 +608,46 @@ void WeaselTSF::_DeleteCandidateList() {
   _pCandidateUIContext = nullptr;
 }
 
-void WeaselTSF::_SelectCandidateOnCurrentPage(size_t index) {
-  m_client.SelectCandidateOnCurrentPage(index);
-  // The click response itself carries the commit text and the updated
-  // context; feed it through the edit-session pipeline like the hover and
-  // page handlers do.
-  _UpdateComposition(_pEditSessionContext);
+CandidateSelectResult WeaselTSF::_SelectCandidateOnCurrentPage(
+    size_t index,
+    com_ptr<ITfContext> context) {
+  if (!context || !m_client.IsSessionActive())
+    return CandidateSelectResult::NotDelivered;
+
+  const UINT64 previous_serial = m_client.ResponseSerial();
+  const auto result = m_client.SelectCandidateOnCurrentPageEx(index);
+  if (result == CandidateSelectResult::NotDelivered ||
+      result == CandidateSelectResult::Rejected ||
+      result == CandidateSelectResult::Ambiguous)
+    return result;
+
+  const UINT64 received_serial = m_client.ResponseSerial();
+  if (received_serial == previous_serial)
+    return CandidateSelectResult::Ambiguous;
+
+  // Determine acceptance before scheduling the response: RequestEditSession
+  // may execute synchronously and must know whether this confirmation was
+  // actually acknowledged before it retires/reopens a UIElement.
+  const UINT64 previous_parsed_serial = _parsedSerial;
+  const size_t previous_commit_length = _pendingCommit.size();
+  _ConsumeResponseIfFresh();
+  if (_parsedSerial != received_serial)
+    return CandidateSelectResult::Ambiguous;
+
+  // Legacy servers return zero even for accepted selections. Without their
+  // explicit acknowledgement, only fresh committed text proves success.
+  const bool accepted = result == CandidateSelectResult::Selected ||
+                        (result == CandidateSelectResult::LegacyResponse &&
+                         _pendingCommit.size() > previous_commit_length);
+  if (accepted)
+    _cand->MarkFinalizationAccepted(received_serial);
+
+  // Even an unconfirmed legacy reply may contain updated Rime state. Always
+  // enqueue the parsed response; only acknowledged confirmations renew the
+  // UIElement generation.
+  _UpdateComposition(context, previous_parsed_serial);
+  return accepted ? CandidateSelectResult::Selected
+                  : CandidateSelectResult::Ambiguous;
 }
 
 void WeaselTSF::_HandleMousePageEvent(bool* const nextPage,
@@ -548,7 +693,9 @@ void WeaselTSF::HandleUICallback(size_t* const sel,
                                  bool* const next,
                                  bool* const scroll_next) {
   if (sel)
-    _SelectCandidateOnCurrentPage(*sel);
+    _SelectCandidateOnCurrentPage(*sel, _pCandidateUIContext
+                                            ? _pCandidateUIContext
+                                            : _pEditSessionContext);
   else if (hov)
     _HandleMouseHoverEvent(*hov);
   else if (next || scroll_next)

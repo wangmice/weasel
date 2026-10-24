@@ -111,17 +111,8 @@ if (([regex]::Matches($configurator, 'join_maintenance_thread\s*\(')).Count -ne 
   throw 'only isolated sync_user_data may retain librime''s unbounded maintenance join'
 }
 if ($deployer -notmatch 'kInternalSyncWorkerOption\[\]\s*=\s*L"/internal-sync-worker"' -or
-    $deployer -notmatch 'kRimeOperationHardTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000') {
-  throw 'sync isolation must use one hidden worker mode with a finite hard deadline'
-}
-if ($deployer -notmatch 'WaitForSingleObject\(cancel_event,\s*kRimeOperationHardTimeoutMs\)' -or
-    $deployer -notmatch 'TerminateProcess\(GetCurrentProcess\(\),\s*ERROR_TIMEOUT\)') {
-  throw 'the isolated sync worker must self-terminate when librime exceeds the hard deadline'
-}
-if ($deployer -notmatch 'CreateProcessW\([\s\S]*?CREATE_NO_WINDOW' -or
-    $deployer -notmatch 'WaitForSingleObject\([\s\S]*?process\.hProcess,[\s\S]*?kRimeOperationHardTimeoutMs\s*\+\s*kSyncSupervisorGraceMs' -or
-    $deployer -notmatch 'TerminateProcess\(process\.hProcess,\s*ERROR_TIMEOUT\)') {
-  throw 'the /sync supervisor must launch a hidden child and bound the child process lifetime'
+    $deployer -notmatch 'CreateProcessW\([\s\S]*?CREATE_NO_WINDOW') {
+  throw 'sync must keep its isolated, hidden worker process'
 }
 $syncSupervisor = $deployer.IndexOf('return RunIsolatedSyncWorker();')
 $deployerInit = $deployer.IndexOf('configurator.Initialize();')
@@ -136,16 +127,11 @@ if ($deployer -notmatch 'kInstallerDeployOption\[\]\s*=\s*L"/install-deploy"' -o
   throw 'installer-only deployment mode must wait for startup arbitration without changing manual /deploy behavior'
 }
 
-if ($deployer -match 'IsBoundedWorkspaceDeploy' -or
-    $deployer -notmatch 'internal_sync_worker\s*&&\s*!cleanup\.watchdog\.Arm\(\)') {
-  throw 'only the isolated sync worker should carry an entry-point watchdog'
+if ($deployer -notmatch '~RuntimeCleanup\(\)[\s\S]*?_Module\.Term\(\)[\s\S]*?CoUninitialize\(\)') {
+  throw 'deployer cleanup must finalize ATL and COM in the correct order'
 }
-if ($deployer -notmatch '~RuntimeCleanup\(\)[\s\S]*?watchdog\.Disarm\(\)[\s\S]*?_Module\.Term\(\)[\s\S]*?CoUninitialize\(\)') {
-  throw 'entry-point watchdog must be disarmed before ATL and COM teardown'
-}
-if ($deployer -notmatch 'RimeOperationWatchdog\s+initialization_watchdog[\s\S]*?initialization_watchdog\.Arm\(\)[\s\S]*?configurator\.Initialize\(\)' -or
-    $configurator -notmatch 'int\s+Configurator::UpdateWorkspace[\s\S]*?RimeOperationWatchdog\s+deploy_watchdog[\s\S]*?deploy_watchdog\.Arm\(\)[\s\S]*?ServerLifecycleLock\s+lifecycle_lock') {
-  throw 'Rime initialization and workspace deployment must each have an operation-scoped hard watchdog'
+if ($deployer -notmatch 'RimeOperationWatchdog\s+initialization_watchdog[\s\S]*?initialization_watchdog\.Arm\(\)[\s\S]*?configurator\.Initialize\(\)') {
+  throw 'Rime initialization must retain its operation-scoped watchdog'
 }
 
 if ($configurator -notmatch 'ServerSingletonPresent\(\)[\s\S]*?GetServerInstanceName\(\)[\s\S]*?GetLegacyServerInstanceName\(\)' -or

@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include <WeaselUtility.h>
 #include <WeaselIPC.h>
+#include <cstdlib>
 #include <fstream>
 #include <vector>
 #include "WeaselDeployer.h"
@@ -15,31 +16,12 @@ namespace {
 constexpr wchar_t kInternalSyncWorkerOption[] = L"/internal-sync-worker";
 constexpr wchar_t kInstallerDeployOption[] = L"/install-deploy";
 constexpr DWORD kRimeOperationHardTimeoutMs = 15 * 60 * 1000;
-constexpr DWORD kSyncSupervisorGraceMs = 10 * 1000;
-constexpr DWORD kSyncTerminationWaitMs = 5 * 1000;
-
-DWORD WINAPI RimeOperationWatchdogProc(LPVOID param) noexcept {
-  HANDLE cancel_event = static_cast<HANDLE>(param);
-  const DWORD wait_result =
-      WaitForSingleObject(cancel_event, kRimeOperationHardTimeoutMs);
-  CloseHandle(cancel_event);
-
-  if (wait_result != WAIT_OBJECT_0) {
-    // librime deployment work is not cancellable. Once the hard deadline
-    // expires, process exit is the only boundary that can prove local Rime
-    // work has stopped before WeaselServer is allowed to recover maintenance.
-    TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
-  }
-  return 0;
-}
+constexpr DWORD kSyncSupervisorSoftTimeoutMs = 15 * 60 * 1000;
 
 struct RuntimeCleanup {
   bool com_initialized = false;
   bool module_initialized = false;
-  RimeOperationWatchdog watchdog;
-
   ~RuntimeCleanup() {
-    watchdog.Disarm();
     if (module_initialized)
       _Module.Term();
     if (com_initialized)
@@ -85,43 +67,34 @@ int RunIsolatedSyncWorker() {
   }
 
   CloseHandle(process.hThread);
-  const DWORD wait_result = WaitForSingleObject(
-      process.hProcess, kRimeOperationHardTimeoutMs + kSyncSupervisorGraceMs);
-  if (wait_result == WAIT_OBJECT_0) {
-    DWORD exit_code = ERROR_GEN_FAILURE;
-    const bool got_exit_code =
-        GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
-    CloseHandle(process.hProcess);
-    if (!got_exit_code) {
-      LOG(ERROR) << "Could not read isolated Rime sync worker exit code.";
-      return 1;
-    }
-    return exit_code == 0 ? 0 : 1;
-  }
-
+  DWORD wait_result =
+      WaitForSingleObject(process.hProcess, kSyncSupervisorSoftTimeoutMs);
   if (wait_result == WAIT_TIMEOUT) {
-    LOG(ERROR) << "Isolated Rime sync worker exceeded the hard timeout.";
-  } else {
-    const DWORD wait_error = GetLastError();
+    // librime synchronizes dictionaries incrementally; terminating the
+    // worker could leave an incomplete merge or a truncated config file.
+    LOG(WARNING) << "Isolated Rime sync exceeded the soft timeout; waiting "
+                    "for completion to protect user data.";
+    wait_result = WaitForSingleObject(process.hProcess, INFINITE);
+  }
+  if (wait_result != WAIT_OBJECT_0) {
     LOG(ERROR) << "Waiting for isolated Rime sync worker failed, error: "
-               << wait_error;
+               << (wait_result == WAIT_FAILED ? GetLastError()
+                                              : ERROR_GEN_FAILURE);
+    // The worker may still be alive; its lifecycle lock continues to
+    // serialize Rime data mutations independently of the supervisor.
+    CloseHandle(process.hProcess);
+    return 1;
   }
 
-  // Fail closed on any supervisor wait anomaly. Do not resume maintenance
-  // here; only confirmed worker exit lets WeaselServer's owner-exit recovery
-  // decide whether it is safe to reinitialize Rime.
-  if (!TerminateProcess(process.hProcess, ERROR_TIMEOUT)) {
-    LOG(ERROR) << "Could not terminate failed Rime sync worker, error: "
-               << GetLastError();
-  }
-  const DWORD terminated =
-      WaitForSingleObject(process.hProcess, kSyncTerminationWaitMs);
-  if (terminated != WAIT_OBJECT_0) {
-    LOG(ERROR) << "Failed Rime sync worker did not exit promptly.";
-  }
-
+  DWORD exit_code = ERROR_GEN_FAILURE;
+  const bool got_exit_code =
+      GetExitCodeProcess(process.hProcess, &exit_code) != FALSE;
   CloseHandle(process.hProcess);
-  return 1;
+  if (!got_exit_code) {
+    LOG(ERROR) << "Could not read isolated Rime sync worker exit code.";
+    return 1;
+  }
+  return exit_code == 0 ? 0 : 1;
 }
 }  // namespace
 
@@ -129,38 +102,61 @@ RimeOperationWatchdog::~RimeOperationWatchdog() {
   Disarm();
 }
 
+DWORD WINAPI RimeOperationWatchdog::ThreadProc(LPVOID context) noexcept {
+  auto* watchdog = static_cast<RimeOperationWatchdog*>(context);
+  const DWORD wait_result =
+      WaitForSingleObject(watchdog->cancel_event_, kRimeOperationHardTimeoutMs);
+  if (wait_result != WAIT_OBJECT_0) {
+    Decision expected = Decision::Armed;
+    if (watchdog->decision_.compare_exchange_strong(
+            expected, Decision::Firing, std::memory_order_acq_rel)) {
+      // Only the thread that owns the timeout decision may terminate.
+      // An already-disarmed watchdog must never kill a later operation.
+      TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+      std::abort();  // Fail closed if process termination unexpectedly returns.
+    }
+  }
+  return 0;
+}
+
 bool RimeOperationWatchdog::Arm() noexcept {
-  if (cancel_event_)
+  if (thread_)
     return true;
 
   HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!cancel_event)
     return false;
 
-  HANDLE watchdog_event = nullptr;
-  if (!DuplicateHandle(GetCurrentProcess(), cancel_event, GetCurrentProcess(),
-                       &watchdog_event, SYNCHRONIZE, FALSE, 0)) {
-    CloseHandle(cancel_event);
-    return false;
-  }
-
-  HANDLE thread = CreateThread(nullptr, 0, RimeOperationWatchdogProc,
-                               watchdog_event, 0, nullptr);
-  if (!thread) {
-    CloseHandle(watchdog_event);
-    CloseHandle(cancel_event);
-    return false;
-  }
-
-  CloseHandle(thread);
   cancel_event_ = cancel_event;
+  decision_.store(Decision::Armed, std::memory_order_release);
+  thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
+  if (!thread_) {
+    decision_.store(Decision::Disarmed, std::memory_order_release);
+    CloseHandle(cancel_event_);
+    cancel_event_ = nullptr;
+    return false;
+  }
   return true;
 }
 
 void RimeOperationWatchdog::Disarm() noexcept {
-  if (!cancel_event_)
+  if (!thread_)
     return;
-  SetEvent(cancel_event_);
+
+  Decision expected = Decision::Armed;
+  const bool disarmed = decision_.compare_exchange_strong(
+      expected, Decision::Disarmed, std::memory_order_acq_rel);
+  if (disarmed && !SetEvent(cancel_event_))
+    std::abort();
+
+  // This join is on the dedicated watchdog, not a librime worker. When
+  // disarm wins, it ensures the old thread is gone before returning.
+  const DWORD joined = WaitForSingleObject(thread_, INFINITE);
+  if (joined != WAIT_OBJECT_0 || !disarmed)
+    std::abort();  // A committed termination must not be reported as disarmed.
+
+  CloseHandle(thread_);
+  thread_ = nullptr;
   CloseHandle(cancel_event_);
   cancel_event_ = nullptr;
 }
@@ -221,10 +217,6 @@ static void DetachGuiConsole() {
 int wmain(int argc, wchar_t* argv[]) {
   const bool internal_sync_worker = IsInternalSyncWorker(argc, argv);
   RuntimeCleanup cleanup;
-  if (internal_sync_worker && !cleanup.watchdog.Arm()) {
-    LOG(ERROR) << "Could not arm Rime maintenance watchdog.";
-    return 1;
-  }
 
   if (!IsDictionaryCli(argc, argv)) {
     // GUI entry points are launched from the tray or Explorer. Keep those

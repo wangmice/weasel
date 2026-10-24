@@ -59,6 +59,8 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
   // the bounded retry budget recursively inside the same lock stack.
   if (_responseApplyQueue.ConsumeRetryRequest())
     _ScheduleNextResponseApply(false);
+  if (_handoffWaitPauseToken != 0 && _handoffWaitContext == pContext)
+    _ResumeHandoffWait();
   return S_OK;
 }
 

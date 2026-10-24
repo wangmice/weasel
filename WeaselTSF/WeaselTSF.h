@@ -169,6 +169,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                             com_ptr<ITfComposition> pComposition,
                             const std::wstring& text);
   void _UpdateComposition(com_ptr<ITfContext> pContext);
+  // Variant for call sites that had to parse the response before scheduling
+  // TSF apply (candidate confirmation may apply synchronously).
+  void _UpdateComposition(com_ptr<ITfContext> pContext,
+                          UINT64 previously_parsed_serial);
   bool _ConsumeResponse(LPWSTR buffer, DWORD length);
   void _ConsumeResponseIfFresh();
   HRESULT _ApplyResponseSnapshot(TfEditCookie ec,
@@ -197,7 +201,11 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // Publish UI data only for the extent request that owns this generation.
   void _FlushPendingUI(UINT64 pendingUIGeneration);
   void _FinalizeComposition();
-  void _AbortComposition(bool clear = true);
+  void _WaitForHandoffEdit(com_ptr<ITfContext> context,
+                           com_ptr<ITfComposition> composition);
+  void _ResumeHandoffWait();
+  void _CancelHandoffWait();
+  void _AbortComposition(bool clear = true, DWORD clear_timeout_ms = 0);
 
   /* Language bar */
   HWND _GetFocusedContextWindow();
@@ -210,8 +218,16 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _UpdateUI(const weasel::Context& ctx, const weasel::Status& status);
   void _StartUI(com_ptr<ITfContext> pContext = nullptr);
   void _EndUI();
+  void _RenewCandidateUI(com_ptr<ITfContext> pContext,
+                         UINT64 pendingUIGeneration,
+                         const weasel::Context& ctx,
+                         const weasel::Status& status);
   void _ShowUI();
   void _HideUI();
+  // A confirmed candidate selection with an unapplyable TSF response must
+  // retire its old UIElement instead of leaving Finalize permanently locked.
+  void _RetireUnappliedCandidateFinalization(ITfContext* context,
+                                             UINT64 responseSerial);
   com_ptr<ITfContext> _GetUIContextDocument();
 
   /* Display Attribute */
@@ -232,11 +248,16 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
  private:
   friend class WeaselTSFTestAccess;
+  friend class CCandidateList;
 
   // A healthy physical key should never let a wedged server pin the host
   // callback for the pipe's one-second default. This only changes the wait
   // bound; the successful hot path performs the same single IPC transaction.
   static constexpr DWORD kKeyEventTransactionTimeoutMs = 100;
+
+  // Losing focus runs synchronously inside a host callback. Keep only this
+  // composition-clear IPC on a short budget; ordinary clears retain 3000 ms.
+  static constexpr DWORD kFocusLossClearTimeoutMs = 100;
 
   // Keep transport discovery/reconnect on the physical-key path very short so
   // a missing or dead server cannot pin the host UI thread.
@@ -250,7 +271,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   static constexpr DWORD kSessionEstablishmentTimeoutMs = 1000;
 
   /* ui callback functions private */
-  void _SelectCandidateOnCurrentPage(const size_t index);
+  weasel::CandidateSelectResult _SelectCandidateOnCurrentPage(
+      size_t index,
+      com_ptr<ITfContext> context);
   void _HandleMouseHoverEvent(const size_t index);
   void _HandleMousePageEvent(bool* const nextPage, bool* const scrollNextPage);
   /* TSF Related */
@@ -400,6 +423,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   UINT64 _parsedSerial = 0;
   weasel::tsf::SerialApplyQueue<std::shared_ptr<ResponseApplyRequest>>
       _responseApplyQueue;
+  // A dropped asynchronous handoff waits for an old-context edit notification.
+  // The barrier is not a second TSF composition or a cleanup edit session.
+  UINT64 _handoffWaitPauseToken = 0;
+  com_ptr<ITfContext> _handoffWaitContext;
   // 复用的响应解析器：deserializer 注册表只建一次（Require 幂等），
   // 每次解析前重指目标；目标指针仅在 _ConsumeResponse 执行期间有效
   weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr, nullptr};

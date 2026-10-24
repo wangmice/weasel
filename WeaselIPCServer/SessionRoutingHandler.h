@@ -130,11 +130,11 @@ class SessionRoutingHandler : public RequestHandler {
       backend_->ClearComposition(session_id);
   }
 
-  void SelectCandidateOnCurrentPage(size_t index,
+  bool SelectCandidateOnCurrentPage(size_t index,
                                     DWORD session_id,
                                     EatLine eat) override {
-    if (backend_)
-      backend_->SelectCandidateOnCurrentPage(index, session_id, eat);
+    return backend_ &&
+           backend_->SelectCandidateOnCurrentPage(index, session_id, eat);
   }
 
   bool HighlightCandidateOnCurrentPage(size_t index,
