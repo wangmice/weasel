@@ -60,7 +60,7 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
   if (_responseApplyQueue.ConsumeRetryRequest())
     _ScheduleNextResponseApply(false);
   if (_abandonedHandoffPauseToken != 0 && _abandonedHandoffContext == pContext)
-    _ScheduleAbandonedHandoffCleanup();
+    _ScheduleAbandonedHandoffCleanup(true);
   return S_OK;
 }
 

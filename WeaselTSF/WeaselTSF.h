@@ -205,9 +205,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                                      com_ptr<ITfComposition> composition);
   bool _IsAbandonedHandoffCleanupCurrent(ITfComposition* composition,
                                          UINT64 pauseToken) const;
-  void _ScheduleAbandonedHandoffCleanup();
+  void _ScheduleAbandonedHandoffCleanup(bool afterOldContextEdit = false);
   void _OnAbandonedHandoffCleanupReleased(ITfComposition* composition,
                                           UINT64 pauseToken);
+  void _OnAbandonedHandoffEndStarted(ITfComposition* composition,
+                                     UINT64 pauseToken);
+  void _OnAbandonedHandoffEndReturned(ITfComposition* composition,
+                                      UINT64 pauseToken, HRESULT hr);
   void _FinishAbandonedHandoffCleanup(ITfComposition* composition,
                                       UINT64 pauseToken);
   void _CancelAbandonedHandoffCleanup();
@@ -437,6 +441,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   com_ptr<ITfComposition> _abandonedHandoffComposition;
   unsigned _abandonedHandoffAttempts = 0;
   bool _abandonedHandoffRequestOutstanding = false;
+  bool _abandonedHandoffDeferred = false;
+  ULONGLONG _abandonedHandoffDeferredSinceTick = 0;
+  bool _abandonedHandoffEndCallActive = false;
+  bool _abandonedHandoffHostTerminated = false;
   // 复用的响应解析器：deserializer 注册表只建一次（Require 幂等），
   // 每次解析前重指目标；目标指针仅在 _ConsumeResponse 执行期间有效
   weasel::ResponseParser _parser{nullptr, nullptr, nullptr, nullptr, nullptr};

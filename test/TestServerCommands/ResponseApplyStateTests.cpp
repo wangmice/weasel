@@ -18,6 +18,8 @@ using weasel::tsf::ShouldPublishCandidateImmediately;
 using weasel::tsf::ShouldRetireAbandonedHandoff;
 using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
 using weasel::tsf::ShouldScheduleAbandonedHandoffCleanup;
+using weasel::tsf::ShouldRearmAbandonedHandoffCleanup;
+using weasel::tsf::kAbandonedHandoffRetryCooldownMs;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                    ApplyFailureClass::Retryable,
@@ -72,7 +74,19 @@ static_assert(ShouldScheduleAbandonedHandoffCleanup(false, 1),
 static_assert(!ShouldScheduleAbandonedHandoffCleanup(true, 1),
               "an outstanding cleanup session must not be duplicated");
 static_assert(!ShouldScheduleAbandonedHandoffCleanup(false, kMaxApplyRetries),
-              "repeatedly discarded cleanup sessions must be bounded");
+              "one cleanup burst must be bounded");
+static_assert(!ShouldRearmAbandonedHandoffCleanup(false, false,
+                                                 kAbandonedHandoffRetryCooldownMs),
+              "successful cleanup cannot rearm");
+static_assert(!ShouldRearmAbandonedHandoffCleanup(true, true,
+                                                 kAbandonedHandoffRetryCooldownMs),
+              "an outstanding cleanup cannot be duplicated");
+static_assert(!ShouldRearmAbandonedHandoffCleanup(true, false,
+                                                 kAbandonedHandoffRetryCooldownMs - 1),
+              "retry cooldown cannot be bypassed");
+static_assert(ShouldRearmAbandonedHandoffCleanup(true, false,
+                                                kAbandonedHandoffRetryCooldownMs),
+              "a later old-context edit may rearm exhausted cleanup");
 static_assert(!ShouldRetireAbandonedHandoff(true, true, true),
               "completed handoffs must not retire a new composition");
 static_assert(!ShouldRetireAbandonedHandoff(false, false, true),

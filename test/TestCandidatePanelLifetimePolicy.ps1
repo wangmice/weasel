@@ -207,12 +207,35 @@ if ($handoffDispose -notmatch '_queue->InFlight\(\)' -or
     $handoff -notmatch 'bool\s+_executed\s*=\s*false' -or
     $applyState -notmatch '!executed\s*&&\s*ownsFlight\s*&&\s*sameComposition' -or
     $composition -notmatch 'ShouldScheduleAbandonedHandoffCleanup\(' -or
+    $composition -notmatch 'ShouldRearmAbandonedHandoffCleanup\(' -or
+    $composition -notmatch '_abandonedHandoffDeferredSinceTick\s*=\s*GetTickCount64\(\)' -or
+    $composition -notmatch '_abandonedHandoffEndCallActive' -or
+    $composition -notmatch '_OnAbandonedHandoffEndReturned\(' -or
     $composition -notmatch '_CancelAbandonedHandoffCleanup\(\);' -or
     $composition -notmatch 'OnCompositionTerminated\([\s\S]*?_IsAbandonedHandoffCleanupCurrent\(pComposition' -or
     $composition -notmatch '_FinishAbandonedHandoffCleanup\(pComposition' -or
     $composition -notmatch '_IsAbandonedHandoffCleanupCurrent\(_pComposition' -or
     $composition -notmatch 'ShouldScheduleAbandonedHandoffCleanup\(') {
   throw 'abandoned handoff must release its old composition before advancing FIFO'
+}
+# All terminal handoff failures must preserve host composition identity.
+$handoffSchedStart = $composition.IndexOf('if (_IsComposing() && !_IsComposingInContext(next->context))')
+$handoffSchedEnd = $composition.IndexOf('auto request = _responseApplyQueue.TakeNext();', $handoffSchedStart)
+if ($handoffSchedStart -lt 0 -or $handoffSchedEnd -le $handoffSchedStart) {
+  throw 'unable to isolate handoff scheduling path'
+}
+$handoffSchedule = $composition.Substring($handoffSchedStart, $handoffSchedEnd - $handoffSchedStart)
+if ($handoffSchedule -notmatch 'auto settleFailedHandoff' -or
+    $handoffSchedule -notmatch '_responseApplyQueue\.FlightToken\(\)\s*!=\s*flightToken' -or
+    $handoffSchedule -notmatch '_BeginAbandonedHandoffCleanup\(previousContext,\s*previousComposition\)' -or
+    $handoffSchedule -match '_FinalizeComposition\(' -or
+    $handoffSchedule -notmatch 'settleFailedHandoff\(\)') {
+  throw 'terminal handoff failures must share old-context cleanup'
+}
+if ($composition -notmatch '_abandonedHandoffPauseToken\s*==\s*0\s*&&\s*_responseApplyQueue\.IsPaused\(\)' -or
+    $composition -notmatch 'void WeaselTSF::_OnAbandonedHandoffEndReturned\(' -or
+    $composition -notmatch 'if \(_abandonedHandoffEndCallActive\)') {
+  throw 'handoff cleanup pause and EndComposition callback must be reentrancy-safe'
 }
 $textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
 $tsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
