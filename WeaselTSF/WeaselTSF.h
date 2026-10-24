@@ -214,6 +214,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _UpdateUI(const weasel::Context& ctx, const weasel::Status& status);
   void _StartUI(com_ptr<ITfContext> pContext = nullptr);
   void _EndUI();
+  void _RenewCandidateUI(com_ptr<ITfContext> pContext,
+                         UINT64 pendingUIGeneration,
+                         const weasel::Context& ctx,
+                         const weasel::Status& status);
   void _ShowUI();
   void _HideUI();
   // A confirmed candidate selection with an unapplyable TSF response must

@@ -559,6 +559,31 @@ void WeaselTSF::_EndUI() {
   _pCandidateUIContext = nullptr;
 }
 
+void WeaselTSF::_RenewCandidateUI(com_ptr<ITfContext> pContext,
+                                  UINT64 pendingUIGeneration,
+                                  const Context& ctx,
+                                  const Status& status) {
+  // A previously registered UIElement may remain referenced by the host
+  // after EndUIElement. Never register that same COM instance again: a late
+  // Finalize on the old pointer could otherwise select the next generation.
+  const UIStyle nextStyle = _cand->style();
+  com_ptr<CCandidateList> oldCandidate = _cand;
+  _EndUI();
+  oldCandidate->DetachOwner();
+
+  com_ptr<CCandidateList> newCandidate;
+  newCandidate.Attach(new CCandidateList(this));
+  _cand = newCandidate;
+  _cand->style() = nextStyle;
+
+  // Publish the new response into the new object's UI before BeginUIElement,
+  // which may query its candidate strings synchronously.
+  _FlushPendingUI(pendingUIGeneration);
+  _StartUI(pContext);
+  if (_cand == newCandidate && newCandidate->HasOwner())
+    _UpdateUI(ctx, status);
+}
+
 void WeaselTSF::_RetireUnappliedCandidateFinalization(
     ITfContext* context, UINT64 responseSerial) {
   if (_cand->HasAcceptedFinalization(responseSerial) &&

@@ -145,7 +145,12 @@ if ($selectedBranch -match 'Destroy\(' -or
     $selection -notmatch 'previous_parsed_serial\s*=\s*_parsedSerial;[\s\S]*?_ConsumeResponseIfFresh\(\)' -or
     $composition -notmatch '_UpdateComposition\(com_ptr<ITfContext> pContext,\s*UINT64 previousSerial\)' -or
     $editSession -notmatch 'ShouldRenewCandidateUIAfterFinalization\(' -or
-    $editSession -notmatch '_EndUI\(\);\s*_FlushPendingUI\(pendingUIGeneration\);\s*_StartUI\(pContext\);\s*_UpdateUI\(\*context, status\)' -or
+    $editSession -notmatch '_RenewCandidateUI\(pContext,\s*pendingUIGeneration,\s*\*context,\s*status\)' -or
+    $candidate -notmatch 'void WeaselTSF::_RenewCandidateUI\(' -or
+    $candidate -notmatch 'oldCandidate->DetachOwner\(\)' -or
+    $candidate -notmatch 'newCandidate\.Attach\(new CCandidateList\(this\)\)' -or
+    $candidate -notmatch '_cand\s*=\s*newCandidate' -or
+    $candidate -notmatch '_FlushPendingUI\(pendingUIGeneration\);\s*_StartUI\(pContext\)' -or
     $candidate -notmatch 'WeaselTSF::_RetireUnappliedCandidateFinalization\(' -or
     $composition -notmatch '_RetireUnappliedCandidateFinalization\(') {
   throw 'acknowledged multi-stage selection must renew UI only after TSF response apply'

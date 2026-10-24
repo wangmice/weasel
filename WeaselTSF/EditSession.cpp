@@ -179,10 +179,7 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
     if (weasel::tsf::ShouldRenewCandidateUIAfterFinalization(
             _cand->HasAcceptedFinalization(snapshot.identity.serial),
             _pCandidateUIContext == pContext, status.composing)) {
-      _EndUI();
-      _FlushPendingUI(pendingUIGeneration);
-      _StartUI(pContext);
-      _UpdateUI(*context, status);
+      _RenewCandidateUI(pContext, pendingUIGeneration, *context, status);
     }
 
     if (weasel::tsf::ShouldPublishCandidateImmediately(_cand->IsUIless()))
