@@ -47,12 +47,17 @@ constexpr bool ShouldRetireCandidateOnApplyDispose(bool executed,
 
 // A host may release a queued asynchronous handoff without ever granting its
 // edit lock. Re-requesting immediately can loop forever without consuming the
-// retry budget. Only the still-current, unexecuted flight may give up its
-// abandoned composition ownership and advance the pending response queue.
+// retry budget. Only the still-current, unexecuted flight may initiate
+// bounded cleanup while the pending response FIFO remains paused.
 constexpr bool ShouldRetireAbandonedHandoff(bool executed,
                                            bool ownsFlight,
                                            bool sameComposition) {
   return !executed && ownsFlight && sameComposition;
+}
+
+constexpr bool ShouldScheduleAbandonedHandoffCleanup(bool outstanding,
+                                                      unsigned attempts) {
+  return !outstanding && attempts < kMaxApplyRetries;
 }
 
 enum class ScheduleFailureAction : std::uint8_t {

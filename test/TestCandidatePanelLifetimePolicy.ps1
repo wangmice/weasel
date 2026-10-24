@@ -195,13 +195,31 @@ $handoffDispose = $handoff.Substring($handoffDisposeStart, $handoffExecuteStart 
 if ($handoffDispose -notmatch '_queue->InFlight\(\)' -or
     $handoffDispose -notmatch '_queue->FlightToken\(\)\s*==\s*_flightToken' -or
     $handoffDispose -notmatch 'ShouldRetireAbandonedHandoff\(\s*_executed,\s*ownsFlight' -or
-    $handoffDispose -notmatch '_GetUIContextDocument\(\)\s*==\s*_pContext' -or
-    $handoffDispose -notmatch '_IsCurrentComposition\(_pComposition\)\)\s*_pTextService->_FinalizeComposition\(\)' -or
+    $handoffDispose -notmatch '_BeginAbandonedHandoffCleanup\(_pContext,\s*_pComposition\)' -or
+    $handoffDispose -match '_FinalizeComposition\(' -or
+    $composition -notmatch '_responseApplyQueue\.Pause\(\)' -or
+    $composition -notmatch 'class CAbandonedHandoffCleanupEditSession' -or
+    $composition -notmatch 'TF_ES_ASYNC\s*\|\s*TF_ES_READWRITE' -or
+    $composition -notmatch '_EndCompositionLocked\(\s*ec,\s*_pContext,\s*_pComposition,\s*TRUE,\s*FALSE\)' -or
+    $composition -notmatch '_responseApplyQueue\.Resume\(pauseToken\)' -or
     $handoffDispose -notmatch '_CompleteFlight\(\)' -or
     $handoff -notmatch '_executed\s*=\s*true' -or
     $handoff -notmatch 'bool\s+_executed\s*=\s*false' -or
-    $applyState -notmatch '!executed\s*&&\s*ownsFlight\s*&&\s*sameComposition') {
+    $applyState -notmatch '!executed\s*&&\s*ownsFlight\s*&&\s*sameComposition' -or
+    $composition -notmatch 'ShouldScheduleAbandonedHandoffCleanup\(' -or
+    $composition -notmatch '_CancelAbandonedHandoffCleanup\(\);' -or
+    $composition -notmatch 'OnCompositionTerminated\([\s\S]*?_IsAbandonedHandoffCleanupCurrent\(pComposition' -or
+    $composition -notmatch '_FinishAbandonedHandoffCleanup\(pComposition' -or
+    $composition -notmatch '_IsAbandonedHandoffCleanupCurrent\(_pComposition' -or
+    $composition -notmatch 'ShouldScheduleAbandonedHandoffCleanup\(') {
   throw 'abandoned handoff must release its old composition before advancing FIFO'
+}
+$textEditSink = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\TextEditSink.cpp') -Raw
+$tsfHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\WeaselTSF.h') -Raw
+if ($textEditSink -notmatch '_abandonedHandoffContext\s*==\s*pContext' -or
+    $textEditSink -notmatch '_ScheduleAbandonedHandoffCleanup\(\)' -or
+    $tsfHeader -notmatch '_abandonedHandoffPauseToken\s*=\s*0') {
+  throw 'abandoned handoff must retain old-context cleanup identity and retry only from OnEndEdit'
 }
 if ($candidate -notmatch 'void CCandidateList::MarkFinalizationAccepted\(UINT64 responseSerial\)' -or
     $candidate -notmatch '_finalization_accepted\s*=\s*false;' -or

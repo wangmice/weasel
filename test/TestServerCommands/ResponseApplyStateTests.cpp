@@ -17,6 +17,7 @@ using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
 using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
 using weasel::tsf::ShouldRetireAbandonedHandoff;
+using weasel::tsf::ShouldScheduleAbandonedHandoffCleanup;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
                                    ApplyFailureClass::Retryable,
@@ -63,7 +64,15 @@ static_assert(!ShouldClearCompositionRange(false, true),
               "normal commit teardown must preserve its composition text");
 
 static_assert(ShouldRetireAbandonedHandoff(false, true, true),
-              "abandoned current async handoff must unblock its FIFO");
+              "abandoned current async handoff must start cleanup");
+static_assert(ShouldScheduleAbandonedHandoffCleanup(false, 0),
+              "initial abandoned handoff cleanup can be requested");
+static_assert(ShouldScheduleAbandonedHandoffCleanup(false, 1),
+              "a later edit-end can retry after an abandoned cleanup");
+static_assert(!ShouldScheduleAbandonedHandoffCleanup(true, 1),
+              "an outstanding cleanup session must not be duplicated");
+static_assert(!ShouldScheduleAbandonedHandoffCleanup(false, kMaxApplyRetries),
+              "repeatedly discarded cleanup sessions must be bounded");
 static_assert(!ShouldRetireAbandonedHandoff(true, true, true),
               "completed handoffs must not retire a new composition");
 static_assert(!ShouldRetireAbandonedHandoff(false, false, true),

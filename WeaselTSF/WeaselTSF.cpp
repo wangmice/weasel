@@ -99,6 +99,7 @@ STDMETHODIMP WeaselTSF::Deactivate() {
   // Invalidate every pending keyboard restore before detaching the old TIP.
   ++_keyboardOpenGeneration;
   _DestroyKeyboardOpenWindow();
+  _CancelAbandonedHandoffCleanup();
   _InvalidatePendingUI();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
@@ -151,6 +152,7 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
 
   // Treat each TSF activation as a fresh response-apply epoch. This also
   // recovers cleanly from hosts that reactivate after a partial teardown.
+  _CancelAbandonedHandoffCleanup();
   _responseApplyQueue.Reset();
   _pendingCommit.clear();
   _pCandidateUIContext = nullptr;
@@ -281,6 +283,7 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
     _ShowLanguageBar(TRUE);
     _UpdateLanguageBar(_status);
   } else {
+    _CancelAbandonedHandoffCleanup();
     _InvalidatePendingUI();
     _responseApplyQueue.Reset();
     _pendingCommit.clear();

@@ -99,6 +99,31 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
          queue.PendingCount() == 0;
 }
 
+bool AbandonedHandoffCleanupPausesResponseFifo() {
+  weasel::tsf::SerialApplyQueue<std::shared_ptr<int>> queue;
+  queue.Push(std::make_shared<int>(7));
+  if (!queue.BeginBarrier())
+    return false;
+  const auto handoffFlight = queue.FlightToken();
+  const auto cleanupPause = queue.Pause();
+  if (!queue.Complete(handoffFlight) || queue.CanSchedule() ||
+      queue.PendingCount() != 1)
+    return false;
+
+  // A discarded cleanup session must not reissue the same cross-context
+  // handoff while the old composition still belongs to the host.
+  queue.RequestRetry();
+  if (queue.CanSchedule() || !queue.ConsumeRetryRequest() ||
+      queue.Resume(cleanupPause + 1))
+    return false;
+  if (!queue.Resume(cleanupPause) || !queue.CanSchedule())
+    return false;
+  auto pending = queue.TakeNext();
+  const auto applyFlight = queue.FlightToken();
+  return pending && *pending == 7 && queue.Complete(applyFlight) &&
+         queue.PendingCount() == 0;
+}
+
 static_assert(
     weasel::tsf::ShouldEndCandidateUIForContextHandoff(true, false),
     "cross-context composition handoff must end the old candidate UI");
@@ -111,7 +136,8 @@ static_assert(!weasel::tsf::ShouldHandleCompositionContextEvent(true, false),
 
 struct ResponseApplyQueueRegressionGuard {
   ResponseApplyQueueRegressionGuard() {
-    if (!ResponseApplyQueueIsSingleFlightAndFifo()) {
+    if (!ResponseApplyQueueIsSingleFlightAndFifo() ||
+        !AbandonedHandoffCleanupPausesResponseFifo()) {
       std::fputs("ordered response apply queue regression\n", stderr);
       std::abort();
     }
