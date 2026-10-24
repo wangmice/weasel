@@ -1,78 +1,99 @@
 #include "stdafx.h"
 #include "SecurityAttribute.h"
+#include <PipeSecurityPolicy.h>
+#include <LifecycleMutexSecurityPolicy.h>
 #include <Sddl.h>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
-#ifndef SDDL_ALL_APP_PACKAGES
-#define SDDL_ALL_APP_PACKAGES TEXT("AC")
-#endif
+namespace {
 
-#define LOW_INTEGRITY_SDDL_SACL \
-  SDDL_SACL                     \
-  SDDL_DELIMINATOR              \
-  SDDL_ACE_BEGIN                \
-  SDDL_MANDATORY_LABEL          \
-  SDDL_SEPERATOR                \
-  SDDL_SEPERATOR                \
-  SDDL_NO_WRITE_UP              \
-  SDDL_SEPERATOR                \
-  SDDL_SEPERATOR                \
-  SDDL_SEPERATOR                \
-  SDDL_ML_LOW                   \
-  SDDL_ACE_END
+bool GetCurrentLogonSid(std::wstring& sid) {
+  HANDLE token = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token))
+    return false;
 
-#define LOCAL_SYSTEM_FILE_ACCESS \
-  SDDL_ACE_BEGIN                 \
-  SDDL_ACCESS_ALLOWED            \
-  SDDL_SEPERATOR                 \
-  SDDL_SEPERATOR                 \
-  SDDL_FILE_ALL                  \
-  SDDL_SEPERATOR                 \
-  SDDL_SEPERATOR                 \
-  SDDL_SEPERATOR                 \
-  SDDL_LOCAL_SYSTEM              \
-  SDDL_ACE_END
+  DWORD size = 0;
+  ::GetTokenInformation(token, TokenGroups, nullptr, 0, &size);
+  if (::GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+    ::CloseHandle(token);
+    return false;
+  }
 
-#define EVERYONE_FILE_ACCESS \
-  SDDL_ACE_BEGIN             \
-  SDDL_ACCESS_ALLOWED        \
-  SDDL_SEPERATOR             \
-  SDDL_SEPERATOR             \
-  SDDL_FILE_ALL              \
-  SDDL_SEPERATOR             \
-  SDDL_SEPERATOR             \
-  SDDL_SEPERATOR             \
-  SDDL_EVERYONE              \
-  SDDL_ACE_END
+  std::vector<BYTE> buffer(size);
+  if (!::GetTokenInformation(token, TokenGroups, buffer.data(), size, &size)) {
+    ::CloseHandle(token);
+    return false;
+  }
+  ::CloseHandle(token);
 
-#define ALL_APP_PACKAGES_FILE_ACCESS \
-  SDDL_ACE_BEGIN                     \
-  SDDL_ACCESS_ALLOWED                \
-  SDDL_SEPERATOR                     \
-  SDDL_SEPERATOR                     \
-  SDDL_FILE_ALL                      \
-  SDDL_SEPERATOR                     \
-  SDDL_SEPERATOR                     \
-  SDDL_SEPERATOR                     \
-  SDDL_ALL_APP_PACKAGES              \
-  SDDL_ACE_END
+  const auto groups = reinterpret_cast<const TOKEN_GROUPS*>(buffer.data());
+  for (DWORD i = 0; i < groups->GroupCount; ++i) {
+    const auto& group = groups->Groups[i];
+    if ((group.Attributes & SE_GROUP_LOGON_ID) != SE_GROUP_LOGON_ID)
+      continue;
+
+    LPWSTR sid_text = nullptr;
+    if (!::ConvertSidToStringSidW(group.Sid, &sid_text))
+      return false;
+    sid.assign(sid_text);
+    ::LocalFree(sid_text);
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
 
 namespace weasel {
 
 void SecurityAttribute::_Init() {
-  // Privileges for UWP and IE protected mode
-  // https://stackoverflow.com/questions/39138674/accessing-named-pipe-servers-from-within-ie-epm-bho
+  std::wstring logon_sid;
+  if (!GetCurrentLogonSid(logon_sid))
+    throw std::runtime_error("failed to resolve the current logon SID");
 
-  ConvertStringSecurityDescriptorToSecurityDescriptor(
-      LOW_INTEGRITY_SDDL_SACL SDDL_DACL SDDL_DELIMINATOR
-          LOCAL_SYSTEM_FILE_ACCESS EVERYONE_FILE_ACCESS
-              ALL_APP_PACKAGES_FILE_ACCESS,
-      SDDL_REVISION_1, &pd, NULL);
+  const std::wstring sddl = pipe_security::BuildPipeSecuritySddl(logon_sid);
+  if (sddl.empty() || !::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                          sddl.c_str(), SDDL_REVISION_1, &pd, nullptr)) {
+    throw std::runtime_error(
+        "failed to create the Weasel pipe security descriptor");
+  }
+
   sa.nLength = sizeof(SECURITY_ATTRIBUTES);
   sa.lpSecurityDescriptor = pd;
   sa.bInheritHandle = TRUE;
+
+  // Pipe rights (GRGW) do not imply the synchronize rights required to
+  // reopen a mutex. Use a separate type-specific descriptor, without
+  // broadening access to the named pipe.
+  const std::wstring mutex_sddl =
+      lifecycle_security::BuildLifecycleMutexSecuritySddl(logon_sid);
+  if (mutex_sddl.empty() ||
+      !::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          mutex_sddl.c_str(), SDDL_REVISION_1, &mutex_pd, nullptr)) {
+    ::LocalFree(pd);
+    pd = nullptr;
+    throw std::runtime_error(
+        "failed to create the Weasel lifecycle mutex security descriptor");
+  }
+  mutex_sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+  mutex_sa.lpSecurityDescriptor = mutex_pd;
+  mutex_sa.bInheritHandle = FALSE;
+}
+
+SecurityAttribute::~SecurityAttribute() {
+  if (mutex_pd)
+    ::LocalFree(mutex_pd);
+  if (pd)
+    ::LocalFree(pd);
 }
 
 SECURITY_ATTRIBUTES* SecurityAttribute::get_attr() {
   return &sa;
+}
+
+SECURITY_ATTRIBUTES* SecurityAttribute::get_mutex_attr() {
+  return &mutex_sa;
 }
 };  // namespace weasel

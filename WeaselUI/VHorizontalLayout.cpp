@@ -56,7 +56,8 @@ void VHorizontalLayout::DoLayout() {
       bool cmtFontNotTrans =
           (i == id && (_style.hilited_comment_text_color & 0xff000000)) ||
           (i != id && (_style.comment_text_color & 0xff000000));
-      if (!comments.at(i).str.empty() && cmtFontValid && cmtFontNotTrans) {
+      const std::wstring& comment = TextAt(comments, i).str;
+      if (!comment.empty() && cmtFontValid && cmtFontNotTrans) {
         h += _style.hilite_spacing;
         const auto& commentSize = _candidateCommentSizes[i];
         _candidateCommentRects[i].SetRect(w, 0, w + commentSize.cx,
@@ -212,27 +213,7 @@ void VHorizontalLayout::DoLayoutWithWrap() {
   int height = offsetY, width = offsetX + real_margin_x;
   int h = offsetY + real_margin_y;
 
-  if ((_style.hilited_mark_color & 0xff000000) && candidates_count) {
-    CSize sg;
-    if (_style.mark_text.empty())
-      _pD2D->GetTextSize(L"|", 1, _pD2D->pTextFormat, &sg);
-    else
-      _pD2D->GetTextSize(_style.mark_text, _style.mark_text.length(),
-                         _pD2D->pTextFormat, &sg);
-
-    mark_width = sg.cx;
-    mark_height = sg.cy;
-    if (_style.mark_text.empty()) {
-      mark_height = mark_width / 7;
-      if (_style.linespacing && _style.baseline)
-        mark_height =
-            (int)((float)mark_height / ((float)_style.linespacing / 100.0f));
-      mark_height = MAX(mark_height, 6);
-    }
-    mark_gap = (_style.mark_text.empty()) ? mark_height
-                                          : mark_height + _style.hilite_spacing;
-  }
-  int base_offset = ((_style.hilited_mark_color & 0xff000000)) ? mark_gap : 0;
+  int base_offset = _CalcMarkMetrics(true);
 
   // calc page indicator
   int pgh = _pageEnabled
@@ -301,7 +282,8 @@ void VHorizontalLayout::DoLayoutWithWrap() {
       bool cmtFontNotTrans =
           (i == id && (_style.hilited_comment_text_color & 0xff000000)) ||
           (i != id && (_style.comment_text_color & 0xff000000));
-      if (!comments.at(i).str.empty() && cmtFontValid && cmtFontNotTrans) {
+      const std::wstring& comment = TextAt(comments, i).str;
+      if (!comment.empty() && cmtFontValid && cmtFontNotTrans) {
         const auto& commentSize = _candidateCommentSizes[i];
         h += _style.hilite_spacing;
         _candidateCommentRects[i].SetRect(width, h, width + commentSize.cx,
@@ -499,6 +481,8 @@ void VHorizontalLayout::DoLayoutWithWrap() {
         if (col_of_candidate[i] == col_cnt && col_cnt > 0 && i > 0 &&
             col_of_candidate[i - 1] == (col_cnt - 1))
           _roundInfo[i].IsTopRightNeedToRound = true;
+        // 邻居列信息仅在存在时读取：i==count-1 时 i+1 越界（数组容量
+        // MAX_CANDIDATES_COUNT；count==100 时读 [100]）
         if (col_of_candidate[i] == 0 && col_cnt > 0 &&
             i + 1 < candidates_count && col_of_candidate[i + 1] == 1)
           _roundInfo[i].IsBottomLeftNeedToRound = _style.inline_preedit;
@@ -529,6 +513,7 @@ void VHorizontalLayout::DoLayoutWithWrap() {
         if (col_of_candidate[i] == col_cnt && col_cnt > 0 && i > 0 &&
             col_of_candidate[i - 1] == (col_cnt - 1))
           _roundInfo[i].IsTopLeftNeedToRound = true;
+        // 同上：邻居列信息仅在存在时读取，i==count-1 时 i+1 越界
         if (col_of_candidate[i] == 0 && col_cnt > 0 &&
             i + 1 < candidates_count && col_of_candidate[i + 1] == 1)
           _roundInfo[i].IsBottomRightNeedToRound = _style.inline_preedit;

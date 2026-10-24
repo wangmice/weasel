@@ -3,13 +3,14 @@
 #include "HorizontalLayout.h"
 #include "VHorizontalLayout.h"
 #include "VerticalLayout.h"
-#include <filesystem>
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <resource.h>
 #include <windowsx.h>
 #include <wrl/client.h>
-
-namespace fs = std::filesystem;
 
 using namespace weasel;
 
@@ -48,34 +49,47 @@ class ThreadDpiAwarenessScope {
 };
 
 wstring FormatCandidateLabel(const wstring& label, const wchar_t* format) {
-  wchar_t buffer[128];
-  swprintf_s<128>(buffer, format, label.c_str());
-  return wstring(buffer);
+  return FormatLabelText(format, label);
 }
 }  // namespace
 
-void LoadIconIfNeed(wstring& oicofile,
-                    const wstring& icofile,
-                    HICON& hIcon,
+// Preserve the last valid icon on transient load failure and retry next paint.
+// Nonempty loaded_path denotes an owned file icon; built-ins are LR_SHARED.
+void LoadIconIfNeed(wstring& loaded_path,
+                    const wstring& icon_path,
+                    HICON& icon,
                     UINT id) {
-  if (oicofile == icofile)
+  if (loaded_path == icon_path)
     return;
-  if (!oicofile.empty() && hIcon)
-    DestroyIcon(hIcon);
-  oicofile = icofile;
-  const int STATUS_ICON_SIZE = GetSystemMetrics(SM_CXICON);
-  HINSTANCE hInstance = GetModuleHandle(NULL);
-  if (!icofile.empty() && fs::exists(fs::path(icofile)))
-    hIcon =
-        (HICON)LoadImage(hInstance, icofile.c_str(), IMAGE_ICON,
-                         STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_LOADFROMFILE);
-  else
-    hIcon = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(id), IMAGE_ICON,
-                             STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
+  wstring path(icon_path);
+  const int size = GetSystemMetrics(SM_CXICON);
+  HICON loaded =
+      icon_path.empty()
+          ? (HICON)LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(id),
+                             IMAGE_ICON, size, size, LR_SHARED)
+          : (HICON)LoadImage(nullptr, icon_path.c_str(), IMAGE_ICON, size, size,
+                             LR_LOADFROMFILE);
+  if (!loaded)
+    return;
+  if (!loaded_path.empty() && icon)
+    DestroyIcon(icon);
+  icon = loaded;
+  loaded_path.swap(path);
 }
 
+namespace {
+std::atomic<std::uint64_t> g_panelClassSerial{0};
+constexpr UINT kPanelDestroyWaitMs = 2000;
+}  // namespace
+
+struct WeaselUIUpdate {
+  Context ctx;
+  Status status;
+};
+
 WeaselPanel::WeaselPanel(UI& ui)
-    : m_hWnd(nullptr),
+    : m_uiState(ui.SharedState()),
+      m_hWnd(nullptr),
       m_ctx(ui.ctx()),
       m_layout(nullptr),
       m_pD2D(nullptr),
@@ -106,6 +120,76 @@ WeaselPanel::WeaselPanel(UI& ui)
                        STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_SHARED);
 }
 
+WeaselPanel::~WeaselPanel() {
+  // UI::Destroy keeps this entire object alive when owner-thread teardown
+  // times out; do not release a window class from a still-running WNDPROC.
+  if (m_hWnd && ::IsWindow(m_hWnd) && !DestroyWindow())
+    DEBUG << "WeaselPanel destroyed with live owner-thread window";
+  _UnregisterWindowClass();
+
+  if (!m_current_zhung_icon.empty())
+    DestroyIcon(m_iconEnabled);
+  if (!m_current_ascii_icon.empty())
+    DestroyIcon(m_iconAlpha);
+  if (!m_current_half_icon.empty())
+    DestroyIcon(m_iconHalf);
+  if (!m_current_full_icon.empty())
+    DestroyIcon(m_iconFull);
+}
+
+bool WeaselPanel::_RegisterWindowClass() {
+  if (m_windowClassAtom)
+    return true;
+
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(&WeaselPanel::WindowProc),
+                          &module))
+    return false;
+
+  // The module address and a monotonic class generation prevent collisions
+  // when the allocator reuses an old Panel address.
+  const auto moduleAddress = reinterpret_cast<std::uintptr_t>(module);
+  const auto serial =
+      g_panelClassSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+  m_windowClassName = L"WeaselPanel." + std::to_wstring(moduleAddress) + L"." +
+                      std::to_wstring(serial);
+
+  WNDCLASSW wc = {};
+  wc.lpfnWndProc = WeaselPanel::WindowProc;
+  wc.hInstance = module;
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.lpszClassName = m_windowClassName.c_str();
+  const ATOM atom = RegisterClassW(&wc);
+  if (!atom) {
+    // Unlike the old shared-name registration, CLASS_ALREADY_EXISTS cannot
+    // be accepted: it may refer to a stale callback from another DLL.
+    m_windowClassName.clear();
+    FreeLibrary(module);
+    return false;
+  }
+
+  m_windowClassModule = module;
+  m_windowClassAtom = atom;
+  return true;
+}
+
+void WeaselPanel::_UnregisterWindowClass() {
+  if (!m_windowClassAtom)
+    return;
+  if (!UnregisterClassW(MAKEINTATOM(m_windowClassAtom), m_windowClassModule)) {
+    // A surviving window can still invoke our WNDPROC. Fail closed by
+    // intentionally retaining the loader reference rather than unloading
+    // code reachable from the registered class.
+    DEBUG << "WeaselPanel: window class still in use at panel teardown";
+    return;
+  }
+  m_windowClassAtom = 0;
+  m_windowClassName.clear();
+  FreeLibrary(m_windowClassModule);
+  m_windowClassModule = nullptr;
+}
+
 BOOL WeaselPanel::IsWindow() const {
   return ::IsWindow(m_hWnd);
 }
@@ -125,50 +209,140 @@ void WeaselPanel::_ClearTimers() {
     ::KillTimer(m_hWnd, AUTOHIDE_TIMER);
     m_autoHideTimer = 0;
   }
+  m_autohide_counting = false;
+}
+
+bool WeaselPanel::_IsUiThread() const {
+  return !IsWindow() ||
+         GetWindowThreadProcessId(m_hWnd, nullptr) == GetCurrentThreadId();
+}
+
+void WeaselPanel::ApplyUpdate(const Context& ctx, const Status& status) {
+  if (!_IsUiThread()) {
+    auto update = std::make_unique<WeaselUIUpdate>(WeaselUIUpdate{ctx, status});
+    if (::PostMessage(m_hWnd, WM_WEASEL_UPDATE, 0,
+                      reinterpret_cast<LPARAM>(update.get())))
+      update.release();
+    return;
+  }
+  _ApplyUpdate(ctx, status);
+}
+
+void WeaselPanel::_ApplyUpdate(const Context& ctx, const Status& status) {
+  _CancelAutoHide();
+  if (m_layout_ready && m_layout && m_ctx == ctx && m_status == status)
+    return;
+  m_ctx = ctx;
+  m_status = status;
+  if (m_style.candidate_abbreviate_length > 0) {
+    for (auto& c : m_ctx.cinfo.candies)
+      c.str =
+          AbbreviateText(c.str, (size_t)m_style.candidate_abbreviate_length);
+  }
+  Refresh();
+}
+
+void WeaselPanel::ApplyStyle(const UIStyle& style) {
+  if (!_IsUiThread()) {
+    auto snapshot = std::make_unique<UIStyle>(style);
+    if (::PostMessage(m_hWnd, WM_WEASEL_SETSTYLE, 0,
+                      reinterpret_cast<LPARAM>(snapshot.get())))
+      snapshot.release();
+    return;
+  }
+  m_style = style;
 }
 
 void WeaselPanel::ShowWithTimeout(size_t millisec) {
-  if (!m_hWnd)
-    return;
-  ShowWindow(SW_SHOWNA);
-  // cancel existing auto-hide timer if any
-  if (m_autoHideTimer) {
-    ::KillTimer(m_hWnd, m_autoHideTimer);
-    m_autoHideTimer = 0;
-  }
-  m_autoHideTimer =
-      ::SetTimer(m_hWnd, AUTOHIDE_TIMER, static_cast<UINT>(millisec), NULL);
+  _SetVisibility(PanelVisibility::ShowWithTimeout, millisec);
 }
 
 bool WeaselPanel::IsCountingDown() const {
-  return m_autoHideTimer != 0;
+  return m_pending_autohide.Pending() ||
+         m_autohide_counting.load(std::memory_order_relaxed);
 }
 
 void WeaselPanel::ShowWindow(int nCmdShow) {
-  ::ShowWindow(m_hWnd, nCmdShow);
-  if (m_pD2D) {
-    if (nCmdShow != SW_HIDE) {
-      // ensure window resources exist when showing
-      if (!m_pD2D->swapChain) {
-        m_pD2D->AttachWindow(m_hWnd);
-        if (!m_style.font_face.empty())
-          m_pD2D->InitDirectWriteResources();
-      }
+  _SetVisibility(nCmdShow == SW_HIDE ? PanelVisibility::Hide
+                                     : PanelVisibility::Show);
+}
+
+void WeaselPanel::_SetVisibility(PanelVisibility cmd, size_t millisec) {
+  if (!IsWindow())
+    return;
+  if (!_IsUiThread()) {
+    const bool tracks_timeout = cmd == PanelVisibility::ShowWithTimeout;
+    if (tracks_timeout)
+      m_pending_autohide.OnPost();
+    if (!::PostMessage(m_hWnd, WM_WEASEL_SHOW, static_cast<WPARAM>(cmd),
+                       static_cast<LPARAM>(millisec)) &&
+        tracks_timeout) {
+      m_pending_autohide.OnPostFailed();
     }
+    return;
+  }
+  _ApplyVisibility(cmd, millisec);
+}
+
+void WeaselPanel::_ApplyVisibility(PanelVisibility cmd, size_t millisec) {
+  if (cmd != PanelVisibility::Hide && cmd != PanelVisibility::Show &&
+      cmd != PanelVisibility::ShowWithTimeout)
+    return;
+  ::KillTimer(m_hWnd, AUTOHIDE_TIMER);
+  m_autoHideTimer = 0;
+  m_autohide_counting = false;
+  if (cmd != PanelVisibility::Hide && m_pD2D && !m_pD2D->swapChain) {
+    try {
+      m_pD2D->AttachWindow(m_hWnd);
+      m_pD2D->InitDirectWriteResources();
+      m_fullscreen_font_active = false;
+    } catch (...) {
+      _RequestPaintRecovery();
+    }
+  }
+  ::ShowWindow(m_hWnd, cmd == PanelVisibility::Hide ? SW_HIDE : SW_SHOWNA);
+  m_shown = cmd != PanelVisibility::Hide;
+  if (cmd == PanelVisibility::ShowWithTimeout) {
+    const auto timeout = static_cast<UINT>(
+        (std::min)(millisec, static_cast<size_t>(USER_TIMER_MAXIMUM)));
+    m_autoHideTimer = ::SetTimer(m_hWnd, AUTOHIDE_TIMER, timeout, nullptr);
+    m_autohide_counting = m_autoHideTimer != 0;
   }
 }
 
-void WeaselPanel::DestroyWindow() {
-  // clear timers before releasing window resources
-  _ClearTimers();
+void WeaselPanel::_CancelAutoHide() {
+  if (m_autohide_counting)
+    _ApplyVisibility(PanelVisibility::Hide, 0);
+}
 
-  if (m_pD2D) {
-    m_pD2D->ReleaseWindowResources();
-    // mark D2D as detached from any window
-    m_pD2D->m_hWnd = nullptr;
+bool WeaselPanel::DestroyWindow(bool full) {
+  const HWND hwnd = m_hWnd;
+  if (hwnd && ::IsWindow(hwnd)) {
+    // The HWND and its Direct2D resources belong to the same UI thread.
+    // A worker must not destroy either object itself.
+    if (GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+      DWORD_PTR result = 0;
+      if (!SendMessageTimeoutW(hwnd, WM_WEASEL_DESTROY_OWNER, full, 0,
+                               SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                               kPanelDestroyWaitMs, &result))
+        return false;
+      return result != 0 && !::IsWindow(hwnd);
+    }
+
+    _ClearTimers();
+    if (m_pD2D) {
+      m_pD2D->ReleaseWindowResources();
+      m_pD2D->m_hWnd = nullptr;
+    }
+    if (!::DestroyWindow(hwnd) && ::IsWindow(hwnd))
+      return false;
   }
-  ::DestroyWindow(m_hWnd);
   m_hWnd = nullptr;
+  // For a complete teardown, release the D2D generation on the HWND owner
+  // before returning to a foreign caller that will free the Panel object.
+  if (full)
+    ReleaseAllResources();
+  return true;
 }
 
 void WeaselPanel::ReleaseAllResources() {
@@ -177,14 +351,20 @@ void WeaselPanel::ReleaseAllResources() {
 
   if (m_pD2D) {
     m_pD2D->ReleaseWindowResources();
-    // explicitly reset shared devices
-    DeviceResources::Get().Reset();
+    // Other panels may still be using the shared devices; release only ours.
     m_pD2D.reset();
   }
 }
 
 void WeaselPanel::MoveTo(RECT rc) {
-  if (!m_hWnd || !m_layout)
+  if (!_IsUiThread()) {
+    auto snapshot = std::make_unique<RECT>(rc);
+    if (::PostMessage(m_hWnd, WM_WEASEL_MOVETO, 0,
+                      reinterpret_cast<LPARAM>(snapshot.get())))
+      snapshot.release();
+    return;
+  }
+  if (!m_hWnd || !m_layout || !m_layout_ready)
     return;
   m_redraw_by_monitor_change = false;
   bool should_reset_sticky =
@@ -243,6 +423,7 @@ void WeaselPanel::_ResizeWindow() {
 }
 
 void WeaselPanel::_CreateLayout() {
+  _ScopeFullscreenFont(IS_FULLSCREENLAYOUT(m_style));
   the<Layout> layout;
   if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
       m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN) {
@@ -266,10 +447,30 @@ void WeaselPanel::_CreateLayout() {
   m_layout = std::move(layout);
 }
 
+void WeaselPanel::_ScopeFullscreenFont(bool fullscreen) {
+  if (fullscreen == m_fullscreen_font_active)
+    return;
+  if (fullscreen) {
+    m_fullscreen_font_snapshot = {m_pD2D->pTextFormat, m_pD2D->pPreeditFormat,
+                                  m_pD2D->pLabelFormat, m_pD2D->pCommentFormat};
+  } else {
+    m_pD2D->pTextFormat = m_fullscreen_font_snapshot.text;
+    m_pD2D->pPreeditFormat = m_fullscreen_font_snapshot.preedit;
+    m_pD2D->pLabelFormat = m_fullscreen_font_snapshot.label;
+    m_pD2D->pCommentFormat = m_fullscreen_font_snapshot.comment;
+    m_fullscreen_font_snapshot = {};
+  }
+  m_fullscreen_font_active = fullscreen;
+}
+
 void WeaselPanel::_UpdateHideCandidates() {
   bool should_show_icon =
       (m_status.ascii_mode || !m_status.composing || !m_ctx.aux.empty());
-  m_candidateCount = MIN((int)m_ctx.cinfo.candies.size(), MAX_CANDIDATES_COUNT);
+  m_candidateCount = static_cast<int>((std::min)(
+      m_ctx.cinfo.candies.size(), static_cast<size_t>(MAX_CANDIDATES_COUNT)));
+  if (m_ctx.cinfo.highlighted < 0 ||
+      m_ctx.cinfo.highlighted >= m_candidateCount)
+    m_ctx.cinfo.highlighted = 0;
   // When candidate list vanishes, release sticky top/bottom placement state.
   if (m_lastCandidateCount > 0 && m_candidateCount == 0) {
     m_sticky = false;
@@ -298,38 +499,88 @@ void WeaselPanel::_UpdateHideCandidates() {
 }
 
 void WeaselPanel::Refresh() {
+  if (!_IsUiThread()) {
+    ::PostMessage(m_hWnd, WM_WEASEL_REFRESH, 0, 0);
+    return;
+  }
+  _CancelAutoHide();
+  _Refresh();
+}
+
+void WeaselPanel::_Refresh() {
   if (!m_hWnd)
     return;
-  if (!m_pD2D)
-    m_pD2D = std::make_shared<D2D>(m_style);
-  m_pD2D->AttachWindow(m_hWnd);
-  if (!m_style.font_face.empty() &&
-      (m_ostyle != m_style || !m_pD2D->pTextFormat))
-    m_pD2D->InitDirectWriteResources();
-  m_ostyle = m_style;
-  _UpdateHideCandidates();
-  auto hr = m_pD2D->direct3dDevice
-                ? m_pD2D->direct3dDevice->GetDeviceRemovedReason()
-                : DXGI_ERROR_DEVICE_REMOVED;
-  if (hr != S_OK) {
-    DEBUG << "Device removed detected: " << HRESULTToString(hr);
-    DeviceResources::Get().Reset();
-    if (m_pD2D->swapChain)  // only reinit window resources if attached
-      m_pD2D->InitDirect2D();
+  m_layout_ready = false;
+  try {
+    if (!m_pD2D)
+      m_pD2D = std::make_shared<D2D>(m_style);
+    if (m_pD2D->direct3dDevice &&
+        FAILED(m_pD2D->direct3dDevice->GetDeviceRemovedReason())) {
+      HR(m_pD2D->RecoverAfterDeviceLoss());
+    }
+    const float old_scale = m_pD2D->m_dpiScaleLayout;
+    m_pD2D->AttachWindow(m_hWnd);
+    if (m_ostyle != m_style || !m_pD2D->pTextFormat ||
+        old_scale != m_pD2D->m_dpiScaleLayout) {
+      m_pD2D->InitDirectWriteResources();
+      m_fullscreen_font_active = false;
+      m_fullscreen_font_snapshot = {};
+    }
+    m_ostyle = m_style;
+    _UpdateHideCandidates();
+    _CreateLayout();
+    if (!m_layout)
+      HR(E_INVALIDARG);
+    m_layout->DoLayout();
+    _ResizeWindow();
+    if (m_preview_mode) {
+      if (!m_preview_positioned && !m_preview_detached)
+        RepositionPreview();
+    } else {
+      _Reposition();
+    }
+    m_layout_ready = true;
+    RedrawWindow();
+  } catch (...) {
+    DEBUG << "WeaselPanel::Refresh: layout failed, frame skipped";
+    _RequestPaintRecovery();
   }
-  _CreateLayout();
-  m_layout->DoLayout();
-  _ResizeWindow();
-  if (m_preview_mode) {
-    if (!m_preview_positioned && !m_preview_detached)
-      RepositionPreview();
-  } else {
-    _Reposition();
+}
+
+void WeaselPanel::_RequestPaintRecovery() {
+  m_octx = Context();
+  m_layout_ready = false;
+  try {
+    if (m_pD2D) {
+      HR(m_pD2D->RecoverPaintResources());
+      m_fullscreen_font_active = false;
+      m_fullscreen_font_snapshot = {};
+      m_pD2D->InitDirectWriteResources();
+    }
+  } catch (...) {
+    // Persistent failures wait for another external refresh after the budget.
   }
-  RedrawWindow();
+  if (m_paint_recovery_left && IsWindow()) {
+    --m_paint_recovery_left;
+    ::PostMessage(m_hWnd, WM_WEASEL_REFRESH, 1, 0);
+  }
+}
+
+void WeaselPanel::RedrawWindow() {
+  if (!_IsUiThread()) {
+    ::PostMessage(m_hWnd, WM_WEASEL_REDRAW, 0, 0);
+    return;
+  }
+  // Some hosts (including MobaXterm) discard WM_PAINT. Render immediately on
+  // the UI thread, using the composition swap chain rather than layered GDI.
+  DoPaint();
 }
 
 void WeaselPanel::RepositionPreview() {
+  if (!_IsUiThread()) {
+    ::PostMessage(m_hWnd, WM_WEASEL_PREVIEW, 0, 0);
+    return;
+  }
   if (!m_hWnd || !m_preview_mode || m_preview_detached || !m_parent ||
       !m_layout)
     return;
@@ -360,24 +611,21 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
   } else {
     m_lastCursorPos = CPoint(-1, -1);
   }
-  HINSTANCE hInstance = GetModuleHandle(nullptr);
-  WNDCLASS wc = {};
-  wc.lpfnWndProc = WeaselPanel::WindowProc;
-  wc.hInstance = hInstance;
-  wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-  wc.lpszClassName = L"WeaselPanel";
-  ATOM atom = RegisterClass(&wc);
-  if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+  if (!_RegisterWindowClass())
     return FALSE;
-  }
   ThreadDpiAwarenessScope dpi_scope;
   const DWORD ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
                          (m_preview_mode ? 0 : WS_EX_TOPMOST) |
                          WS_EX_NOREDIRECTIONBITMAP;
-  m_hWnd = CreateWindowEx(
-      ex_style, L"WeaselPanel", L"WeaselPanel", WS_POPUP | WS_CLIPSIBLINGS,
-      CW_USEDEFAULT, CW_USEDEFAULT, 10, 10, parent, nullptr, hInstance, this);
+  m_hWnd =
+      CreateWindowExW(ex_style, MAKEINTATOM(m_windowClassAtom), L"WeaselPanel",
+                      WS_POPUP | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT,
+                      10, 10, parent, nullptr, m_windowClassModule, this);
   if (m_hWnd) {
+    m_fullscreen_font_active = false;
+    m_fullscreen_font_snapshot = {};
+    m_layout_ready = false;
+    m_paint_recovery_left = MAX_PAINT_RECOVERY;
     if (!m_pD2D) {
       DEBUG << "m_style.font_face: " << m_style.font_face;
       m_pD2D = std::make_shared<D2D>(m_style);
@@ -386,6 +634,9 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
     if (!m_style.font_face.empty())
       m_pD2D->InitDirectWriteResources();
     m_ostyle = m_style;
+    // A new HWND needs a fresh layout even if the retained response is
+    // unchanged. Do not rely on the host's one-time UI warmup or WM_PAINT.
+    Refresh();
   }
   return !!m_hWnd;
 }
@@ -421,16 +672,33 @@ void WeaselPanel::_UpdateOffsetY(CRect& arc, CRect& prc) {
 }
 
 void WeaselPanel::DoPaint() {
-  if (!m_pD2D || !m_layout || !m_pD2D->dc || !m_pD2D->swapChain)
+  try {
+    _DoPaint();
+  } catch (...) {
+    // End an interrupted drawing session, but never present the failed frame.
+    if (m_pD2D && m_pD2D->dc)
+      m_pD2D->dc->EndDraw();
+    DEBUG << "WeaselPanel::DoPaint: paint failed, frame skipped";
+    _RequestPaintRecovery();
+  }
+}
+
+void WeaselPanel::_DoPaint() {
+  if (!m_layout_ready || !m_pD2D || !m_layout)
+    return;
+  if (!m_pD2D->dc || !m_pD2D->swapChain || !m_pD2D->bitmap || !m_pD2D->visual ||
+      !m_pD2D->target || !m_pD2D->m_pBrush) {
+    _RequestPaintRecovery();
+    return;
+  }
+  if (!m_pD2D->m_pWriteFactory)
     return;
   auto hr = m_pD2D->direct3dDevice
                 ? m_pD2D->direct3dDevice->GetDeviceRemovedReason()
                 : DXGI_ERROR_DEVICE_REMOVED;
   if (FAILED(hr)) {
-    DEBUG << HRESULTToString(hr);
-    m_pD2D->InitDirect2D();
-    if (!m_pD2D->dc || !m_pD2D->swapChain)
-      return;
+    _RequestPaintRecovery();
+    return;
   }
   m_pD2D->dc->BeginDraw();
   m_pD2D->dc->Clear(D2D1::ColorF({0.0f, 0.0f, 0.0f, 0.0f}));
@@ -479,7 +747,8 @@ void WeaselPanel::DoPaint() {
       if (SUCCEEDED(hrIcon) && pBitmap) {
         auto iconRect = m_layout->GetStatusIconRect();
         if (m_istorepos)
-          iconRect.OffsetRect(0, m_offsety_preedit);
+          iconRect.OffsetRect(
+              0, !m_ctx.aux.empty() ? m_offsety_aux : m_offsety_preedit);
         D2D1_RECT_F iconRectf = D2D1::RectF(iconRect.left, iconRect.top,
                                             iconRect.right, iconRect.bottom);
         m_pD2D->dc->DrawBitmap(pBitmap.Get(), iconRectf);
@@ -487,25 +756,20 @@ void WeaselPanel::DoPaint() {
     }
   }
 
-  auto hrEnd = m_pD2D->dc->EndDraw();
+  const auto hrEnd = m_pD2D->dc->EndDraw();
   if (FAILED(hrEnd)) {
     DEBUG << "EndDraw failed: " << HRESULTToString(hrEnd);
-    DeviceResources::Get().Reset();
-    m_pD2D->InitDirect2D();
+    _RequestPaintRecovery();
     return;
   }
-  // Make the swap chain available to the composition engine
-  HRESULT hrPresent = m_pD2D->swapChain->Present(1, 0);  // sync
-  if (hrPresent == DXGI_ERROR_DEVICE_REMOVED ||
-      hrPresent == DXGI_ERROR_DEVICE_RESET) {
-    DEBUG << "Device lost during Present: " << HRESULTToString(hrPresent);
-    DeviceResources::Get().Reset();
-    m_pD2D->InitDirect2D();
-  } else if (FAILED(hrPresent)) {
+  const auto hrPresent = m_pD2D->swapChain->Present(1, 0);
+  if (FAILED(hrPresent)) {
     DEBUG << "Present failed: " << HRESULTToString(hrPresent);
-    DeviceResources::Get().Reset();
-    m_pD2D->InitDirect2D();
+    _RequestPaintRecovery();
+    return;
   }
+  m_octx = m_ctx;
+  m_paint_recovery_left = MAX_PAINT_RECOVERY;
 }
 
 bool WeaselPanel::_DrawPreedit(const Text& text, bool isPreedit) {
@@ -514,8 +778,14 @@ bool WeaselPanel::_DrawPreedit(const Text& text, bool isPreedit) {
   PtTextFormat& pTextFormat = m_pD2D->pPreeditFormat;
 
   if (!t.empty()) {
-    const TextRange& range = m_layout->GetPreeditRange();
-    if (range.start < range.end) {
+    TextRange range{};
+    for (const auto& attr : text.attributes) {
+      if (attr.type == HIGHLIGHTED) {
+        range = attr.range;
+      }
+    }
+    if (range.start >= 0 && range.start < range.end &&
+        static_cast<size_t>(range.end) <= t.size()) {
       auto before_str = t.substr(0, range.start);
       auto hilited_str = t.substr(range.start, range.end - range.start);
       auto after_str = t.substr(range.end);
@@ -753,16 +1023,22 @@ void WeaselPanel::_TextOut(CRect& rc,
                            size_t cch,
                            uint32_t color,
                            PtTextFormat& pTextFormat) {
-  if (!pTextFormat.Get() || !m_pD2D || !m_pD2D->m_pWriteFactory)
+  if (!pTextFormat.Get() || !m_pD2D || !m_pD2D->m_pWriteFactory ||
+      !m_pD2D->dc || !m_pD2D->m_pBrush)
     return;
   m_pD2D->SetBrushColor(color);
 
   ComPtr<IDWriteTextLayout> pTextLayout;
   HRESULT hr = m_pD2D->m_pWriteFactory->CreateTextLayout(
-      text.c_str(), cch, pTextFormat.Get(), rc.Width(), rc.Height(),
+      text.c_str(),
+      static_cast<UINT32>((std::min)(
+          {cch, text.size(),
+           static_cast<size_t>((std::numeric_limits<UINT32>::max)())})),
+      pTextFormat.Get(), rc.Width(), rc.Height(),
       reinterpret_cast<IDWriteTextLayout**>(pTextLayout.GetAddressOf()));
-  if (FAILED(hr) || !pTextLayout)
-    return;
+  HR(hr);
+  if (!pTextLayout)
+    HR(E_POINTER);
   if (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
       m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN) {
     DWRITE_FLOW_DIRECTION flow = m_style.vertical_text_left_to_right
@@ -777,8 +1053,8 @@ void WeaselPanel::_TextOut(CRect& rc,
   float offsetx = (float)rc.left;
   float offsety = (float)rc.top;
 
-  DWRITE_OVERHANG_METRICS omt;
-  pTextLayout->GetOverhangMetrics(&omt);
+  DWRITE_OVERHANG_METRICS omt{};
+  HR(pTextLayout->GetOverhangMetrics(&omt));
   if (m_style.layout_type != UIStyle::LAYOUT_VERTICAL_TEXT &&
       m_style.layout_type != UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN &&
       omt.left > 0)
@@ -807,10 +1083,10 @@ void WeaselPanel::_HighlightRect(const RECT& rect,
     radius = DPI_SCALE(m_style.round_corner_ex) - DPI_SCALE(border) / 2.0f;
   // draw shadow
   if (COLORNOTTRANSPARENT(shadow_color) && DPI_SCALE(m_style.shadow_radius))
-    m_pD2D->FillGeometry(rect, shadow_color, radius, roundInfo, true);
+    HR(m_pD2D->FillGeometry(rect, shadow_color, radius, roundInfo, true));
   // draw back color
   if (COLORNOTTRANSPARENT(back_color))
-    m_pD2D->FillGeometry(rect, back_color, radius, roundInfo);
+    HR(m_pD2D->FillGeometry(rect, back_color, radius, roundInfo));
   // draw border
   if (COLORNOTTRANSPARENT(border_color) && border) {
     float hb = -(float)border / 2;
@@ -932,12 +1208,32 @@ void WeaselPanel::_CaptureRect(CRect& rect) {
 }
 
 void WeaselPanel::OnDestroy() {
+  // Posted pointer payloads otherwise disappear with the HWND without
+  // destructors.
+  MSG pending{};
+  while (::PeekMessage(&pending, m_hWnd, WM_WEASEL_MOVETO, WM_WEASEL_SETSTYLE,
+                       PM_REMOVE)) {
+    switch (pending.message) {
+      case WM_WEASEL_MOVETO:
+        delete reinterpret_cast<RECT*>(pending.lParam);
+        break;
+      case WM_WEASEL_UPDATE:
+        delete reinterpret_cast<WeaselUIUpdate*>(pending.lParam);
+        break;
+      case WM_WEASEL_SETSTYLE:
+        delete reinterpret_cast<UIStyle*>(pending.lParam);
+        break;
+    }
+  }
   // ensure timers are cleared and then reset state
   _ClearTimers();
+  m_pending_autohide.Reset();
   if (GetCapture() == m_hWnd)
     ReleaseCapture();
 
   m_hoverIndex = -1;
+  m_shown = false;
+  m_layout_ready = false;
   m_layout.reset();
   // The next HWND starts with a small placeholder size.
   m_lastWindowWidth = -1;
@@ -1172,8 +1468,17 @@ LRESULT CALLBACK WeaselPanel::WindowProc(HWND hwnd,
   }
   auto self =
       reinterpret_cast<WeaselPanel*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-  if (self)
-    return self->MsgHandler(hwnd, uMsg, wParam, lParam);
+  if (self) {
+    try {
+      return self->MsgHandler(hwnd, uMsg, wParam, lParam);
+    } catch (...) {
+      DEBUG << "WeaselPanel::WindowProc: UI operation failed";
+      self->_RequestPaintRecovery();
+      if (uMsg == WM_PAINT)
+        ValidateRect(hwnd, nullptr);
+      return 0;
+    }
+  }
   return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
@@ -1182,14 +1487,59 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
                                 WPARAM wParam,
                                 LPARAM lParam) {
   switch (uMsg) {
+    case WM_WEASEL_DESTROY_OWNER:
+      return DestroyWindow(wParam != 0) ? 1 : 0;
+    case WM_WEASEL_REFRESH:
+      if (wParam)  // Internal recovery must not cancel the auto-hide timer.
+        _Refresh();
+      else
+        Refresh();
+      return 0;
+    case WM_WEASEL_REDRAW:
+      RedrawWindow();
+      return 0;
+    case WM_WEASEL_MOVETO: {
+      std::unique_ptr<RECT> rc(reinterpret_cast<RECT*>(lParam));
+      if (rc)
+        MoveTo(*rc);
+      return 0;
+    }
+    case WM_WEASEL_UPDATE: {
+      std::unique_ptr<WeaselUIUpdate> update(
+          reinterpret_cast<WeaselUIUpdate*>(lParam));
+      if (update)
+        _ApplyUpdate(update->ctx, update->status);
+      return 0;
+    }
+    case WM_WEASEL_SETSTYLE: {
+      std::unique_ptr<UIStyle> style(reinterpret_cast<UIStyle*>(lParam));
+      if (style)
+        ApplyStyle(*style);
+      return 0;
+    }
+    case WM_WEASEL_SHOW: {
+      const auto cmd = static_cast<PanelVisibility>(wParam);
+      _ApplyVisibility(cmd, static_cast<size_t>(lParam));
+      // Keep pending=true until the timeout timer has actually been armed.
+      // This closes the cross-request gap between PostMessage and UI apply.
+      if (cmd == PanelVisibility::ShowWithTimeout)
+        m_pending_autohide.OnApplied();
+      return 0;
+    }
+    case WM_WEASEL_PREVIEW:
+      RepositionPreview();
+      return 0;
     case WM_PAINT:
       DoPaint();
-      break;
+      ValidateRect(hwnd, nullptr);
+      return 0;
     case WM_DESTROY:
       OnDestroy();
       return 0;
     case WM_NCDESTROY:
       SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+      m_pending_autohide.Reset();
+      m_hWnd = nullptr;
       return DefWindowProc(hwnd, uMsg, wParam, lParam);
     case WM_MOUSEMOVE:
       OnMouseMove(uMsg, wParam, lParam);
@@ -1211,6 +1561,8 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
       }
       if (m_pD2D) {
         m_pD2D->InitDpiInfo();
+        m_fullscreen_font_active = false;
+        m_fullscreen_font_snapshot = {};
         if (!m_style.font_face.empty())
           m_pD2D->InitDirectWriteResources();
       }
@@ -1221,11 +1573,12 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
         ::KillTimer(m_hWnd, AUTOREV_TIMER);
         m_clickTimer = 0;
         m_bar_scale = 1.0f;
-        InvalidateRect(m_hWnd, nullptr, TRUE);
+        RedrawWindow();
         return 0;
       } else if (wParam == AUTOHIDE_TIMER) {
         ::KillTimer(m_hWnd, AUTOHIDE_TIMER);
         m_autoHideTimer = 0;
+        m_autohide_counting = false;
         // hide the panel on auto-hide
         ShowWindow(SW_HIDE);
         return 0;

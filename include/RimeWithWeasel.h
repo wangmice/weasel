@@ -1,6 +1,7 @@
 #pragma once
 #include <WeaselIPC.h>
 #include <WeaselUI.h>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <mutex>
@@ -10,10 +11,12 @@
 struct CaseInsensitiveCompare {
   bool operator()(const std::string& str1, const std::string& str2) const {
     std::string str1Lower, str2Lower;
-    std::transform(str1.begin(), str1.end(), std::back_inserter(str1Lower),
-                   [](char c) { return std::tolower(c); });
-    std::transform(str2.begin(), str2.end(), std::back_inserter(str2Lower),
-                   [](char c) { return std::tolower(c); });
+    std::transform(
+        str1.begin(), str1.end(), std::back_inserter(str1Lower),
+        [](char c) { return std::tolower(static_cast<unsigned char>(c)); });
+    std::transform(
+        str2.begin(), str2.end(), std::back_inserter(str2Lower),
+        [](char c) { return std::tolower(static_cast<unsigned char>(c)); });
     return str1Lower < str2Lower;
   }
 };
@@ -30,6 +33,12 @@ struct SessionStatus {
   RimeStatus status;
   bool __synced;
   RimeSessionId session_id;
+  // 客户端应用名（小写，_ReadClientInfo 于建会话时解析）：会话期内不变，
+  // 供应用选项匹配与托盘刷新使用，避免每键 get_property 交叉查询
+  std::string client_app;
+  // cleanup_stale_sessions() 后只在该会话下一次使用时重新验证一次，避免
+  // 把 find_session() 重新放回健康状态下的每键热路径。
+  std::uint64_t validated_cleanup_epoch = 0;
 };
 typedef std::map<DWORD, SessionStatus> SessionStatusMap;
 typedef DWORD WeaselSessionId;
@@ -45,16 +54,28 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
   virtual ~RimeWithWeaselHandler();
   virtual void Initialize();
   virtual void Finalize();
+  bool IsReadyForSessions() const override { return !m_disabled; }
   virtual DWORD FindSession(WeaselSessionId ipc_id);
   virtual DWORD AddSession(LPWSTR buffer, EatLine eat = 0);
+  virtual bool RespondSession(WeaselSessionId ipc_id, EatLine eat) {
+    if (m_disabled || !_ValidateRimeSession(ipc_id, true))
+      return false;
+    if (eat && !_Respond(ipc_id, eat))
+      return false;
+    _UpdateUI(ipc_id);
+    m_active_session = ipc_id;
+    return true;
+  }
   virtual DWORD RemoveSession(WeaselSessionId ipc_id);
+  DWORD DestroySession(WeaselSessionId ipc_id) override;
   virtual BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent,
                                WeaselSessionId ipc_id,
                                EatLine eat);
-  virtual void CommitComposition(WeaselSessionId ipc_id);
+  virtual void CommitComposition(WeaselSessionId ipc_id, EatLine eat);
   virtual void ClearComposition(WeaselSessionId ipc_id);
-  virtual void SelectCandidateOnCurrentPage(size_t index,
-                                            WeaselSessionId ipc_id);
+  virtual bool SelectCandidateOnCurrentPage(size_t index,
+                                            WeaselSessionId ipc_id,
+                                            EatLine eat);
   virtual bool HighlightCandidateOnCurrentPage(size_t index,
                                                WeaselSessionId ipc_id,
                                                EatLine eat);
@@ -73,29 +94,53 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
 
  private:
   void _Setup();
+  void _Initialize(bool detect_deployer);
   bool _IsDeployerRunning();
-  void _UpdateUI(WeaselSessionId ipc_id);
+
+  // 单次请求内 _Respond → _UpdateUI 的流水数据（B11）：
+  // - passthrough：直通键标记（未吃键、无上屏、未组词、无状态联动、
+  //   无待展示通知），由 ProcessKeyEvent 置位、_Respond 期间按实际情况
+  //   清除，用于跳过 get_context 与服务端 UI 全刷新；
+  // - status/have_status：_Respond 已取得的会话状态快照，
+  //   供 _UpdateUI/_GetStatus 复用，免去第二次 get_status 全量拷贝
+  struct RespondContext {
+    bool passthrough = true;
+    bool have_status = false;
+    weasel::Status status;
+  };
+
+  void _UpdateUI(WeaselSessionId ipc_id, const RespondContext* rc = nullptr);
   void _LoadSchemaSpecificSettings(WeaselSessionId ipc_id,
                                    const std::string& schema_id);
   void _LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
                                 bool ignore_app_name = false);
   bool _ShowMessage(weasel::Context& ctx, weasel::Status& status);
-  bool _Respond(WeaselSessionId ipc_id, EatLine eat);
+  bool _Respond(WeaselSessionId ipc_id,
+                EatLine eat,
+                RespondContext* rc = nullptr);
   void _ReadClientInfo(WeaselSessionId ipc_id, LPWSTR buffer);
   void _GetCandidateInfo(weasel::CandidateInfo& cinfo, RimeContext& ctx);
   void _GetStatus(weasel::Status& stat,
                   WeaselSessionId ipc_id,
-                  weasel::Context& ctx);
+                  weasel::Context& ctx,
+                  const RespondContext* rc = nullptr);
   void _GetContext(weasel::Context& ctx, RimeSessionId session_id);
   void _UpdateShowNotifications(RimeConfig* config, bool initialize = false);
 
   void _UpdateInlinePreeditStatus(WeaselSessionId ipc_id);
+  bool _ValidateRimeSession(WeaselSessionId ipc_id, bool force);
 
-  RimeSessionId to_session_id(WeaselSessionId ipc_id) {
-    return m_session_status_map[ipc_id].session_id;
+  // 会话表查询：未知/已失效会话一律返回 0（librime 的无效会话号，
+  // 相应 API 调用安全落空），绝不向表内插入条目
+  RimeSessionId to_session_id(WeaselSessionId ipc_id) const {
+    auto it = m_session_status_map.find(ipc_id);
+    return it != m_session_status_map.end() ? it->second.session_id : 0;
   }
-  SessionStatus& get_session_status(WeaselSessionId ipc_id) {
-    return m_session_status_map[ipc_id];
+  // 查找会话状态；不存在返回 nullptr，调用方必须判空。
+  // new_session_status（AddSession）是会话表唯一的插入点
+  SessionStatus* find_session_status(WeaselSessionId ipc_id) {
+    auto it = m_session_status_map.find(ipc_id);
+    return it != m_session_status_map.end() ? &it->second : nullptr;
   }
   SessionStatus& new_session_status(WeaselSessionId ipc_id) {
     return m_session_status_map[ipc_id] = SessionStatus();
@@ -116,14 +161,28 @@ class RimeWithWeaselHandler : public weasel::RequestHandler {
                        uintptr_t session_id,
                        const char* message_type,
                        const char* message_value);
+  // 消息暂存与互斥为 static：OnNotify 运行于 rime 线程（含部署线程），
+  // 不解引用 this，handler 析构后被 librime 回调亦安全；单实例服务进程
+  // 内跨实例共享无实际影响
   static std::string m_message_type;
   static std::string m_message_value;
   static std::string m_message_label;
   static std::string m_option_name;
+  // 非递归锁，OnNotify 与 _ShowMessage/_UpdateUI/_Respond 共用：
+  // 持锁段内不得调用会同步触发 OnNotify 的 rime API。当前持锁段内唯一的
+  // rime 调用 get_state_label 为纯配置查询（librime：
+  // RimeGetStateLabel → Service::GetSession + Switches::GetStateLabel），
+  // 不派发通知，无自锁路径
   static std::mutex m_notifier_mutex;
   SessionStatusMap m_session_status_map;
   bool m_current_dark_mode;
   bool m_global_ascii_mode;
   int m_show_notifications_time;
   DWORD m_pid;
+  // Process-lifetime high-water mark. Maintenance clears active sessions but
+  // must never make a stale client ID eligible for immediate reuse.
+  WeaselSessionId m_next_ipc_session_id = 1;
+  // Incremented after each librime stale-session cleanup. A session whose
+  // validated epoch lags this value is checked once before its next key.
+  std::uint64_t m_cleanup_epoch = 0;
 };

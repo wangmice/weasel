@@ -3,6 +3,7 @@
 
 #include "stdafx.h"
 #include <WeaselConstants.h>
+#include <functional>
 
 #define TEXTSERVICE_LANGID_HANT \
   MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL)
@@ -22,6 +23,11 @@
 void DllAddRef();
 void DllRelease();
 
+// Submit work without blocking the TSF UI thread while keeping both COM's
+// logical unload count and the Windows loader reference alive until the
+// callback has completely returned.
+bool QueueDllBackgroundTask(std::function<void()> task);
+
 extern HINSTANCE g_hInst;
 
 extern LONG g_cRefDll;
@@ -40,7 +46,7 @@ extern const GUID c_guidDisplayAttributeInput;
 
 #define WEASEL_USING_OLDER_TSF_SDK
 
-/* for Windows 8 */
+/* For Windows 8 */
 #define TF_TMF_IMMERSIVEMODE 0x40000000
 #define TF_IPP_CAPS_IMMERSIVESUPPORT 0x00010000
 #define TF_IPP_CAPS_SYSTRAYSUPPORT 0x00020000

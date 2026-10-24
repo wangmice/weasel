@@ -1,44 +1,63 @@
 #include "stdafx.h"
 #include "Register.h"
+#include "FindIME.h"
 #include <strsafe.h>
 #include <WeaselUtility.h>
+
+#include <algorithm>
+#include <limits>
+#include <vector>
 
 #define CLSID_STRLEN 38  // strlen("{xxxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx}")
 
 static const char c_szInfoKeyPrefix[] = "CLSID\\";
-static const char c_szTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
+// RegisterProfile 的真实 TIP 键前缀（HKLM\SOFTWARE 下）
+static const char c_szTipKeyPrefix[] = "Software\\Microsoft\\CTF\\TIP\\";
+// 历史安装器按拼错路径写下的坏键前缀；清理须沿用历史拼写
+static const char c_szLegacyTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
 static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
 
-HKL FindIME(LANGID langid) {
-  HKL hKL = NULL;
-  WCHAR key[9];
-  HKEY hKey;
-  LSTATUS ret =
-      RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                    L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", 0,
-                    KEY_READ, &hKey);
-  if (ret == ERROR_SUCCESS) {
-    for (DWORD id = (0xE0200000 | langid);
-         hKL == NULL && id <= (0xE0FF0000 | langid); id += 0x10000) {
-      StringCchPrintfW(key, _countof(key), L"%08X", id);
-      HKEY hSubKey;
-      ret = RegOpenKeyExW(hKey, key, 0, KEY_READ, &hSubKey);
-      if (ret == ERROR_SUCCESS) {
-        WCHAR data[32];
-        DWORD type;
-        DWORD size = sizeof data;
-        ret = RegQueryValueExW(hSubKey, L"Ime File", NULL, &type, (LPBYTE)data,
-                               &size);
-        if (ret == ERROR_SUCCESS && type == REG_SZ &&
-            _wcsicmp(data, L"weasel.ime") == 0)
-          hKL = (HKL)id;
-      }
-      RegCloseKey(hSubKey);
-    }
+std::wstring ReadTextServiceProfileEnvironment() {
+  DWORD required = GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", nullptr, 0);
+  while (required != 0) {
+    std::vector<wchar_t> buffer(required);
+    const DWORD copied = GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE",
+                                                 buffer.data(), required);
+    if (copied == 0)
+      return {};
+    if (copied < required)
+      return std::wstring(buffer.data(), copied);
+
+    // The value grew between the size query and the read. Windows returns the
+    // new required size (including the terminator); retry with that size.
+    required = copied;
   }
-  RegCloseKey(hKey);
-  return hKL;
+  return {};
+}
+
+ULONG TextServiceDescriptionCch(const std::wstring& description) {
+  const size_t capped =
+      (std::min)(description.size(),
+                 static_cast<size_t>((std::numeric_limits<ULONG>::max)()));
+  return static_cast<ULONG>(capped);
+}
+
+std::wstring GetModulePath(HMODULE module) {
+  DWORD capacity = 260;
+  for (;;) {
+    std::vector<wchar_t> buffer(capacity);
+    const DWORD buffer_size = static_cast<DWORD>(buffer.size());
+    const DWORD copied = GetModuleFileNameW(module, buffer.data(), buffer_size);
+    if (copied == 0)
+      return {};
+    if (copied < buffer.size())
+      return std::wstring(buffer.data(), copied);
+
+    if (capacity >= 32768)
+      return {};
+    capacity = (std::min)(capacity * 2, static_cast<DWORD>(32768));
+  }
 }
 
 BOOL RegisterProfiles() {
@@ -49,13 +68,8 @@ BOOL RegisterProfiles() {
   CComPtr<ITfInputProcessorProfileMgr> pInputProcessorProfileMgr;
   CHECK_HR(pInputProcessorProfileMgr.CoCreateInstance(
       CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_ALL));
-  WCHAR szProfile[100];
-  std::wstring profile{};
-  DWORD dwSize = GetEnvironmentVariable(L"TEXTSERVICE_PROFILE", szProfile,
-                                        ARRAYSIZE(szProfile));
-  if (dwSize > 0) {
-    profile = szProfile;
-  }
+
+  const std::wstring profile = ReadTextServiceProfileEnvironment();
   BOOL hansEnable = (profile == L"hans");
   BOOL hantEnable = (profile == L"hant");
   BOOL hkEnable = (profile == L"hongkong");
@@ -67,17 +81,21 @@ BOOL RegisterProfiles() {
 
   const auto text_service_desc = get_weasel_ime_name();
   const WCHAR* text_service_desc_str = text_service_desc.c_str();
-  ULONG text_service_desc_len = text_service_desc.size() * sizeof(wchar_t);
+  const ULONG text_service_desc_len =
+      TextServiceDescriptionCch(text_service_desc);
 
-  WCHAR achIconFile[MAX_PATH];
-  ULONG cchIconFile =
-      GetModuleFileNameW(g_hInst, achIconFile, ARRAYSIZE(achIconFile));
+  const std::wstring icon_file = GetModulePath(g_hInst);
+  if (icon_file.empty() ||
+      icon_file.size() >
+          static_cast<size_t>((std::numeric_limits<ULONG>::max)()))
+    return FALSE;
+  const ULONG icon_file_len = static_cast<ULONG>(icon_file.size());
 
   const auto register_profile = [&](LANGID langId, HKL hkl, BOOL enable) {
     return pInputProcessorProfileMgr->RegisterProfile(
         c_clsidTextService, langId, c_guidProfile, text_service_desc_str,
-        text_service_desc_len, achIconFile, cchIconFile, TEXTSERVICE_ICON_INDEX,
-        hkl, 0, enable, 0);
+        text_service_desc_len, icon_file.c_str(), icon_file_len,
+        TEXTSERVICE_ICON_INDEX, hkl, 0, enable, 0);
   };
 
   const auto hkl_hans = FindIME(TEXTSERVICE_LANGID_HANS);
@@ -198,7 +216,25 @@ BOOL RegisterServer() {
   HKEY hSubKey;
   BOOL fRet;
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
-  char achFileName[MAX_PATH];
+
+  std::wstring module_path = GetModulePath(g_hInst);
+  if (module_path.empty())
+    return FALSE;
+
+#ifdef _M_ARM64
+  // ARM64 loads the architecture-specific payload beside the ARM64X
+  // redirector. Register the redirector itself for future COM activation.
+  const size_t separator = module_path.find_last_of(L"\\/");
+  if (separator == std::wstring::npos)
+    return FALSE;
+  module_path.resize(separator + 1);
+  module_path += L"weasel.dll";
+#endif
+
+  const auto* module_path_data =
+      reinterpret_cast<const BYTE*>(module_path.c_str());
+  const DWORD module_path_bytes =
+      static_cast<DWORD>((module_path.size() + 1) * sizeof(wchar_t));
 
   if (!CLSIDToStringA(c_clsidTextService,
                       achIMEKey + ARRAYSIZE(c_szInfoKeyPrefix) - 1))
@@ -213,27 +249,8 @@ BOOL RegisterServer() {
     if (fRet &=
         RegCreateKeyExA(hKey, c_szInProcSvr32, 0, NULL, REG_OPTION_NON_VOLATILE,
                         KEY_WRITE, NULL, &hSubKey, &dw) == ERROR_SUCCESS) {
-      dw = GetModuleFileNameA(g_hInst, achFileName, ARRAYSIZE(achFileName));
-
-#ifdef _M_ARM64
-      {
-        // On ARM64 we use ARM64X redirection DLL.
-        // When loaded, weasel.dll will be redirected to weaselARM64.dll on
-        // ARM64 processes, and weaselx64.dll on x64 processes.
-        //
-        // But GetModuleFileNameA will return the actual loaded DLL name aka
-        // weaselARM64.dll Rewrite the path to point to the redirector.
-
-        char wrapperPath[MAX_PATH];
-        StringCbCatA(achFileName, MAX_PATH, "\\..\\weasel.dll");
-        GetFullPathNameA(achFileName, MAX_PATH, wrapperPath, NULL);
-        memcpy(achFileName, wrapperPath, MAX_PATH);
-      }
-#endif
-
-      fRet &= RegSetValueExA(hSubKey, NULL, 0, REG_SZ, (BYTE*)achFileName,
-                             (strlen(achFileName) + 1) * sizeof(char)) ==
-              ERROR_SUCCESS;
+      fRet &= RegSetValueExW(hSubKey, NULL, 0, REG_SZ, module_path_data,
+                             module_path_bytes) == ERROR_SUCCESS;
       fRet &= RegSetValueExA(hSubKey, c_szModelName, 0, REG_SZ,
                              (BYTE*)TEXTSERVICE_MODEL,
                              sizeof TEXTSERVICE_MODEL) == ERROR_SUCCESS;
@@ -244,19 +261,48 @@ BOOL RegisterServer() {
   return fRet;
 }
 
-void UnregisterServer() {
+BOOL DeleteTipKeyUnderRoot(HKEY root, TipKeyPath path, REFGUID clsid) {
+  const char* prefix = nullptr;
+  size_t prefixLen = 0;
+  switch (path) {
+    case TipKeyPath::Registered:
+      prefix = c_szTipKeyPrefix;
+      prefixLen = ARRAYSIZE(c_szTipKeyPrefix) - 1;
+      break;
+    case TipKeyPath::LegacyTypo:
+      prefix = c_szLegacyTipKeyPrefix;
+      prefixLen = ARRAYSIZE(c_szLegacyTipKeyPrefix) - 1;
+      break;
+  }
+
+  char tipKey[MAX_PATH];
+  if (prefixLen + CLSID_STRLEN + 1 > ARRAYSIZE(tipKey))
+    return FALSE;
+  if (!CLSIDToStringA(clsid, tipKey + prefixLen))
+    return FALSE;
+  memcpy(tipKey, prefix, prefixLen);
+
+  // RecurseDeleteKeyA treats a missing key as success; report real failures.
+  return RecurseDeleteKeyA(root, tipKey) == ERROR_SUCCESS;
+}
+
+BOOL UnregisterServer() {
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
   if (!CLSIDToStringA(c_clsidTextService,
                       achIMEKey + ARRAYSIZE(c_szInfoKeyPrefix) - 1))
-    return;
+    return FALSE;
   memcpy(achIMEKey, c_szInfoKeyPrefix, sizeof(c_szInfoKeyPrefix) - 1);
-  RecurseDeleteKeyA(HKEY_CLASSES_ROOT, achIMEKey);
+  BOOL fRet = RecurseDeleteKeyA(HKEY_CLASSES_ROOT, achIMEKey) == ERROR_SUCCESS;
 
-  // On Windows 8, we need to manually delete the registry key for our TIP
-  char tipKey[ARRAYSIZE(c_szTipKeyPrefix) + CLSID_STRLEN];
-  if (!CLSIDToStringA(c_clsidTextService,
-                      tipKey + ARRAYSIZE(c_szTipKeyPrefix) - 1))
-    return;
-  memcpy(tipKey, c_szTipKeyPrefix, sizeof(c_szTipKeyPrefix) - 1);
-  RecurseDeleteKeyA(HKEY_CLASSES_ROOT, tipKey);
+  // Win8+ leaves the TIP key behind on unregister: clean the real location
+  // (HKLM, where RegisterProfile writes) plus the misspelled keys historical
+  // installers left under HKCR.
+  if (!DeleteTipKeyUnderRoot(HKEY_LOCAL_MACHINE, TipKeyPath::Registered,
+                             c_clsidTextService))
+    fRet = FALSE;
+  if (!DeleteTipKeyUnderRoot(HKEY_CLASSES_ROOT, TipKeyPath::LegacyTypo,
+                             c_clsidTextService))
+    fRet = FALSE;
+
+  return fRet;
 }

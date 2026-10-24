@@ -23,7 +23,7 @@ class CCompartmentEventSink : public ITfCompartmentEventSink {
 
  private:
   com_ptr<ITfCompartment> _compartment;
-  DWORD _cookie;
+  DWORD _cookie = 0;
   Callback _callback;
 
   LONG _refCount;

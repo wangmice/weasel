@@ -2,15 +2,14 @@
 #include <WeaselUI.h>
 
 namespace weasel {
+
 // ----------------------------------------------------------------------------
 class UIImpl {
  public:
   WeaselPanel panel;
   UIImpl(UI& ui) : panel(ui) {}
   ~UIImpl() {}
-  bool IsShown() const {
-    return panel.IsWindow() && ::IsWindowVisible(panel.hwnd());
-  }
+  bool IsShown() const { return panel.IsShown(); }
   void Refresh() {
     if (!panel.IsWindow())
       return;
@@ -20,16 +19,12 @@ class UIImpl {
     if (panel.IsWindow())
       panel.RepositionPreview();
   }
-  void Show() {
-    if (!panel.IsWindow())
-      return;
-    panel.ShowWindow(SW_SHOWNA);
+  void Update(const Context& ctx, const Status& status) {
+    panel.ApplyUpdate(ctx, status);
   }
-  void Hide() {
-    if (!panel.IsWindow())
-      return;
-    panel.ShowWindow(SW_HIDE);
-  }
+  void SetStyle(const UIStyle& style) { panel.ApplyStyle(style); }
+  void Show() { panel.ShowWindow(SW_SHOWNA); }
+  void Hide() { panel.ShowWindow(SW_HIDE); }
   void ShowWithTimeout(size_t millisec) { panel.ShowWithTimeout(millisec); }
   bool IsCountingDown() const { return panel.IsCountingDown(); }
 };
@@ -38,7 +33,7 @@ BOOL UI::IsCountingDown() const {
   return pimpl_ && pimpl_->panel.IsCountingDown();
 };
 
-UI::UI() : pimpl_(nullptr), in_server_(false) {}
+UI::UI() : state_(std::make_shared<UISharedState>()) {}
 
 UI::~UI() {
   if (pimpl_)
@@ -53,20 +48,24 @@ void UI::UpdateInputPosition(RECT const& rc) {
   }
 }
 void UI::Update(const Context& ctx, const Status& status) {
-  if (ctx_ == ctx && status_ == status)
+  if (!pimpl_) {
+    state_->ctx = ctx;
+    state_->status = status;
     return;
-  ctx_ = ctx;
-  status_ = status;
-  if (style_.candidate_abbreviate_length > 0) {
-    for (auto& c : ctx_.cinfo.candies) {
-      if (c.str.length() > (size_t)style_.candidate_abbreviate_length) {
-        c.str =
-            c.str.substr(0, (size_t)style_.candidate_abbreviate_length - 1) +
-            L"..." + c.str.substr(c.str.length() - 1);
-      }
-    }
   }
-  Refresh();
+  pimpl_->Update(ctx, status);
+}
+
+Context& UI::octx() {
+  return pimpl_ ? pimpl_->panel.PaintedContext() : state_->ctx;
+}
+
+void UI::SetStyle(const UIStyle& style) {
+  if (!pimpl_) {
+    state_->style = style;
+    return;
+  }
+  pimpl_->SetStyle(style);
 }
 void UI::Refresh() {
   if (pimpl_) {
@@ -94,20 +93,25 @@ void UI::Hide() {
 }
 void UI::Destroy(bool full) {
   if (pimpl_) {
-    if (pimpl_->panel.IsWindow())
-      pimpl_->panel.DestroyWindow();
-    if (full) {
-      // ensure window resources and shared devices are released
-      pimpl_->panel.ReleaseAllResources();
-      pimpl_.reset();
+    if (!pimpl_->panel.DestroyWindow(full)) {
+      if (full) {
+        // The HWND may have an in-flight callback. Keep the panel and its
+        // independently owned state alive rather than introducing UAF.
+        // Only this timeout/failed-owner case deliberately leaks UIImpl.
+        pimpl_.release();
+      }
+      return;
     }
+    if (full)
+      pimpl_.reset();
   }
 }
 bool UI::Create(HWND parent, bool preview_mode) {
   if (pimpl_) {
     pimpl_->panel.SetPreviewMode(preview_mode);
-    pimpl_->panel.Create(parent, preview_mode);
-    return true;
+    if (!pimpl_->panel.IsWindow())
+      pimpl_->panel.InvalidateWindowSizeCache();
+    return pimpl_->panel.Create(parent, preview_mode);
   }
   pimpl_ = std::make_unique<UIImpl>(*this);
   if (!pimpl_)

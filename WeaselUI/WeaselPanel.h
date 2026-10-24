@@ -1,36 +1,52 @@
+#pragma once
 #include <WeaselUI.h>
+#include <WeaselInteractionPolicy.h>
 
 #include "Layout.h"
 #include "d2d.h"
 #include <WeaselUtility.h>
+#include <atomic>
 
 namespace weasel {
+
+// Never synchronously send UI work from an IPC worker: the UI thread may be
+// waiting for the worker's API mutex. Heap snapshots transfer on successful
+// post.
+constexpr UINT WM_WEASEL_REFRESH = WM_APP + 0x1000;
+constexpr UINT WM_WEASEL_REDRAW = WM_APP + 0x1001;
+constexpr UINT WM_WEASEL_MOVETO = WM_APP + 0x1002;
+constexpr UINT WM_WEASEL_UPDATE = WM_APP + 0x1003;
+constexpr UINT WM_WEASEL_SETSTYLE = WM_APP + 0x1004;
+constexpr UINT WM_WEASEL_SHOW = WM_APP + 0x1005;
+constexpr UINT WM_WEASEL_PREVIEW = WM_APP + 0x1006;
+constexpr UINT WM_WEASEL_DESTROY_OWNER = WM_APP + 0x1007;
+enum class PanelVisibility : WPARAM { Hide, Show, ShowWithTimeout };
 
 class WeaselPanel {
  public:
   WeaselPanel(UI& ui);
-  ~WeaselPanel() {
-    if (!m_current_zhung_icon.empty())
-      DestroyIcon(m_iconEnabled);
-    if (!m_current_ascii_icon.empty())
-      DestroyIcon(m_iconAlpha);
-    if (!m_current_half_icon.empty())
-      DestroyIcon(m_iconHalf);
-    if (!m_current_full_icon.empty())
-      DestroyIcon(m_iconFull);
-  }
+  ~WeaselPanel();
   void MoveTo(RECT rc);
   void Refresh();
+  void ApplyUpdate(const Context& ctx, const Status& status);
+  void ApplyStyle(const UIStyle& style);
+  bool IsShown() const { return m_shown.load(); }
   void RepositionPreview();
 
   BOOL IsWindow() const;
   void ShowWindow(int nCmdShow);
-  void DestroyWindow();
-  // release all resources associated with this panel (window + shared devices)
+  // False means a live HWND was not destroyed by its owning thread.
+  bool DestroyWindow(bool full = false);
+  // Release this panel without resetting devices still used by other panels.
   void ReleaseAllResources();
   BOOL Create(HWND parent, bool preview_mode = false);
   void SetPreviewMode(bool enabled) { m_preview_mode = enabled; }
   bool GetIsReposition() { return m_istorepos; }
+  Context& PaintedContext() { return m_octx; }
+  void InvalidateWindowSizeCache() {
+    m_lastWindowWidth = -1;
+    m_lastWindowHeight = -1;
+  }
 
   static const int AUTOREV_TIMER = 20241209;
   static const int AUTOHIDE_TIMER = 20241107;
@@ -38,7 +54,20 @@ class WeaselPanel {
   HWND hwnd() const;
 
  private:
-  void RedrawWindow() { InvalidateRect(m_hWnd, nullptr, true); }
+  // A local window class belongs to this Panel's actual code module, never
+  // to the hosting EXE. Keep that module referenced until class unregistration.
+  bool _RegisterWindowClass();
+  void _UnregisterWindowClass();
+  void RedrawWindow();
+  bool _IsUiThread() const;
+  void _Refresh();
+  void _DoPaint();
+  void _RequestPaintRecovery();
+  void _ApplyUpdate(const Context& ctx, const Status& status);
+  void _SetVisibility(PanelVisibility cmd, size_t millisec = 0);
+  void _ApplyVisibility(PanelVisibility cmd, size_t millisec);
+  void _CancelAutoHide();
+  void _ScopeFullscreenFont(bool fullscreen);
   void _CreateLayout();
   bool _DrawPreedit(const Text& text, bool isPreedit);
   bool _DrawCandidates();
@@ -79,10 +108,14 @@ class WeaselPanel {
   // helper to clear any active timers
   void _ClearTimers();
 
+  // Own the storage underlying m_ctx/m_style/m_uiCallback.
+  std::shared_ptr<UISharedState> m_uiState;
   RECT m_inputPos{0, 0, 0, 0};
   CPoint m_lastCursorPos = {-1, -1};
 
   Context& m_ctx;
+  // Fork paint-recovery bookkeeping is panel-local; upstream removed UI::octx.
+  Context m_octx;
   Status& m_status;
   const bool& m_in_server;
   UIStyle& m_style;
@@ -93,8 +126,8 @@ class WeaselPanel {
   int m_hoverIndex = -1;
   bool hide_candidates;
 
-  int m_offsetys[MAX_CANDIDATES_COUNT];  // offset y for candidates when
-                                         // vertical layout over bottom
+  int m_offsetys[MAX_CANDIDATES_COUNT] = {};  // offset y for candidates when
+                                              // vertical layout over bottom
   int m_offsety_preedit = 0;
   int m_offsety_aux = 0;
   bool m_istorepos = false;
@@ -117,6 +150,9 @@ class WeaselPanel {
   UICallbackFunc& m_uiCallback;
   // window handle and per-instance click timer
   HWND m_hWnd;
+  std::wstring m_windowClassName;
+  HMODULE m_windowClassModule = nullptr;
+  ATOM m_windowClassAtom = 0;
   HWND m_parent = nullptr;
   bool m_preview_mode = false;
   bool m_preview_positioned = false;
@@ -128,6 +164,17 @@ class WeaselPanel {
   UINT_PTR m_autoHideTimer = 0;
   int m_lastWindowWidth = -1;
   int m_lastWindowHeight = -1;
+  std::atomic<bool> m_shown{false};
+  std::atomic<bool> m_autohide_counting{false};
+  interaction_policy::PendingAutoHideState m_pending_autohide;
+  bool m_layout_ready = false;
+  static constexpr BYTE MAX_PAINT_RECOVERY = 2;
+  BYTE m_paint_recovery_left = MAX_PAINT_RECOVERY;
+  struct TextFormatsSnapshot {
+    PtTextFormat text, preedit, label, comment;
+  };
+  bool m_fullscreen_font_active = false;
+  TextFormatsSnapshot m_fullscreen_font_snapshot;
 
  public:
   void ShowWithTimeout(size_t millisec);

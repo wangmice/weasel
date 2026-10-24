@@ -1,35 +1,107 @@
 #include "stdafx.h"
 #include "Globals.h"
 
+#include <new>
+#include <utility>
+
 HINSTANCE g_hInst;
 
 LONG g_cRefDll = -1;
 
 CRITICAL_SECTION g_cs;
 
+void DllAddRef() {
+  InterlockedIncrement(&g_cRefDll);
+}
+
+void DllRelease() {
+  InterlockedDecrement(&g_cRefDll);
+}
+
+namespace {
+
+struct DllBackgroundTaskContext {
+  std::function<void()> task;
+  HMODULE module = nullptr;
+};
+
+void CALLBACK RunDllBackgroundTask(PTP_CALLBACK_INSTANCE instance,
+                                   PVOID raw_context) noexcept {
+  auto* context = static_cast<DllBackgroundTaskContext*>(raw_context);
+  const HMODULE module = context ? context->module : nullptr;
+
+  // The logical DllAddRef below keeps DllCanUnloadNow() false while the task
+  // is pending/running. The loader reference is released by the threadpool
+  // only after this callback has completely returned, closing the final
+  // epilogue window where COM could otherwise unload code still on the stack.
+  if (module)
+    FreeLibraryWhenCallbackReturns(instance, module);
+
+  if (context) {
+    try {
+      context->task();
+    } catch (...) {
+      // Background service launch is best-effort; never let an exception cross
+      // the Windows threadpool callback boundary.
+    }
+    delete context;
+  }
+
+  DllRelease();
+}
+
+}  // namespace
+
+bool QueueDllBackgroundTask(std::function<void()> task) {
+  if (!task)
+    return false;
+
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(&g_cRefDll), &module)) {
+    return false;
+  }
+
+  auto* context =
+      new (std::nothrow) DllBackgroundTaskContext{std::move(task), module};
+  if (!context) {
+    FreeLibrary(module);
+    return false;
+  }
+
+  DllAddRef();
+  if (!TrySubmitThreadpoolCallback(RunDllBackgroundTask, context, nullptr)) {
+    delete context;
+    DllRelease();
+    FreeLibrary(module);
+    return false;
+  }
+
+  return true;
+}
+
 // {A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}
-static const GUID c_clsidTextService = {
+const CLSID c_clsidTextService = {
     0xa3f4cded,
     0xb1e9,
     0x41ee,
     {0x9c, 0xa6, 0x7b, 0x4d, 0xd, 0xe6, 0xcb, 0xa}};
 
 // {3D02CAB6-2B8E-4781-BA20-1C9267529467}
-static const GUID c_guidProfile = {
-    0x3d02cab6,
-    0x2b8e,
-    0x4781,
-    {0xba, 0x20, 0x1c, 0x92, 0x67, 0x52, 0x94, 0x67}};
+const GUID c_guidProfile = {0x3d02cab6,
+                            0x2b8e,
+                            0x4781,
+                            {0xba, 0x20, 0x1c, 0x92, 0x67, 0x52, 0x94, 0x67}};
 
 // {341F9E3A-B8AD-499D-936C-48701E329FB2}
-static const GUID c_guidLangBarItemButton = {
+const GUID c_guidLangBarItemButton = {
     0x341f9e3a,
     0xb8ad,
     0x499d,
     {0x93, 0x6c, 0x48, 0x70, 0x1e, 0x32, 0x9f, 0xb2}};
 
 // {2AC87E79-3260-4B32-9DEA-F8390976C20B}
-static const GUID c_guidDisplayAttributeInput = {
+const GUID c_guidDisplayAttributeInput = {
     0x2ac87e79,
     0x3260,
     0x4b32,

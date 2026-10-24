@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <functional>
 #include <memory>
+#include <string>
 #include <KeyEvent.h>
 
 #define WEASEL_IPC_WINDOW L"WeaselIPCWindow_1.0"
@@ -40,6 +41,39 @@ enum WEASEL_IPC_COMMAND {
 #define WM_WEASEL_SERVICE_NOTIFY (WEASEL_IPC_LAST_COMMAND + 200)
 
 namespace weasel {
+// One process-wide deployer singleton name is shared with WeaselServer startup
+// detection. Keeping the literal here prevents the two sides from silently
+// drifting and initializing librime concurrently.
+inline constexpr wchar_t kDeployerExclusiveMutexName[] =
+    L"WeaselDeployerExclusiveMutex";
+
+// Typed key result for callers that need to distinguish a normal unhandled
+// key from session invalidation and transport delivery ambiguity.
+enum class KeyEventResult {
+  Handled,
+  Unhandled,
+  InvalidSession,
+  // The request write never completed, so this key is safe to replay after
+  // reconnecting to a replacement server.
+  TransportNotDelivered,
+  // The request may already have reached the server; replay is unsafe.
+  TransportError,
+};
+
+// Candidate confirmation distinguishes a definite rejection/non-delivery from
+// an ambiguous response failure. Never replay a potentially delivered choice.
+enum class CandidateSelectResult {
+  Selected,        // A new server acknowledged successful Rime selection.
+  LegacyResponse,  // An older server returned a body but no success code.
+  Rejected,        // Completed transaction, but Rime did not select.
+  NotDelivered,    // The request definitely did not reach the server.
+  Ambiguous,       // The request may have executed; do not retry automatically.
+};
+
+// Kept in the response body instead of the scalar DWORD result so an older
+// client still sees FALSE and releases the key rather than swallowing it.
+constexpr wchar_t kInvalidSessionResponseField[] = L"session.invalid=1";
+
 struct PipeMessage {
   WEASEL_IPC_COMMAND Msg;
   DWORD wParam;
@@ -52,6 +86,49 @@ struct IPCMetadata {
   WCHAR server_window_class[WINDOW_CLASS_LENGTH];
 };
 
+enum class ServerLifecycle : LONG {
+  Starting = 1,
+  Ready = 2,
+  Maintenance = 3,
+  Stopping = 4,
+};
+
+struct ServerRuntimeState {
+  UINT32 version;
+  UINT32 process_id;
+  LONG lifecycle;
+  // Version 1 originally left this word at zero. New servers keep the same
+  // wire layout and mark it with a monotonic 31-bit lifecycle-start tick so
+  // new recovery code can bound wedged non-Ready states without breaking
+  // already-loaded older TSF clients.
+  UINT32 reserved;
+  UINT64 process_creation_time;
+};
+static_assert(sizeof(ServerRuntimeState) == 24,
+              "ServerRuntimeState must be cross-architecture stable");
+constexpr UINT32 kServerRuntimeStateVersion = 1;
+constexpr UINT32 kServerLifecycleTickMarker = 0x80000000u;
+constexpr UINT32 kServerLifecycleTickMask = 0x7fffffffu;
+
+inline UINT32 EncodeServerLifecycleTick(DWORD tick) noexcept {
+  return kServerLifecycleTickMarker |
+         (static_cast<UINT32>(tick) & kServerLifecycleTickMask);
+}
+
+inline bool ServerLifecycleElapsedAtLeast(UINT32 encoded_tick,
+                                          DWORD now,
+                                          DWORD threshold_ms) noexcept {
+  if (!(encoded_tick & kServerLifecycleTickMarker) ||
+      threshold_ms > kServerLifecycleTickMask) {
+    return false;
+  }
+
+  const UINT32 started = encoded_tick & kServerLifecycleTickMask;
+  const UINT32 current = static_cast<UINT32>(now) & kServerLifecycleTickMask;
+  const UINT32 elapsed = (current - started) & kServerLifecycleTickMask;
+  return elapsed >= threshold_ms;
+}
+
 // 處理請求之物件
 struct RequestHandler {
   using EatLine = std::function<bool(std::wstring&)>;
@@ -59,17 +136,34 @@ struct RequestHandler {
   virtual ~RequestHandler() {}
   virtual void Initialize() {}
   virtual void Finalize() {}
+  // Ready means the backend can actually create an input session. ServerImpl
+  // must never publish its Ready lifecycle state while this is false.
+  virtual bool IsReadyForSessions() const { return true; }
   virtual DWORD FindSession(DWORD session_id) { return 0; }
   virtual DWORD AddSession(LPWSTR buffer, EatLine eat = 0) { return 0; }
+  // Re-emit the current response for an already-created logical session. The
+  // IPC server uses this after an idempotent START_SESSION retry; creation and
+  // SessionKey policy remain outside the backend handler.
+  virtual bool RespondSession(DWORD session_id, EatLine eat) { return false; }
   virtual DWORD RemoveSession(DWORD session_id) { return 0; }
+  // Internal lifecycle destruction is distinct from the protocol-level remove
+  // hook because background process cleanup must not disturb another client's
+  // active UI. Backends that do not need this distinction keep legacy behavior.
+  virtual DWORD DestroySession(DWORD session_id) {
+    return RemoveSession(session_id);
+  }
   virtual BOOL ProcessKeyEvent(KeyEvent keyEvent,
                                DWORD session_id,
                                EatLine eat) {
     return FALSE;
   }
-  virtual void CommitComposition(DWORD session_id) {}
+  virtual void CommitComposition(DWORD session_id, EatLine eat) {}
   virtual void ClearComposition(DWORD session_id) {}
-  virtual void SelectCandidateOnCurrentPage(size_t index, DWORD session_id) {}
+  virtual bool SelectCandidateOnCurrentPage(size_t index,
+                                            DWORD session_id,
+                                            EatLine eat) {
+    return false;
+  }
   virtual bool HighlightCandidateOnCurrentPage(size_t index,
                                                DWORD session_id,
                                                EatLine eat) {
@@ -93,13 +187,11 @@ typedef std::function<bool(LPWSTR buffer, DWORD length)> ResponseHandler;
 // 事件處理函數
 typedef std::function<bool()> CommandHandler;
 
-// 啟動服務進程之物件
-typedef CommandHandler ServerLauncher;
-
 // IPC實現類聲明
 
 class ClientImpl;
 class ServerImpl;
+class ClientTestAccess;
 
 // IPC接口類
 
@@ -108,30 +200,45 @@ class Client {
   Client();
   virtual ~Client();
 
-  // 连接到服务，必要时启动服务进程
-  bool Connect(ServerLauncher launcher = 0);
+  // 连接到服务进程的管道（服务进程由 TSF 注册的 autostart 保证在位）
+  bool Connect();
+  // 使用调用方给定的有限预算连接；首键恢复用它共享端到端 deadline
+  bool Connect(DWORD timeout_ms);
   // 断开连接
   void Disconnect();
   // 终止服务
   void ShutdownServer();
   // 發起會話
   void StartSession();
+  // 使用调用方剩余预算建立会话
+  void StartSession(DWORD timeout_ms);
   // 結束會話
   void EndSession();
-  // 進入維護模式
-  void StartMaintenance();
-  // 退出維護模式
-  void EndMaintenance();
-  // 测试连接
+  // 進入維護模式；仅当服务端已完成状态切换并返回确认时为 true
+  bool StartMaintenance();
+  // 退出維護模式；仅当服务端完成恢复并重新发布 Ready 时为 true
+  bool EndMaintenance();
+  // 测试当前逻辑会话
   bool Echo();
+  // 仅测试服务端 IPC 往返，不创建/销毁 Rime 会话，也不改变活动会话
+  bool ProbeServer(DWORD timeout_ms);
+  // 会话已建立在活连接上（失败后为 false，直到重新建立会话）
+  bool IsSessionActive();
+  // 保留未吃键、失效会话与传输失败之间的区别；TSF 用它决定是否可安全重试
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent);
+  // 使用调用方给定的有限预算处理按键；TSF 物理键路径用它限制宿主阻塞
+  KeyEventResult ProcessKeyEventEx(KeyEvent const& keyEvent, DWORD timeout_ms);
   // 请求服务处理按键消息
   bool ProcessKeyEvent(KeyEvent const& keyEvent);
   // 上屏正在編輯的文字
   bool CommitComposition();
   // 清除正在編輯的文字
   bool ClearComposition();
+  // 焦点退出等宿主回调可限制本次清除 IPC 的等待时间；零值保持默认预算
+  bool ClearComposition(DWORD timeout_ms);
   // 选择当前页面编号为index的候选
   bool SelectCandidateOnCurrentPage(size_t index);
+  CandidateSelectResult SelectCandidateOnCurrentPageEx(size_t index);
   // 高亮当前页面编号为index的候选
   bool HighlightCandidateOnCurrentPage(size_t index);
   // 翻页，backward = true 向前翻，false向后翻
@@ -146,8 +253,11 @@ class Client {
   void TrayCommand(UINT menuId);
   // 读取server返回的数据
   bool GetResponseData(ResponseHandler handler);
+  // 本线程最近一次收到的带体应答序号；前进意味着缓冲区中有一份未解析的应答
+  UINT64 ResponseSerial();
 
  private:
+  friend class ClientTestAccess;
   ClientImpl* m_pImpl;
 };
 
@@ -170,17 +280,133 @@ class Server {
   // Callback invoked on the server message thread when a tray icon refresh is
   // requested from a pipe worker thread.
   void SetTrayRefreshCallback(std::function<void()> callback);
+  // Runs after the primary pipe listener is live but before Starting -> Ready.
+  // Use it for shell/UI startup work that must never block IPC availability.
+  void SetBeforeReadyCallback(std::function<void()> callback);
 
  private:
   ServerImpl* m_pImpl;
 };
 
-inline std::wstring GetPipeName() {
-  std::wstring pipe_name;
-  pipe_name += L"\\\\.\\pipe\\";
+inline bool GetCurrentWindowsSessionId(DWORD& session_id) noexcept {
+  session_id = 0;
+  return ::ProcessIdToSessionId(::GetCurrentProcessId(), &session_id) != FALSE;
+}
+
+// Keep the pre-session-scoping endpoint available during upgrades: processes
+// that already loaded an older TSF DLL cannot change their pipe name until the
+// host reloads the input method.
+inline std::wstring GetLegacyPipeName() {
+  std::wstring pipe_name = L"\\\\.\\pipe\\";
   pipe_name += getUsername();
   pipe_name += L"\\";
   pipe_name += WEASEL_IPC_PIPE_NAME;
   return pipe_name;
 }
+
+inline std::wstring GetPipeName() {
+  DWORD session_id = 0;
+  if (!GetCurrentWindowsSessionId(session_id))
+    return GetLegacyPipeName();
+
+  std::wstring pipe_name = GetLegacyPipeName();
+  pipe_name += L"-session-";
+  pipe_name += std::to_wstring(session_id);
+  return pipe_name;
+}
+
+inline std::wstring GetLegacyServerInstanceName() {
+  std::wstring name = L"(WEASEL)Furandōru-Sukāretto-";
+  name += getUsername();
+  return name;
+}
+
+inline std::wstring GetServerInstanceName() {
+  std::wstring name = GetLegacyServerInstanceName();
+  DWORD session_id = 0;
+  if (GetCurrentWindowsSessionId(session_id)) {
+    name += L"-session-";
+    name += std::to_wstring(session_id);
+  }
+  return name;
+}
+
+inline std::wstring GetServerLifecycleMutexName() {
+  // Preserve the historical launch-mutex object name so already-loaded older
+  // TSF processes still serialize launch against the new lifecycle protocol.
+  std::wstring name = L"WeaselServerLaunch-";
+  name += getUsername();
+  DWORD session_id = 0;
+  if (GetCurrentWindowsSessionId(session_id)) {
+    name += L"-session-";
+    name += std::to_wstring(session_id);
+  }
+  return name;
+}
+
+inline std::wstring GetServerRuntimeStateName() {
+  std::wstring name = L"WeaselServerState-";
+  name += getUsername();
+  DWORD session_id = 0;
+  if (GetCurrentWindowsSessionId(session_id)) {
+    name += L"-session-";
+    name += std::to_wstring(session_id);
+  }
+  return name;
+}
+
+class ServerLifecycleLock {
+ public:
+  ServerLifecycleLock() = default;
+  ~ServerLifecycleLock() { Release(); }
+  ServerLifecycleLock(const ServerLifecycleLock&) = delete;
+  ServerLifecycleLock& operator=(const ServerLifecycleLock&) = delete;
+
+  bool Acquire(DWORD timeout_ms,
+               SECURITY_ATTRIBUTES* security_attributes = nullptr) noexcept {
+    if (owned_)
+      return true;
+    if (!handle_) {
+      // The first server creates this mutex with the named-pipe DACL:
+      // the logon SID receives GENERIC_READ | GENERIC_WRITE, not ALL_ACCESS.
+      // CreateMutexW implicitly requests MUTEX_ALL_ACCESS when reopening an
+      // existing object, so TSF, Deployer and /quit would all get access denied
+      // despite the startup owner having already released the mutex.
+      // Only synchronization and release rights are needed here.
+      handle_ = CreateMutexExW(security_attributes,
+                               GetServerLifecycleMutexName().c_str(), 0,
+                               SYNCHRONIZE | MUTEX_MODIFY_STATE);
+      if (!handle_)
+        return false;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(handle_, timeout_ms);
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+      owned_ = true;
+      return true;
+    }
+    return false;
+  }
+
+  void Unlock() noexcept {
+    if (!handle_ || !owned_)
+      return;
+    ReleaseMutex(handle_);
+    owned_ = false;
+  }
+
+  void Release() noexcept {
+    if (!handle_)
+      return;
+    Unlock();
+    CloseHandle(handle_);
+    handle_ = nullptr;
+  }
+
+  bool owned() const noexcept { return owned_; }
+
+ private:
+  HANDLE handle_ = nullptr;
+  bool owned_ = false;
+};
 }  // namespace weasel

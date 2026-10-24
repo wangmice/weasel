@@ -2,11 +2,11 @@ target("WeaselSetup")
   set_kind("binary")
   add_files("./*.cpp")
   add_rules("add_rcfiles", "use_weaselconstants", "subwin")
-  add_links("imm32", "kernel32")
+  add_links("imm32", "kernel32", "advapi32")
 
   set_policy("windows.manifest.uac", "invoker")
   add_files("$(projectdir)/PerMonitorHighDPIAware.manifest")
-  add_ldflags("/DEBUG /OPT:REF /OPT:ICF /LARGEADDRESSAWARE /ERRORREPORT:QUEUE")
+  add_ldflags("/DEBUG", "/OPT:REF", "/OPT:ICF", "/LARGEADDRESSAWARE", "/ERRORREPORT:QUEUE", {force = true})
 
   before_build(function(target)
     local target_dir = path.join(target:targetdir(), target:name())

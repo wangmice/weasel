@@ -7,7 +7,7 @@ class WeaselTSF;
 class CCandidateList : public ITfIntegratableCandidateListUIElement,
                        public ITfCandidateListUIElementBehavior {
  public:
-  CCandidateList(com_ptr<WeaselTSF> pTextService);
+  CCandidateList(WeaselTSF* pTextService);
   ~CCandidateList();
 
   // IUnknown
@@ -48,12 +48,25 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
 
   /* Update */
   void UpdateUI(const weasel::Context& ctx, const weasel::Status& status);
-  void UpdateStyle(const weasel::UIStyle& sty);
   void UpdateInputPosition(RECT const& rc);
   void Destroy();
   void DestroyAll();
-  void StartUI();
+  // Unlink the non-owning TIP pointer before the host's final COM Release.
+  // A detached candidate may remain externally referenced but cannot call
+  // back into a destroyed WeaselTSF or retain UI window callbacks.
+  void DetachOwner();
+  bool HasOwner() const { return _tsf != nullptr; }
+  void StartUI(com_ptr<ITfContext> pContext);
   void EndUI();
+  // The Rime selection was acknowledged; wait for its TSF response to apply
+  // before retiring the old UIElement or registering the next generation.
+  void MarkFinalizationAccepted(UINT64 responseSerial);
+  bool HasAcceptedFinalization(UINT64 responseSerial) const {
+    return responseSerial != 0 && _uiStarted && _finalization_started &&
+           _finalization_accepted &&
+           _finalization_response_serial == responseSerial;
+  }
+  bool IsUIless() const { return _uiStarted && !_pbShow; }
 
   com_ptr<ITfContext> GetContextDocument();
   bool GetIsReposition() {
@@ -66,28 +79,40 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   weasel::UIStyle& style();
 
  private:
-  // void _UpdateOwner();
+  struct DllLifetimeLease {
+    DllLifetimeLease();
+    ~DllLifetimeLease();
+  };
+
+  // Declared first so its destructor runs last, after UI and COM members.
+  DllLifetimeLease _dllLifetime;
   HWND _GetActiveWnd();
   HRESULT _UpdateUIElement();
 
-  // for CCandidateList::EndUI(), after ending composition ||
-  // WeaselTSF::_EndUI()
   void _DisposeUIWindow();
-  // for CCandidateList::Destroy(), when inputing app exit
   void _DisposeUIWindowAll();
   void _MakeUIWindow();
 
   std::unique_ptr<weasel::UI> _ui;
   DWORD _cRef;
-  com_ptr<WeaselTSF> _tsf;
-  DWORD uiid;
+  // Weak owner: DetachOwner invalidates this before WeaselTSF dies.
+  // A COM strong reference here would create a cycle with WeaselTSF::_cand.
+  WeaselTSF* _tsf;
+  DWORD uiid = 0;
   TfIntegratableCandidateListSelectionStyle _selectionStyle =
       STYLE_ACTIVE_SELECTION;
 
   BOOL _pbShow;
   bool _uiStarted = false;
+  bool _registration_in_progress = false;
+  bool _finalization_started = false;
+  bool _finalization_accepted = false;
+  UINT64 _finalization_response_serial = 0;
   weasel::UIStyle _style;
   bool _ui_warmed_up = false;
 
+  // Exact response/composition target. UIElement callbacks and the native
+  // owner window must stay bound to this context even if thread focus changes
+  // before an asynchronous response session actually executes.
   com_ptr<ITfContext> _pContextDocument;
 };

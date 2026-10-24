@@ -4,6 +4,7 @@
 #include <VersionHelpers.hpp>
 #include <wincodec.h>
 #include <algorithm>
+#include <limits>
 #include <regex>
 
 #pragma comment(lib, "dxguid.lib")
@@ -20,19 +21,19 @@ UINT GetDpiForWindowCompat(HWND hwnd) {
 }
 }  // namespace
 
-// DeviceResources implementation moved from cpp to header; provide definitions
-// here
 DeviceResources& DeviceResources::Get() {
-  static DeviceResources instance;
-  return instance;
+  // Intentionally keep only the manager alive for process lifetime. It owns no
+  // COM interfaces strongly (current_ is weak), so DLL teardown never has to
+  // release graphics COM objects from a function-static destructor.
+  static DeviceResources* instance = new DeviceResources();
+  return *instance;
 }
 
-DeviceResources::DeviceResources() : initialized(false) {}
-
-HRESULT DeviceResources::EnsureInitialized() {
-  if (initialized)
-    return S_OK;
+HRESULT DeviceResources::CreateGenerationLocked(
+    std::shared_ptr<const DeviceResourcesSnapshot>& snapshot) {
+  auto next = std::make_shared<DeviceResourcesSnapshot>();
   HRESULT hr = S_OK;
+
   // Prefer WARP to avoid loading the host process's hardware graphics driver.
   static const D3D_FEATURE_LEVEL featureLevels[] = {
       D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
@@ -41,68 +42,103 @@ HRESULT DeviceResources::EnsureInitialized() {
   hr = D3D11CreateDevice(
       nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
       featureLevels, _countof(featureLevels), D3D11_SDK_VERSION,
-      direct3dDevice.ReleaseAndGetAddressOf(), nullptr, nullptr);
+      next->direct3dDevice.ReleaseAndGetAddressOf(), nullptr, nullptr);
   if (FAILED(hr)) {
     DEBUG << "D3D11CreateDevice WARP failed: " << HRESULTToString(hr)
           << ", retrying hardware";
     hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                            D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels,
                            _countof(featureLevels), D3D11_SDK_VERSION,
-                           direct3dDevice.ReleaseAndGetAddressOf(), nullptr,
-                           nullptr);
+                           next->direct3dDevice.ReleaseAndGetAddressOf(),
+                           nullptr, nullptr);
     if (FAILED(hr)) {
       DEBUG << "D3D11CreateDevice hardware fallback failed: "
             << HRESULTToString(hr);
       return hr;
     }
   }
-  hr = direct3dDevice.As(&dxgiDevice);
+
+  hr = next->direct3dDevice.As(&next->dxgiDevice);
   if (FAILED(hr))
     return hr;
   hr = CreateDXGIFactory2(
-      0, __uuidof(dxFactory.Get()),
-      reinterpret_cast<void**>(dxFactory.ReleaseAndGetAddressOf()));
+      0, __uuidof(next->dxFactory.Get()),
+      reinterpret_cast<void**>(next->dxFactory.ReleaseAndGetAddressOf()));
   if (FAILED(hr))
     return hr;
-  D2D1_FACTORY_OPTIONS const options = {D2D1_DEBUG_LEVEL_INFORMATION};
-  hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, options,
-                         d2Factory.ReleaseAndGetAddressOf());
+
+// WeaselUI is linked into the TSF DLL and therefore executes inside arbitrary
+// host processes. Never opt those hosts into the Direct2D debug layer by
+// default: validation failures may call DebugBreak and terminate the host
+// when no debugger is attached. Developers can opt in explicitly for a
+// debugger session.
+#if defined(WEASEL_ENABLE_D2D_DEBUG_LAYER)
+  constexpr bool kEnableD2DDebugLayer = true;
+#else
+  constexpr bool kEnableD2DDebugLayer = false;
+#endif
+  D2D1_FACTORY_OPTIONS const options = {
+      SelectD2DDebugLevel(kEnableD2DDebugLayer)};
+  hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, options,
+                         next->d2Factory.ReleaseAndGetAddressOf());
   if (FAILED(hr))
     return hr;
-  hr = d2Factory->CreateDevice(dxgiDevice.Get(),
-                               d2Device.ReleaseAndGetAddressOf());
+  hr = next->d2Factory->CreateDevice(next->dxgiDevice.Get(),
+                                     next->d2Device.ReleaseAndGetAddressOf());
   if (FAILED(hr))
     return hr;
-  hr = DCompositionCreateDevice(
-      dxgiDevice.Get(), __uuidof(dcompDevice.Get()),
-      reinterpret_cast<void**>(dcompDevice.ReleaseAndGetAddressOf()));
+  hr =
+      DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2),
+                          reinterpret_cast<IUnknown**>(
+                              next->m_pWriteFactory.ReleaseAndGetAddressOf()));
   if (FAILED(hr))
     return hr;
-  hr = DWriteCreateFactory(
-      DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2),
-      reinterpret_cast<IUnknown**>(m_pWriteFactory.ReleaseAndGetAddressOf()));
-  if (FAILED(hr))
-    return hr;
-  hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                        IID_PPV_ARGS(wicFactory.ReleaseAndGetAddressOf()));
-  if (FAILED(hr))
-    return hr;
-  initialized = true;
+
+  next->generation = next_generation_++;
+  snapshot = next;
+  current_ = next;
   return S_OK;
 }
 
-void DeviceResources::Reset() {
-  // release shared device resources so they can be recreated
-  SafeReleaseAll(direct3dDevice, dxgiDevice, dxFactory, d2Factory, d2Device,
-                 dcompDevice, m_pWriteFactory, wicFactory);
-  initialized = false;
+HRESULT DeviceResources::Acquire(
+    std::shared_ptr<const DeviceResourcesSnapshot>& snapshot) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (auto current = current_.lock()) {
+    snapshot = std::move(current);
+    return S_OK;
+  }
+  return CreateGenerationLocked(snapshot);
+}
+
+HRESULT DeviceResources::RecreateAfterDeviceLoss(
+    uint64_t failed_generation,
+    std::shared_ptr<const DeviceResourcesSnapshot>& snapshot) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (auto current = current_.lock()) {
+    // A different UI thread already recovered this generation. Adopt its
+    // replacement instead of serially creating another device generation.
+    if (current->generation != failed_generation) {
+      snapshot = std::move(current);
+      return S_OK;
+    }
+  }
+
+  // Stop handing the failed generation to new owners. Existing D2D instances
+  // keep it alive through their shared_ptr until they unwind naturally.
+  current_.reset();
+  return CreateGenerationLocked(snapshot);
+}
+
+bool DeviceResources::HasLiveGeneration() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return !current_.expired();
 }
 
 // implementation of D2D::ClearDeviceDependentCaches declared in header
 void D2D::ClearDeviceDependentCaches() {
   std::lock_guard<std::mutex> lk(cacheMutex);
-  // text formats created from IDWriteFactory are generally immutable and can
-  // survive device reset; however if DWriteFactory is reset, clear cache
+  // Text formats are immutable, but a generation rollover should not retain an
+  // old DirectWrite factory indefinitely through cached formats.
   if (!m_pWriteFactory) {
     for (auto& kv : textFormatCache) {
       kv.second.format.Reset();
@@ -121,19 +157,65 @@ void D2D::ReleaseWindowResources() {
   visual.Reset();
   target.Reset();
   swapChain.Reset();
+  dc.Reset();
+  m_pBrush.Reset();
   m_hWnd = nullptr;
+}
+
+void D2D::AdoptSharedResources(
+    const std::shared_ptr<const DeviceResourcesSnapshot>& snapshot) {
+  if (!snapshot)
+    return;
+
+  const bool generation_changed =
+      !m_sharedResources ||
+      m_sharedResources->generation != snapshot->generation;
+  if (generation_changed) {
+    std::lock_guard<std::mutex> lk(cacheMutex);
+    textFormatCache.clear();
+    textFormatCacheClock = 0;
+    pPreeditFormat.Reset();
+    pTextFormat.Reset();
+    pLabelFormat.Reset();
+    pCommentFormat.Reset();
+  }
+
+  m_sharedResources = snapshot;
+  direct3dDevice = snapshot->direct3dDevice;
+  dxgiDevice = snapshot->dxgiDevice;
+  dxFactory = snapshot->dxFactory;
+  d2Factory = snapshot->d2Factory;
+  d2Device = snapshot->d2Device;
+  m_pWriteFactory = snapshot->m_pWriteFactory;
+}
+
+HRESULT D2D::AcquireSharedResources() {
+  std::shared_ptr<const DeviceResourcesSnapshot> snapshot;
+  HRESULT hr = DeviceResources::Get().Acquire(snapshot);
+  if (SUCCEEDED(hr))
+    AdoptSharedResources(snapshot);
+  return hr;
 }
 
 D2D::D2D(UIStyle& style)
     : m_style(style), m_hWnd(nullptr), m_dpiX(96.0f), m_dpiY(96.0f) {
-  // Prepare shared device resources early so formats can be built before window
-  DeviceResources::Get().EnsureInitialized();
+  // Prepare process-shared DirectX roots early so formats can be built before
+  // a window exists. The returned shared_ptr is this D2D instance's lease.
+  AcquireSharedResources();
+
+  // WIC is a COM factory used only by this UI instance. Keep it in the same
+  // COM/apartment context as the owning panel rather than sharing the raw
+  // interface pointer between unrelated TSF UI threads.
+  CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                   IID_PPV_ARGS(wicFactory.ReleaseAndGetAddressOf()));
+
   // initialize dpi scales even without window (defaults to 96 DPI)
   InitDpiInfo();
 }
 
 void D2D::AttachWindow(HWND hwnd) {
-  if (m_hWnd == hwnd && swapChain) {
+  if (m_hWnd == hwnd && dc && swapChain && bitmap && visual && target &&
+      m_pBrush) {
     // Keep DPI scale in sync when window stays the same but monitor DPI
     // changes.
     InitDpiInfo();
@@ -148,32 +230,45 @@ D2D::~D2D() {
   SafeReleaseAll(direct3dDevice, dxgiDevice, dxFactory, swapChain, d2Factory,
                  d2Device, dc, surface, bitmap, dcompDevice, target, visual,
                  pPreeditFormat, pLabelFormat, pTextFormat, pCommentFormat,
-                 m_pWriteFactory, m_pBrush);
+                 m_pWriteFactory, wicFactory, m_pBrush, cachedIconBitmap);
   textFormatCache.clear();
+  // Release our generation lease only after every local COM reference copied
+  // from it has been released. The last D2D owner then destroys the immutable
+  // snapshot here, outside DLL/static teardown.
+  m_sharedResources.reset();
 }
 
 void D2D::InitDirect2D() {
+  // Never leave an old target/brush paired with a newly created device context.
+  // Failed initialization must expose null resources to the panel's guards.
+  const HWND hwnd = m_hWnd;
+  ReleaseWindowResources();
+  m_hWnd = hwnd;
   // clear device-dependent caches before reinitializing
   ClearDeviceDependentCaches();
   cachedIcon = nullptr;
   cachedIconBitmap.Reset();
 
-  // Use shared device resources to avoid recreating expensive objects per
-  // window
-  HRESULT hr = DeviceResources::Get().EnsureInitialized();
-  if (FAILED(hr)) {
-    DEBUG << "EnsureInitialized failed: " << HRESULTToString(hr);
-    return;
+  if (!m_sharedResources) {
+    HRESULT hr = AcquireSharedResources();
+    if (FAILED(hr)) {
+      DEBUG << "Acquire shared device resources failed: "
+            << HRESULTToString(hr);
+      return;
+    }
+  } else {
+    AdoptSharedResources(m_sharedResources);
   }
 
-  // Adopt shared pointers
-  direct3dDevice = DeviceResources::Get().direct3dDevice;
-  dxgiDevice = DeviceResources::Get().dxgiDevice;
-  dxFactory = DeviceResources::Get().dxFactory;
-  d2Factory = DeviceResources::Get().d2Factory;
-  d2Device = DeviceResources::Get().d2Device;
-  dcompDevice = DeviceResources::Get().dcompDevice;
-  m_pWriteFactory = DeviceResources::Get().m_pWriteFactory;
+  if (!dcompDevice) {
+    HRESULT hr = DCompositionCreateDevice(
+        dxgiDevice.Get(), __uuidof(dcompDevice.Get()),
+        reinterpret_cast<void**>(dcompDevice.ReleaseAndGetAddressOf()));
+    if (FAILED(hr)) {
+      DEBUG << "DCompositionCreateDevice failed: " << HRESULTToString(hr);
+      return;
+    }
+  }
 
   // Create the Direct2D device context for this window (renders to
   // window-specific target)
@@ -198,7 +293,7 @@ void D2D::InitDirect2D() {
   description.Width = rect.right - rect.left;
   description.Height = rect.bottom - rect.top;
 
-  hr = dxFactory->CreateSwapChainForComposition(
+  HRESULT hr = dxFactory->CreateSwapChainForComposition(
       dxgiDevice.Get(), &description, nullptr,
       swapChain.ReleaseAndGetAddressOf());
   if (FAILED(hr)) {
@@ -257,7 +352,7 @@ void D2D::InitDirect2D() {
     DEBUG << "Commit failed: " << HRESULTToString(hr);
     return;
   }
-  // create or reuse brush from cache
+  // create or reuse brush
   static const D2D1_COLOR_F brushColor = D2D1::ColorF(D2D1::ColorF::Black);
   hr = dc->CreateSolidColorBrush(brushColor, m_pBrush.ReleaseAndGetAddressOf());
   if (FAILED(hr)) {
@@ -283,10 +378,10 @@ void D2D::OnResize(UINT width, UINT height) {
       swapChain->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
   if (hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_REMOVED) {
     DEBUG << "Device lost during ResizeBuffers: " << HRESULTToString(hr);
-    // attempt device recovery
-    DeviceResources::Get().Reset();
-    // per-window resources will be recreated by re-initializing
-    InitDirect2D();
+    hr = RecoverAfterDeviceLoss();
+    if (FAILED(hr)) {
+      DEBUG << "shared device recovery failed: " << HRESULTToString(hr);
+    }
     return;
   }
   HR(hr);
@@ -379,13 +474,17 @@ PtTextFormat D2D::GetOrCreateTextFormat(const std::wstring& face,
     if (FAILED(hr) || !pFormatBase) {
       return PtTextFormat();
     }
-    pFormatBase.As(&pFormat);
-    pFormat->SetWordWrapping(wrap);
+    HR(pFormatBase.As(&pFormat));
+    if (!pFormat)
+      HR(E_POINTER);
+    HR(pFormat->SetWordWrapping(wrap));
 
     std::vector<std::wstring> fontFaceStrVector;
     fontFaceStrVector = ws_split(face, L",");
     static const std::basic_regex<wchar_t> styleorweight(
         (L":[^:]*[^a-f0-9:]+[^:]*"), std::basic_regex<wchar_t>::icase);
+    if (fontFaceStrVector.empty())
+      return PtTextFormat();
     fontFaceStrVector[0] =
         std::regex_replace(fontFaceStrVector[0], styleorweight, L"");
     SetFontFallback(pFormat, fontFaceStrVector);
@@ -470,11 +569,13 @@ void D2D::InitFontFormats(const wstring& label_font_face,
 }
 
 void D2D::InitDirectWriteResources() {
-  // dwrite factory is provided by DeviceResources; ensure initialized
-  HRESULT hr = DeviceResources::Get().EnsureInitialized();
-  if (FAILED(hr))
+  if (!m_sharedResources) {
+    HRESULT hr = AcquireSharedResources();
+    if (FAILED(hr))
+      return;
+  }
+  if (!m_pWriteFactory)
     return;
-  m_pWriteFactory = DeviceResources::Get().m_pWriteFactory;
   // guard against invalid style
   if (m_style.font_face.empty() || m_style.font_point <= 0)
     return;
@@ -657,13 +758,21 @@ void D2D::GetTextSize(const wstring& text,
                       size_t nCount,
                       PtTextFormat& pTextFormat,
                       LPSIZE lpSize) {
-  D2D1_SIZE_F sz;
+  if (!lpSize)
+    HR(E_POINTER);
+  lpSize->cx = lpSize->cy = 0;
+  D2D1_SIZE_F sz{};
 
   if (!pTextFormat) {
     lpSize->cx = 0;
     lpSize->cy = 0;
     return;
   }
+  if (!m_pWriteFactory)
+    HR(E_POINTER);
+  const auto count = static_cast<UINT32>(
+      (std::min)({nCount, text.size(),
+                  static_cast<size_t>((std::numeric_limits<UINT32>::max)())}));
   ComPtr<IDWriteTextLayout> pTextLayout;
   bool vertical_text_layout =
       (m_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT ||
@@ -672,18 +781,22 @@ void D2D::GetTextSize(const wstring& text,
                                    ? DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT
                                    : DWRITE_FLOW_DIRECTION_RIGHT_TO_LEFT;
   if (vertical_text_layout) {
-    HR(m_pWriteFactory->CreateTextLayout(
-        text.c_str(), (int)nCount, pTextFormat.Get(), 0.0f,
-        (float)m_style.max_height, pTextLayout.ReleaseAndGetAddressOf()));
+    HR(m_pWriteFactory->CreateTextLayout(text.c_str(), count, pTextFormat.Get(),
+                                         0.0f, (float)m_style.max_height,
+                                         pTextLayout.ReleaseAndGetAddressOf()));
+    if (!pTextLayout)
+      HR(E_POINTER);
     HR(pTextLayout->SetReadingDirection(
         DWRITE_READING_DIRECTION_TOP_TO_BOTTOM));
     HR(pTextLayout->SetFlowDirection(flow));
   } else
-    HR(m_pWriteFactory->CreateTextLayout(
-        text.c_str(), (int)nCount, pTextFormat.Get(), (float)m_style.max_width,
-        0, pTextLayout.ReleaseAndGetAddressOf()));
+    HR(m_pWriteFactory->CreateTextLayout(text.c_str(), count, pTextFormat.Get(),
+                                         (float)m_style.max_width, 0,
+                                         pTextLayout.ReleaseAndGetAddressOf()));
 
-  DWRITE_TEXT_METRICS textMetrics;
+  if (!pTextLayout)
+    HR(E_POINTER);
+  DWRITE_TEXT_METRICS textMetrics{};
   HR(pTextLayout->GetMetrics(&textMetrics));
   sz = D2D1::SizeF(ceil(textMetrics.widthIncludingTrailingWhitespace),
                    ceil(textMetrics.height));
@@ -694,9 +807,11 @@ void D2D::GetTextSize(const wstring& text,
     auto max_height =
         m_style.max_height == 0 ? textMetrics.height : m_style.max_height;
     HR(m_pWriteFactory->CreateTextLayout(
-        text.c_str(), (int)nCount, pTextFormat.Get(),
+        text.c_str(), count, pTextFormat.Get(),
         textMetrics.widthIncludingTrailingWhitespace, max_height,
         pTextLayout.ReleaseAndGetAddressOf()));
+    if (!pTextLayout)
+      HR(E_POINTER);
     HR(pTextLayout->SetReadingDirection(
         DWRITE_READING_DIRECTION_TOP_TO_BOTTOM));
     HR(pTextLayout->SetFlowDirection(flow));
@@ -704,12 +819,14 @@ void D2D::GetTextSize(const wstring& text,
     auto max_width = m_style.max_width == 0
                          ? textMetrics.widthIncludingTrailingWhitespace
                          : m_style.max_width;
-    HR(m_pWriteFactory->CreateTextLayout(
-        text.c_str(), (int)nCount, pTextFormat.Get(), max_width,
-        textMetrics.height, pTextLayout.ReleaseAndGetAddressOf()));
+    HR(m_pWriteFactory->CreateTextLayout(text.c_str(), count, pTextFormat.Get(),
+                                         max_width, textMetrics.height,
+                                         pTextLayout.ReleaseAndGetAddressOf()));
   }
 
-  DWRITE_OVERHANG_METRICS overhangMetrics;
+  if (!pTextLayout)
+    HR(E_POINTER);
+  DWRITE_OVERHANG_METRICS overhangMetrics{};
   HR(pTextLayout->GetOverhangMetrics(&overhangMetrics));
   {
     if (overhangMetrics.left > 0)
@@ -780,8 +897,7 @@ HRESULT D2D::GetBmpFromIcon(HICON hIcon, ComPtr<ID2D1Bitmap1>& pBitmap) {
     return E_INVALIDARG;  // Failed to get bitmap from icon
   }
 
-  // Use cached WIC factory
-  IWICImagingFactory* pWicFactory = DeviceResources::Get().wicFactory.Get();
+  IWICImagingFactory* pWicFactory = wicFactory.Get();
   if (!pWicFactory) {
     cleanupIconInfo();
     return E_POINTER;
@@ -917,7 +1033,7 @@ HRESULT D2D::FillGeometry(const CRect& rect,
                           uint32_t radius,
                           IsToRoundStruct roundInfo,
                           bool to_blur) {
-  if (!dc || !d2Factory)
+  if (!dc || !d2Factory || !m_pBrush)
     return E_POINTER;
   if (((color >> 24) & 0xFF) == 0)
     return S_OK;
@@ -936,7 +1052,9 @@ HRESULT D2D::FillGeometry(const CRect& rect,
     CRect rc = rect;
     rc.OffsetRect(m_dpiScaleLayout * m_style.shadow_offset_x,
                   m_dpiScaleLayout * m_style.shadow_offset_y);
-    CreateRoundedRectanglePath(rc, radius, roundInfo, pGeometry);
+    hr = CreateRoundedRectanglePath(rc, radius, roundInfo, pGeometry);
+    if (FAILED(hr))
+      return hr;
     ComPtr<ID2D1BitmapRenderTarget> bitmapRenderTarget;
     hr = dc->CreateCompatibleRenderTarget(&bitmapRenderTarget);
     if (FAILED(hr)) {
@@ -946,7 +1064,9 @@ HRESULT D2D::FillGeometry(const CRect& rect,
     bitmapRenderTarget->BeginDraw();
     bitmapRenderTarget->Clear(D2D1::ColorF(0, 0.0f));
     bitmapRenderTarget->FillGeometry(pGeometry.Get(), m_pBrush.Get());
-    bitmapRenderTarget->EndDraw();
+    hr = bitmapRenderTarget->EndDraw();
+    if (FAILED(hr))
+      return hr;
     // Get the bitmap from the bitmap render target
     ComPtr<ID2D1Bitmap> bitmap;
     hr = bitmapRenderTarget->GetBitmap(&bitmap);
@@ -962,8 +1082,11 @@ HRESULT D2D::FillGeometry(const CRect& rect,
       return hr;
     }
     blurEffect->SetInput(0, bitmap.Get());
-    blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
-                         (float)(m_dpiScaleLayout * m_style.shadow_radius));
+    hr =
+        blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
+                             (float)(m_dpiScaleLayout * m_style.shadow_radius));
+    if (FAILED(hr))
+      return hr;
     // Draw the blurred rounded rectangle onto the main render target
     dc->DrawImage(blurEffect.Get());
   } else {
@@ -981,6 +1104,8 @@ HRESULT D2D::DrawTextLayout(ComPtr<IDWriteTextLayout> pTextLayout,
                             float x,
                             float y,
                             uint32_t color) {
+  if (!dc || !m_pBrush || !pTextLayout)
+    return E_POINTER;
   SetBrushColor(color);
   dc->DrawTextLayout({x, y}, pTextLayout.Get(), m_pBrush.Get(),
                      D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);

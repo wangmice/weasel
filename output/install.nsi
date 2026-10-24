@@ -5,6 +5,22 @@
 !include x64.nsh
 !include winVer.nsh
 
+; ARM64 setup needs the native DLL, the ARM64X redirector, and the ARM32 DLL
+; for Windows versions that still support ARM32 WOW. Partial payloads must
+; never reach Setup or the upgrade's old-version removal path.
+!if /FileExists "weaselARM.dll"
+  !if /FileExists "weaselARM64.dll"
+    !if /FileExists "weaselARM64X.dll"
+      !define WEASEL_HAS_ARM64_PAYLOAD
+    !endif
+  !endif
+!endif
+!ifdef WEASEL_HAS_ARM64_PAYLOAD
+  !echo "Installer targets: x86, x64, ARM64"
+!else
+  !echo "Installer targets: x86, x64 only (ARM64 payload incomplete)"
+!endif
+
 Unicode true
 
 ;--------------------------------
@@ -20,6 +36,18 @@ Unicode true
 
 !define WEASEL_ROOT $INSTDIR\weasel-${WEASEL_VERSION}
 !define REG_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
+Var InstallBaseDir
+Var NewInstallDir
+Var PreviousBaseDir
+Var PreviousInstallDir
+Var PreviousProgramBackupDir
+Var HadPreviousInstall
+Var OrphanedPreviousInstall
+Var UpgradeSlotId
+Var RollbackFailed
+Var ProgramRestoreFailed
+Var ReplacementStarted
+Var DeployExitCode
 
 ; The name of the installer
 Name "小狼毫 ${WEASEL_VERSION}"
@@ -75,6 +103,13 @@ LangString LNKFORUNINSTALL ${LANG_TRADCHINESE} "卸載小狼毫"
 LangString CONFIRMATION ${LANG_TRADCHINESE} "安裝前，請先卸載舊版本的小狼毫。$\n$\n按下「確定」移除舊版本，按下「取消」放棄本次安裝。"
 LangString SYSTEMVERSIONNOTOK ${LANG_TRADCHINESE} "您的系统不被支持，最低系統要求:Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_TRADCHINESE} "自動檢查版本更新？"
+LangString SETUPCANCELLED ${LANG_TRADCHINESE} "已取消安裝，不會繼續部署或啟動服務。"
+LangString SETUPFAILED ${LANG_TRADCHINESE} "輸入法安裝失敗，不會繼續部署或啟動服務。"
+LangString DEPLOYFAILED ${LANG_TRADCHINESE} "小狼毫已安裝，但部署 Rime 工作區失敗。程式與卸載資訊已保留，請稍後執行「重新部署」或檢查日誌。"
+LangString UNINSTALLFAILED ${LANG_TRADCHINESE} "小狼毫卸載未能完整完成。已保留安裝資訊與程式檔案，請關閉使用輸入法的程式後重試；必要時請先登出或重新啟動 Windows。"
+LangString FILESINUSE ${LANG_TRADCHINESE} "無法替換正在使用中的小狼毫程式檔案。請關閉所有使用輸入法的程式後重試；若仍失敗，請登出 Windows 後重新登入再安裝。舊版本已嘗試恢復。"
+LangString ROLLBACKFAILED ${LANG_TRADCHINESE} "安裝回滾未能完整完成。請先登出或重新啟動 Windows，再重新執行安裝程式。暫存備份會保留以供恢復。"
+LangString ARM64NOTSUPPORTED ${LANG_TRADCHINESE} "此安裝包僅支援 x86/x64 Windows。請使用包含完整 ARM64 元件的小狼毫安裝包；現有安裝尚未變更。"
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
 LangString DISPLAYNAME ${LANG_SIMPCHINESE} "小狼毫输入法"
@@ -92,6 +127,13 @@ LangString LNKFORUNINSTALL ${LANG_SIMPCHINESE} "卸载小狼毫"
 LangString CONFIRMATION ${LANG_SIMPCHINESE} '安装前，请先卸载旧版本的小狼毫。$\n$\n点击 "确定" 移除旧版本，或点击 "取消" 放弃本次安装。'
 LangString SYSTEMVERSIONNOTOK ${LANG_SIMPCHINESE} "您的系統不被支持，最低系统要求:Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_SIMPCHINESE} "自动检查版本更新？"
+LangString SETUPCANCELLED ${LANG_SIMPCHINESE} "已取消安装，不会继续部署或启动服务。"
+LangString SETUPFAILED ${LANG_SIMPCHINESE} "输入法安装失败，不会继续部署或启动服务。"
+LangString DEPLOYFAILED ${LANG_SIMPCHINESE} "小狼毫已安装，但部署 Rime 工作区失败。程序和卸载信息已保留，请稍后执行“重新部署”或检查日志。"
+LangString UNINSTALLFAILED ${LANG_SIMPCHINESE} "小狼毫卸载未能完整完成。已保留安装信息和程序文件，请关闭正在使用输入法的程序后重试；必要时请先注销或重新启动 Windows。"
+LangString FILESINUSE ${LANG_SIMPCHINESE} "无法替换正在使用中的小狼毫程序文件。请关闭所有正在使用输入法的程序后重试；如果仍然失败，请注销 Windows 后重新登录再安装。旧版本已尝试恢复。"
+LangString ROLLBACKFAILED ${LANG_SIMPCHINESE} "安装回滚未能完整完成。请先注销或重新启动 Windows，再重新运行安装程序。临时备份会保留以供恢复。"
+LangString ARM64NOTSUPPORTED ${LANG_SIMPCHINESE} "此安装包仅支持 x86/x64 Windows。请使用包含完整 ARM64 组件的小狼毫安装包；现有安装尚未更改。"
 
 !insertmacro MUI_LANGUAGE "English"
 LangString DISPLAYNAME ${LANG_ENGLISH} "Weasel"
@@ -109,10 +151,335 @@ LangString LNKFORUNINSTALL ${LANG_ENGLISH} "Uninstall Weasel"
 LangString CONFIRMATION ${LANG_ENGLISH} "Before installation, please uninstall the old version of Weasel.$\n$\nPress 'OK' to remove the old version, or 'Cancel' to abort installation."
 LangString SYSTEMVERSIONNOTOK ${LANG_ENGLISH} "Your system not supported, minimium system required: Windows 8.1!"
 LangString AUTOCHKUPDATE ${LANG_ENGLISH} "Automatically check for updates?"
+LangString SETUPCANCELLED ${LANG_ENGLISH} "Installation cancelled. Deployment and service startup will not continue."
+LangString SETUPFAILED ${LANG_ENGLISH} "Input method setup failed. Deployment and service startup will not continue."
+LangString DEPLOYFAILED ${LANG_ENGLISH} "Weasel was installed, but deploying the Rime workspace failed. Program and uninstall metadata were kept; run Deploy again later or inspect the logs."
+LangString UNINSTALLFAILED ${LANG_ENGLISH} "Weasel could not be completely uninstalled. Installation metadata and program files were retained so you can retry. Close applications using the input method and try again; sign out or restart Windows if necessary."
+LangString FILESINUSE ${LANG_ENGLISH} "Weasel program files are still in use and cannot be replaced. Close applications using the input method and retry. If the files remain locked, sign out of Windows and sign back in before installing again. The previous version has been restored where possible."
+LangString ROLLBACKFAILED ${LANG_ENGLISH} "Installation rollback could not complete. Sign out or restart Windows, then run the installer again. The temporary backup has been retained for recovery."
+LangString ARM64NOTSUPPORTED ${LANG_ENGLISH} "This package supports x86/x64 Windows only. Please use a Weasel installer with the complete ARM64 components. Your existing installation has not been changed."
+
+; .onInit runs before the normal installer UI exists. Abort's optional string is
+; only written to the status display, so interactive fatal preflight failures
+; must show their own MessageBox before quitting.
+!macro AbortInitFailure
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONSTOP "$(SETUPFAILED)"
+  Abort
+!macroend
+
+;--------------------------------
+; Restore the complete previous program tree from the transaction backup.
+; Robocopy skips identical files that survived a failed delete, which lets the
+; rollback refill a partially removed same-version directory without trying to
+; rewrite an unchanged DLL that is still mapped by another process.
+Function RestorePreviousProgramBackup
+  StrCpy $ProgramRestoreFailed "0"
+  StrCmp $PreviousProgramBackupDir "" restore_program_failed
+  IfFileExists "$PreviousProgramBackupDir\WeaselSetup.exe" 0 restore_program_failed
+  CreateDirectory "$PreviousInstallDir"
+  ClearErrors
+  ExecWait '"$SYSDIR\robocopy.exe" "$PreviousProgramBackupDir" "$PreviousInstallDir" /E /COPY:DAT /DCOPY:T /R:0 /W:0 /XJ /NFL /NDL /NJH /NJS /NP' $R2
+  ${If} ${Errors}
+    GoTo restore_program_failed
+  ${EndIf}
+  IntCmp $R2 8 restore_program_failed restore_program_ok restore_program_failed
+restore_program_ok:
+  IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 restore_program_failed
+  IfFileExists "$PreviousInstallDir\WeaselServer.exe" 0 restore_program_failed
+  Return
+restore_program_failed:
+  StrCpy $ProgramRestoreFailed "1"
+  StrCpy $RollbackFailed "1"
+FunctionEnd
+
+;--------------------------------
+; Restore a previously working installation after an in-place replacement
+; fails. Rollback never schedules version directories for reboot deletion,
+; because a successful retry before reboot could otherwise be deleted later.
+Function RollbackPreviousInstall
+  StrCpy $RollbackFailed "0"
+  StrCpy $ProgramRestoreFailed "0"
+  StrCmp $HadPreviousInstall "1" 0 rollback_fresh_only
+
+  ; Only remove a partial new registration/tree after payload extraction has
+  ; actually started. PreparePreviousInstall can fail after the old /u but
+  ; before any replacement file exists; re-running /u there would mutate the
+  ; old installation a second time while trying to recover it.
+  StrCmp $ReplacementStarted "1" rollback_remove_partial_new rollback_restore_program
+
+rollback_remove_partial_new:
+  IfFileExists "$INSTDIR\WeaselSetup.exe" 0 rollback_remove_new_files
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $R2
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_keep_temp
+  ${EndIf}
+  ${If} $R2 != 0
+    ; A failed child /u can mean regsvr32 could not be confirmed stopped.
+    ; Never delete/restore/register another payload while TSF mutation may
+    ; still be in flight. Preserve the backup and fail closed.
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_keep_temp
+  ${EndIf}
+
+rollback_remove_new_files:
+  SetOutPath $TEMP
+  StrCmp $INSTDIR $PreviousInstallDir rollback_remove_same_path rollback_remove_other_path
+rollback_remove_same_path:
+  ; A locked file that survived the failed same-path replacement can still be
+  ; the exact old file. Do not fail rollback merely because cleanup cannot
+  ; remove it; robocopy below will skip identical survivors and will itself
+  ; report failure if a differing locked file prevents restoration.
+  ClearErrors
+  RMDir /r "$INSTDIR"
+  ClearErrors
+  GoTo rollback_restore_program
+rollback_remove_other_path:
+  ClearErrors
+  RMDir /r "$INSTDIR"
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+  ${EndIf}
+
+rollback_restore_program:
+  Call RestorePreviousProgramBackup
+
+  ; HKCU preferences are independent of program-tree usability and can still be
+  ; restored even when a locked/damaged file prevents a runnable rollback.
+  IfFileExists "$TEMP\weasel-hkcu-backup.reg" 0 rollback_after_config
+  ExecWait 'reg import "$TEMP\weasel-hkcu-backup.reg"' $R2
+  ${If} $R2 != 0
+    StrCpy $RollbackFailed "1"
+  ${EndIf}
+
+rollback_after_config:
+  ; Never register or launch a partially restored program tree. Keep its backup
+  ; for manual/retry recovery and restore only the non-runnable base metadata.
+  StrCmp $ProgramRestoreFailed "1" rollback_restore_base_registry
+
+  IfFileExists "$PreviousInstallDir\WeaselSetup.exe" 0 rollback_registration_failed
+
+  ; /i can route to modify-install solely because a system weasel.dll still
+  ; exists. Rollback must instead force the restored old program tree to copy
+  ; and register its own TSF payload. Select an explicit profile command from
+  ; the restored HKCU state.
+  StrCpy $R6 "/s"
+  ReadRegStr $R4 HKCU "Software\Rime\Weasel" "Profile"
+  StrCmp $R4 "hant" rollback_profile_hant
+  StrCmp $R4 "hongkong" rollback_profile_hongkong
+  StrCmp $R4 "macau" rollback_profile_macau
+  StrCmp $R4 "singapore" rollback_profile_singapore
+  StrCmp $R4 "" rollback_profile_legacy rollback_profile_ready
+
+rollback_profile_hant:
+  StrCpy $R6 "/t"
+  GoTo rollback_profile_ready
+rollback_profile_hongkong:
+  StrCpy $R6 "/hk"
+  GoTo rollback_profile_ready
+rollback_profile_macau:
+  StrCpy $R6 "/mc"
+  GoTo rollback_profile_ready
+rollback_profile_singapore:
+  StrCpy $R6 "/sg"
+  GoTo rollback_profile_ready
+rollback_profile_legacy:
+  StrCpy $R5 "0"
+  ReadRegDWORD $R5 HKCU "Software\Rime\Weasel" "Hant"
+  StrCmp $R5 "0" rollback_profile_ready
+  StrCpy $R6 "/t"
+
+rollback_profile_ready:
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" $R6' $R2
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_restore_base_registry
+  ${EndIf}
+  ${If} $R2 != 0
+    StrCpy $RollbackFailed "1"
+    GoTo rollback_restore_base_registry
+  ${EndIf}
+  GoTo rollback_restore_runtime_registry
+rollback_registration_failed:
+  StrCpy $RollbackFailed "1"
+  GoTo rollback_restore_base_registry
+
+rollback_restore_base_registry:
+  StrCmp $PreviousBaseDir "" rollback_cleanup_temp 0
+  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$PreviousBaseDir"
+  GoTo rollback_cleanup_temp
+
+rollback_restore_runtime_registry:
+  StrCmp $PreviousBaseDir "" +2 0
+  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$PreviousBaseDir"
+  ${If} ${IsNativeARM64}
+    SetRegView 64
+  ${ElseIf} ${IsNativeAMD64}
+    SetRegView 64
+  ${Endif}
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer" "$PreviousInstallDir\WeaselServer.exe"
+  SetRegView 32
+  IfFileExists "$PreviousInstallDir\WeaselServer.exe" 0 rollback_cleanup_temp
+  Exec '"$PreviousInstallDir\WeaselServer.exe"'
+
+rollback_cleanup_temp:
+  StrCmp $RollbackFailed "1" rollback_keep_temp
+  Delete "$TEMP\weasel-hkcu-backup.reg"
+  RMDir /r "$PreviousProgramBackupDir"
+rollback_keep_temp:
+  Return
+
+rollback_fresh_only:
+  ; Fresh rollback is reachable only before WeaselSetup commits. Do not invoke
+  ; /u here: a machine can have pre-existing HKCU preferences even without a
+  ; valid NSIS installation, and uninstall would erase that unrelated state.
+  SetOutPath $TEMP
+  ClearErrors
+  RMDir /r "$INSTDIR"
+  ${If} ${Errors}
+    StrCpy $RollbackFailed "1"
+  ${EndIf}
+FunctionEnd
+
+;--------------------------------
+; Begin the destructive part of an upgrade only after the user has reached the
+; install section. Back up the whole old program directory first, then stop and
+; unregister the old version. Same-version upgrades remove the old canonical
+; directory before extraction so a locked file fails closed instead of being
+; silently skipped.
+Function PreparePreviousInstall
+  StrCpy $R9 "0"
+  StrCmp $HadPreviousInstall "1" 0 prepare_done
+
+  ; Back up per-user configuration before old /u clears it. A valid install can
+  ; have no HKCU state yet, in which case there is simply nothing to export.
+  Delete "$TEMP\weasel-hkcu-backup.reg"
+  StrCpy $R4 ""
+  EnumRegValue $R4 HKCU "Software\Rime\Weasel" 0
+  StrCmp $R4 "" prepare_check_user_config_subkey prepare_export_user_config
+prepare_check_user_config_subkey:
+  StrCpy $R4 ""
+  EnumRegKey $R4 HKCU "Software\Rime\Weasel" 0
+  StrCmp $R4 "" prepare_backup_program prepare_export_user_config
+prepare_export_user_config:
+  ClearErrors
+  ExecWait 'reg export HKCU\Software\Rime\Weasel "$TEMP\weasel-hkcu-backup.reg" /y' $R2
+  ${If} ${Errors}
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+  ${If} $R2 != 0
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+  IfFileExists "$TEMP\weasel-hkcu-backup.reg" prepare_backup_program prepare_failed_before_mutation
+
+prepare_backup_program:
+  StrCpy $PreviousProgramBackupDir "$TEMP\weasel-program-backup-$UpgradeSlotId"
+  RMDir /r "$PreviousProgramBackupDir"
+  CreateDirectory "$PreviousProgramBackupDir"
+  ClearErrors
+  ExecWait '"$SYSDIR\robocopy.exe" "$PreviousInstallDir" "$PreviousProgramBackupDir" /E /COPY:DAT /DCOPY:T /R:0 /W:0 /XJ /NFL /NDL /NJH /NJS /NP' $R2
+  ${If} ${Errors}
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+  IntCmp $R2 8 prepare_failed_before_mutation prepare_backup_verified prepare_failed_before_mutation
+prepare_backup_verified:
+  IfFileExists "$PreviousProgramBackupDir\WeaselSetup.exe" 0 prepare_failed_before_mutation
+  IfFileExists "$PreviousProgramBackupDir\WeaselServer.exe" 0 prepare_failed_before_mutation
+
+  ; Stop our own service first. Do not begin TSF mutation unless the old
+  ; server confirms shutdown; cross-version upgrades do not have same-path
+  ; file locking as a reliable fallback barrier.
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselServer.exe" /quit' $R2
+  ${If} ${Errors}
+    DetailPrint "Previous WeaselServer /quit could not be executed; leaving the old installation in place."
+    Exec '"$PreviousInstallDir\WeaselServer.exe"'
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+  ${If} $R2 != 0
+    DetailPrint "Previous WeaselServer /quit exited with $R2; leaving the old installation in place."
+    Exec '"$PreviousInstallDir\WeaselServer.exe"'
+    GoTo prepare_failed_before_mutation
+  ${EndIf}
+
+  ClearErrors
+  ExecWait '"$PreviousInstallDir\WeaselSetup.exe" /u' $R2
+  ${If} ${Errors}
+    DetailPrint "Previous WeaselSetup /u could not be executed; restoring the previous installation."
+    Call RollbackPreviousInstall
+    StrCpy $R9 "1"
+    Return
+  ${EndIf}
+  ${If} $R2 != 0
+    DetailPrint "Previous WeaselSetup /u exited with $R2; restoring the previous installation."
+    Call RollbackPreviousInstall
+    StrCpy $R9 "1"
+    Return
+  ${EndIf}
+
+  ; Restore preferences for the replacement Setup. Keep the export until commit
+  ; so rollback can import the exact previous state again.
+  IfFileExists "$TEMP\weasel-hkcu-backup.reg" 0 prepare_remove_same_path
+  ExecWait 'reg import "$TEMP\weasel-hkcu-backup.reg"' $R2
+  ${If} $R2 != 0
+    Call RollbackPreviousInstall
+    StrCpy $R9 "1"
+    Return
+  ${EndIf}
+
+prepare_remove_same_path:
+  StrCmp $PreviousInstallDir $INSTDIR 0 prepare_done
+  SetOutPath $TEMP
+  ClearErrors
+  RMDir /r "$INSTDIR"
+  ${If} ${Errors}
+    GoTo prepare_locked
+  ${EndIf}
+  IfFileExists "$INSTDIR\*.*" prepare_locked 0
+  GoTo prepare_done
+
+prepare_locked:
+  ; No replacement files have been written yet. Restore anything that the
+  ; failed recursive delete managed to remove and re-register the old version.
+  Call RollbackPreviousInstall
+  StrCpy $R9 "2"
+  Return
+
+prepare_failed_before_mutation:
+  Delete "$TEMP\weasel-hkcu-backup.reg"
+  StrCmp $PreviousProgramBackupDir "" +2 0
+  RMDir /r "$PreviousProgramBackupDir"
+  StrCpy $R9 "1"
+prepare_done:
+FunctionEnd
 
 ;--------------------------------
 
 Function .onInit
+  StrCpy $HadPreviousInstall "0"
+  StrCpy $OrphanedPreviousInstall "0"
+  StrCpy $PreviousBaseDir ""
+  StrCpy $PreviousInstallDir ""
+  StrCpy $PreviousProgramBackupDir ""
+  StrCpy $UpgradeSlotId ""
+  StrCpy $RollbackFailed "0"
+  StrCpy $ProgramRestoreFailed "0"
+  StrCpy $ReplacementStarted "0"
+  StrCpy $DeployExitCode "0"
+
+!ifndef WEASEL_HAS_ARM64_PAYLOAD
+  ; Reject before reading/removing an existing installation or copying files.
+  ${If} ${IsNativeARM64}
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(ARM64NOTSUPPORTED)"
+    SetErrorLevel 1633 ; ERROR_INSTALL_PLATFORM_UNSUPPORTED (also in /S mode)
+    Quit
+  ${EndIf}
+!endif
+
   ; if not version >= 8.1, quit and MessageBox(if not silent)
   ${IfNot} ${AtLeastWin8.1}
     IfSilent toquit
@@ -122,6 +489,7 @@ toquit:
   ${EndIf}
 
   ReadRegStr $R0 HKLM "Software\Rime\Weasel" "InstallDir"
+  StrCpy $PreviousBaseDir "$R0"
   StrCmp $R0 "" 0 skip
   ; The default installation directory
   ; install x64 build for NativeARM64_WINDOWS11 and NativeAMD64_WINDOWS11
@@ -147,47 +515,33 @@ skip:
   "UninstallString"
   StrCmp $R0 "" done
 
-  StrCpy $0 "Upgrade"
   IfSilent uninst 0
   MessageBox MB_OKCANCEL|MB_ICONINFORMATION "$(CONFIRMATION)" IDOK uninst
   Abort
 
 uninst:
-  ; Backup data directory from previous installation, user files may exist
+  ; Validate the previous installation now, but leave it registered and running
+  ; until the install section actually begins. This makes cancelling a later UI
+  ; page non-destructive.
   ReadRegStr $R1 HKLM SOFTWARE\Rime\Weasel "WeaselRoot"
-  StrCmp $R1 "" call_uninstaller
-  IfFileExists $R1\data\*.* 0 call_uninstaller
-  CreateDirectory $TEMP\weasel-backup
-  CopyFiles $R1\data\*.* $TEMP\weasel-backup
+  StrCmp $R1 "" previous_invalid
+  IfFileExists "$R1\WeaselSetup.exe" 0 previous_invalid
+  StrCpy $HadPreviousInstall "1"
+  StrCpy $PreviousInstallDir "$R1"
+  System::Call 'kernel32::GetCurrentProcessId() i.R5'
+  StrCpy $UpgradeSlotId "$R5"
+  GoTo done
 
-call_uninstaller:
-  ExecWait '"$R1\WeaselServer.exe" /quit'
-  ExecWait '"$R1\WeaselSetup.exe" /u'
-  ; Remove registry keys
-  DeleteRegKey HKLM SOFTWARE\Rime
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
-  ; don't redirect on 64 bit system for auto run setting
-  ${If} ${IsNativeARM64}
-    SetRegView 64
-  ${ElseIf} ${IsNativeAMD64}
-    SetRegView 64
-  ${Endif}
-  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer"
-  ; recover back to 32bit view
-  SetRegView 32
-  ; Remove files and uninstaller
-  Delete  "$R1\data\opencc\*.*"
-  Delete  "$R1\data\*.*"
-  Delete  "$R1\*.*"
-  RMDir   "$R1\data\opencc"
-  RMDir   "$R1\data"
-  RMDir   "$R1"
-  SetShellVarContext all
-  Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
-  RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
-  ; Prompt reboot
-  SetRebootFlag true
-  Sleep 800
+previous_invalid:
+  ; Windows uninstall metadata survived, but the registered program root is
+  ; missing or no longer contains WeaselSetup.exe. There is no trustworthy old
+  ; transaction to roll back to. Treat this as an orphaned installation and
+  ; converge forward with the current payload while preserving HKCU settings.
+  StrCpy $OrphanedPreviousInstall "1"
+  StrCpy $HadPreviousInstall "0"
+  StrCpy $PreviousInstallDir ""
+  DetailPrint "Previous Weasel installation is incomplete; continuing with forward recovery."
+  GoTo done
 
 done:
 FunctionEnd
@@ -201,27 +555,58 @@ Section "Weasel"
 
   SectionIn RO
 
-  ; Write the new installation path into the registry
-  ; redirect on 64 bit system
-  ; HKLM SOFTWARE\WOW6432Node\Rime\Weasel "InstallDir" "$INSTDIR"
-  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$INSTDIR"
+  ; Publish the base directory only after Setup succeeds. Do not replace
+  ; an existing registration when setup is cancelled or fails.
+  StrCpy $InstallBaseDir "$INSTDIR"
 
-  ; Reset INSTDIR for the new version
-  StrCpy $INSTDIR "${WEASEL_ROOT}"
+  ; Always install into the canonical version directory. Same-version upgrades
+  ; use the same path and must remove the old tree successfully before any new
+  ; payload is extracted; there is no .upgrade-* side-by-side fallback.
+  StrCpy $NewInstallDir "$INSTDIR\weasel-${WEASEL_VERSION}"
+  StrCpy $INSTDIR "$NewInstallDir"
 
-  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
-  ExecWait '"$INSTDIR\WeaselServer.exe" /quit'
+  Call PreparePreviousInstall
+  StrCmp $R9 "0" install_target_ready
+  StrCmp $R9 "2" install_target_locked
+  SetErrorLevel 1
+  StrCmp $RollbackFailed "1" 0 +3
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
+  Abort "$(SETUPFAILED)"
 
-  SetOverwrite try
+install_target_locked:
+  SetErrorLevel 32
+  StrCmp $RollbackFailed "1" 0 install_target_locked_restored
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
+  Abort "$(SETUPFAILED)"
+install_target_locked_restored:
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONSTOP "$(FILESINUSE)"
+  Abort "$(FILESINUSE)"
+
+install_target_ready:
+  ; From this point rollback may need to unregister/remove a partially written
+  ; replacement before restoring the old program tree.
+  StrCpy $ReplacementStarted "1"
+  SetOverwrite on
   ; Set output path to the installation directory.
   SetOutPath $INSTDIR
 
-  IfFileExists $TEMP\weasel-backup\*.* 0 program_files
-  CreateDirectory $INSTDIR\data
-  CopyFiles $TEMP\weasel-backup\*.* $INSTDIR\data
-  RMDir /r $TEMP\weasel-backup
+  ; Migrate the previous user data from the complete transaction backup. The
+  ; source remains intact until commit so rollback never depends on the new tree.
+  StrCmp $HadPreviousInstall "1" 0 program_files
+  IfFileExists "$PreviousProgramBackupDir\data\*.*" 0 program_files
+  CreateDirectory "$INSTDIR\data"
+  ClearErrors
+  ExecWait '"$SYSDIR\robocopy.exe" "$PreviousProgramBackupDir\data" "$INSTDIR\data" /E /COPY:DAT /DCOPY:T /R:0 /W:0 /XJ /NFL /NDL /NJH /NJS /NP' $R2
+  ${If} ${Errors}
+    GoTo install_files_failed
+  ${EndIf}
+  IntCmp $R2 8 install_files_failed program_files install_files_failed
 
 program_files:
+  ClearErrors
   File "LICENSE.txt"
   File "README.txt"
   File "7-zip-license.txt"
@@ -239,9 +624,11 @@ program_files:
     File "weaselx64.dll"
   ${EndIf}
   ${If} ${IsNativeARM64}
-    File /nonfatal "weaselARM.dll"
-    File /nonfatal "weaselARM64.dll"
-    File /nonfatal "weaselARM64X.dll"
+!ifdef WEASEL_HAS_ARM64_PAYLOAD
+    File "weaselARM.dll"
+    File "weaselARM64.dll"
+    File "weaselARM64X.dll"
+!endif
   ${EndIf}
   ; install x64 build for NativeARM64_WINDOWS11 and NativeAMD64_WINDOWS11
   ${If} ${AtLeastWin11} ; Windows 11 and above
@@ -287,22 +674,119 @@ program_files:
   File "data\opencc\*.json"
   File "data\opencc\*.ocd*"
 
+  ${If} ${Errors}
+    GoTo install_files_failed
+  ${EndIf}
+
   SetOutPath $INSTDIR
 
-  ; test /T flag for zh_TW locale
+  ; Select the Setup profile command. A fresh silent install defaults to hans;
+  ; silent upgrades and orphaned-install recovery preserve the existing HKCU
+  ; profile. Explicit /T still overrides the preserved profile.
   StrCpy $R2 "/i"
   ${GetParameters} $R0
+  ; Orphaned installs must never use /i: a stale system weasel.dll would make
+  ; WeaselSetup misclassify recovery as modify-install. Select the preserved
+  ; profile explicitly so the current payload is copied and registered again.
+  StrCmp $OrphanedPreviousInstall "1" setup_preserve_existing_profile
   ClearErrors
   ${GetOptions} $R0 "/S" $R1
-  IfErrors +2 0
+  IfErrors setup_check_traditional
+  StrCmp $HadPreviousInstall "1" setup_preserve_existing_profile
   StrCpy $R2 "/s"
+  GoTo setup_check_traditional
+
+setup_preserve_existing_profile:
+  StrCpy $R2 "/s"
+  ReadRegStr $R4 HKCU "Software\Rime\Weasel" "Profile"
+  StrCmp $R4 "hant" setup_profile_hant
+  StrCmp $R4 "hongkong" setup_profile_hongkong
+  StrCmp $R4 "macau" setup_profile_macau
+  StrCmp $R4 "singapore" setup_profile_singapore
+  StrCmp $R4 "" setup_profile_legacy setup_check_traditional
+
+setup_profile_hant:
+  StrCpy $R2 "/t"
+  GoTo setup_check_traditional
+setup_profile_hongkong:
+  StrCpy $R2 "/hk"
+  GoTo setup_check_traditional
+setup_profile_macau:
+  StrCpy $R2 "/mc"
+  GoTo setup_check_traditional
+setup_profile_singapore:
+  StrCpy $R2 "/sg"
+  GoTo setup_check_traditional
+setup_profile_legacy:
+  StrCpy $R5 "0"
+  ReadRegDWORD $R5 HKCU "Software\Rime\Weasel" "Hant"
+  StrCmp $R5 "0" setup_check_traditional
+  StrCpy $R2 "/t"
+
+setup_check_traditional:
+  ClearErrors
   ${GetOptions} $R0 "/T" $R1
   IfErrors +2 0
   StrCpy $R2 "/t"
 
-  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2' $R3
+  ${If} ${Errors}
+    Call RollbackPreviousInstall
+    SetErrorLevel 1
+    StrCmp $RollbackFailed "1" 0 +3
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
+    Abort "$(SETUPFAILED)"
+  ${EndIf}
+  ${If} $R3 == 1223 ; ERROR_CANCELLED from WeaselSetup
+    Call RollbackPreviousInstall
+    SetErrorLevel 1223
+    StrCmp $RollbackFailed "1" 0 +3
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
+    Abort "$(SETUPCANCELLED)"
+  ${ElseIf} $R3 != 0
+    Call RollbackPreviousInstall
+    SetErrorLevel $R3
+    StrCmp $RollbackFailed "1" 0 +3
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
+    Abort "$(SETUPFAILED)"
+  ${EndIf}
+  GoTo install_commit
 
-  ; Write the uninstall keys for Windows
+install_files_failed:
+  Call RollbackPreviousInstall
+  SetErrorLevel 1
+  StrCmp $RollbackFailed "1" 0 +3
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONSTOP "$(ROLLBACKFAILED)"
+  Abort "$(SETUPFAILED)"
+
+install_commit:
+  ; WeaselSetup success is the reversible transaction boundary. Deployment can
+  ; mutate the Rime user workspace before reporting failure, so never restore an
+  ; older program tree after deployment has started.
+  StrCmp $HadPreviousInstall "1" 0 upgrade_committed
+  SetOutPath $TEMP
+  StrCmp $PreviousInstallDir $INSTDIR cleanup_upgrade_backup 0
+  ClearErrors
+  RMDir /r "$PreviousInstallDir"
+  ${If} ${Errors}
+    DetailPrint "Previous version files remain locked and were left in place; they are no longer registered."
+  ${EndIf}
+cleanup_upgrade_backup:
+  Delete "$TEMP\weasel-hkcu-backup.reg"
+  RMDir /r "$PreviousProgramBackupDir"
+  SetShellVarContext all
+  Delete "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
+  RMDir "$SMPROGRAMS\$(DISPLAYNAME)"
+upgrade_committed:
+
+  ; Write the uninstall keys for Windows before deployment so a post-commit
+  ; deploy failure always leaves a complete, retryable installation behind.
+  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$InstallBaseDir"
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayName" "$(DISPLAYNAME)"
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayIcon" '"$INSTDIR\WeaselServer.exe"'
   WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayVersion" "${WEASEL_VERSION}.${WEASEL_BUILD}"
@@ -314,14 +798,25 @@ program_files:
   WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
-  ; run as user...
+install_deploy:
+  ; Deployment is post-commit. Capture failure for the installer exit status,
+  ; but keep the new binaries/registration because the workspace may already
+  ; have been partially mutated by librime.
+  StrCpy $DeployExitCode "0"
+  ClearErrors
   IfSilent deploy_silently
-  ExecWait "$INSTDIR\WeaselDeployer.exe /install"
-  GoTo deploy_done
+  ExecWait "$INSTDIR\WeaselDeployer.exe /install" $R3
+  GoTo deploy_check
 
-  deploy_silently:
-  ExecWait "$INSTDIR\WeaselDeployer.exe /deploy"
-  deploy_done:
+deploy_silently:
+  ExecWait "$INSTDIR\WeaselDeployer.exe /install-deploy" $R3
+
+deploy_check:
+  ${If} ${Errors}
+    StrCpy $DeployExitCode "1"
+  ${ElseIf} $R3 != 0
+    StrCpy $DeployExitCode "$R3"
+  ${EndIf}
 
   ; don't redirect on 64 bit system for auto run setting
   ${If} ${IsNativeARM64}
@@ -331,22 +826,28 @@ program_files:
   ${Endif}
   ; Write autorun key
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer" "$INSTDIR\WeaselServer.exe"
-  ; Start WeaselServer
+  ; Start WeaselServer even when deployment failed. The committed installation
+  ; remains the only version compatible with any workspace mutations already made.
   Exec "$INSTDIR\WeaselServer.exe"
 
-  ; option CheckForUpdates
+  ; option CheckForUpdates: keep the stored preference on upgrades (restored
+  ; before replacement Setup); ask only when unconfigured; silent installs
+  ; default to off.
+  ReadRegStr $R3 HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates"
+  StrCmp $R3 "" 0 end
   IfSilent DisableAutoCheckUpdate
   MessageBox MB_YESNO|MB_ICONINFORMATION "$(AUTOCHKUPDATE)" IDYES EnableAutoCheckUpdate
-  DisableAutoCheckUpdate:
+DisableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "0"
   GoTo end
   EnableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "1"
-  end:
-
-  ; Prompt reboot
-  StrCmp $0 "Upgrade" 0 +2
-  SetRebootFlag true
+end:
+  StrCmp $DeployExitCode "0" install_done
+  SetErrorLevel $DeployExitCode
+  IfSilent +2
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$(DEPLOYFAILED)"
+install_done:
 
 SectionEnd
 
@@ -374,9 +875,35 @@ SectionEnd
 
 Section "Uninstall"
 
-  ExecWait '"$INSTDIR\WeaselServer.exe" /quit'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselServer.exe" /quit' $R0
+  ${If} ${Errors}
+    SetErrorLevel 1
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
+  ${If} $R0 != 0
+    SetErrorLevel $R0
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
 
-  ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
+  ClearErrors
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u' $R0
+  ${If} ${Errors}
+    SetErrorLevel 1
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
+  ${If} $R0 != 0
+    SetErrorLevel $R0
+    IfSilent +2
+    MessageBox MB_OK|MB_ICONSTOP "$(UNINSTALLFAILED)"
+    Abort
+  ${EndIf}
 
   ; Remove registry keys
   DeleteRegKey HKLM SOFTWARE\Rime
@@ -400,8 +927,5 @@ Section "Uninstall"
   SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
-
-  ; Prompt reboot
-  SetRebootFlag true
 
 SectionEnd

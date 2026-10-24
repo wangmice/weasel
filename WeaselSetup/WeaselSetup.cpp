@@ -5,9 +5,14 @@
 
 #include "resource.h"
 #include "WeaselUtility.h"
-#include <thread>
+#include <WeaselIPC.h>
+#include "PerUserReg.h"
+#include "RegistrationCleanup.h"
+#include "SetupUtil.h"
+#include <vector>
 
 #include "InstallOptionsDlg.h"
+#include "TransactionalInstall.h"
 
 #include <ShellScalingApi.h>
 #pragma comment(lib, "Shcore.lib")
@@ -45,6 +50,18 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
 int install(const std::wstring& profile, bool silent);
 int uninstall(bool silent);
 bool has_installed();
+// 已安装状态下切换 profile 时同步 TSF 注册（K14）
+int switch_registered_profile(const std::wstring& old_profile,
+                              const std::wstring& new_profile,
+                              bool silent);
+
+static int InstallRequestedProfile(const std::wstring& profile,
+                                   const std::wstring& user_dir,
+                                   bool silent) {
+  if (has_installed())
+    return install(profile, silent);
+  return weasel::setup::InstallFreshTransactional(profile, user_dir, silent);
+}
 
 static std::wstring install_dir() {
   WCHAR exe_path[MAX_PATH] = {0};
@@ -55,6 +72,189 @@ static std::wstring install_dir() {
   return dir;
 }
 
+namespace {
+// The server's own shutdown watchdog fires at 20s and WeaselServer /q waits
+// up to 30s for the old process. Setup is the outer supervisor, so it needs
+// additional grace to observe /q completion rather than racing the same
+// deadline.
+constexpr DWORD kServerTransitionTimeoutMs = 45000;
+constexpr DWORD kDeployerOperationTimeoutMs = 15 * 60 * 1000 + 10 * 1000;
+constexpr DWORD kDeployerTerminationWaitMs = 5000;
+constexpr DWORD kElevationCommandTimeoutMs = 60 * 60 * 1000;
+
+enum class DeployerRunResult {
+  Success,
+  FailedStopped,
+  FailedStillRunning,
+};
+
+bool RunProcessAndWait(const std::wstring& executable,
+                       const std::wstring& parameters,
+                       DWORD timeout_ms,
+                       DWORD& exit_code,
+                       int show = SW_SHOWNORMAL) {
+  SHELLEXECUTEINFOW exec{};
+  exec.cbSize = sizeof(exec);
+  exec.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
+  exec.lpFile = executable.c_str();
+  exec.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+  exec.nShow = show;
+  if (!ShellExecuteExW(&exec) || !exec.hProcess)
+    return false;
+
+  const DWORD wait_result = WaitForSingleObject(exec.hProcess, timeout_ms);
+  bool ok = wait_result == WAIT_OBJECT_0;
+  exit_code = ERROR_GEN_FAILURE;
+  if (ok && !GetExitCodeProcess(exec.hProcess, &exit_code))
+    ok = false;
+  CloseHandle(exec.hProcess);
+  return ok;
+}
+
+bool OpenRunningServerProcess(HANDLE& process) {
+  process = nullptr;
+  HWND hwnd = FindWindowW(nullptr, WEASEL_IPC_WINDOW);
+  if (!hwnd)
+    return true;
+
+  DWORD process_id = 0;
+  GetWindowThreadProcessId(hwnd, &process_id);
+  if (!process_id)
+    return false;
+  process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
+  if (process)
+    return true;
+  // The server may have exited between FindWindow and OpenProcess. Treat that
+  // race as an already-stopped server; other access failures remain errors.
+  return GetLastError() == ERROR_INVALID_PARAMETER;
+}
+
+HANDLE LaunchProcess(const std::wstring& executable,
+                     const std::wstring& parameters) {
+  SHELLEXECUTEINFOW exec{};
+  exec.cbSize = sizeof(exec);
+  exec.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
+  exec.lpFile = executable.c_str();
+  exec.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+  exec.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&exec) || !exec.hProcess)
+    return nullptr;
+  return exec.hProcess;
+}
+
+bool WaitForServerReady(HANDLE server_process, DWORD timeout_ms) {
+  const std::wstring pipe_name = weasel::GetPipeName();
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+  while (GetTickCount64() < deadline) {
+    if (WaitForSingleObject(server_process, 0) == WAIT_OBJECT_0)
+      return false;
+    if (WaitNamedPipeW(pipe_name.c_str(), 100))
+      return true;
+    const DWORD error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_SEM_TIMEOUT &&
+        error != ERROR_PIPE_BUSY) {
+      return false;
+    }
+    Sleep(50);
+  }
+  return false;
+}
+
+bool RestartServer(const std::wstring& dir) {
+  const std::wstring server = dir + L"\\WeaselServer.exe";
+
+  HANDLE old_server = nullptr;
+  if (!OpenRunningServerProcess(old_server))
+    return false;
+  if (old_server) {
+    DWORD quit_exit_code = 0;
+    const bool quit_ok =
+        RunProcessAndWait(server, L"/q", kServerTransitionTimeoutMs,
+                          quit_exit_code) &&
+        quit_exit_code == 0;
+    if (!quit_ok) {
+      CloseHandle(old_server);
+      return false;
+    }
+    const DWORD stopped =
+        WaitForSingleObject(old_server, kServerTransitionTimeoutMs);
+    CloseHandle(old_server);
+    if (stopped != WAIT_OBJECT_0)
+      return false;
+  }
+
+  HANDLE new_server = LaunchProcess(server, L"");
+  if (!new_server)
+    return false;
+  const bool server_ready =
+      WaitForServerReady(new_server, kServerTransitionTimeoutMs);
+  CloseHandle(new_server);
+  return server_ready;
+}
+
+DeployerRunResult RunDeployer(const std::wstring& dir) {
+  const std::wstring deployer = dir + L"\\WeaselDeployer.exe";
+  std::wstring command_line = L"\"" + deployer + L"\" /deploy";
+  std::vector<wchar_t> mutable_command(command_line.begin(),
+                                       command_line.end());
+  mutable_command.push_back(L'\0');
+
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process_info{};
+  if (!CreateProcessW(deployer.c_str(), mutable_command.data(), nullptr,
+                      nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
+                      &startup, &process_info)) {
+    LOG(ERROR) << "Could not launch WeaselDeployer, error: " << GetLastError();
+    return DeployerRunResult::FailedStopped;
+  }
+
+  CloseHandle(process_info.hThread);
+  HANDLE process = process_info.hProcess;
+
+  const DWORD wait_result =
+      WaitForSingleObject(process, kDeployerOperationTimeoutMs);
+  if (wait_result == WAIT_OBJECT_0) {
+    DWORD exit_code = ERROR_GEN_FAILURE;
+    const bool got_exit_code = GetExitCodeProcess(process, &exit_code) != FALSE;
+    CloseHandle(process);
+    if (!got_exit_code) {
+      LOG(ERROR) << "Could not read WeaselDeployer exit code.";
+      return DeployerRunResult::FailedStopped;
+    }
+    return exit_code == 0 ? DeployerRunResult::Success
+                          : DeployerRunResult::FailedStopped;
+  }
+
+  if (wait_result == WAIT_TIMEOUT) {
+    LOG(ERROR) << "WeaselDeployer exceeded the deployment timeout.";
+  } else {
+    const DWORD wait_error = GetLastError();
+    LOG(ERROR) << "Waiting for WeaselDeployer failed, error: " << wait_error;
+  }
+
+  // Deployment mutates Rime data while owning server maintenance. Never roll
+  // back registry/profile state or restart the server until the deployer is
+  // confirmed dead. If termination cannot be confirmed, fail closed and leave
+  // the existing maintenance owner in charge of recovery.
+  if (!TerminateProcess(process, ERROR_TIMEOUT)) {
+    LOG(ERROR) << "Could not terminate failed WeaselDeployer, error: "
+               << GetLastError();
+  }
+
+  const DWORD stopped =
+      WaitForSingleObject(process, kDeployerTerminationWaitMs);
+  CloseHandle(process);
+  if (stopped != WAIT_OBJECT_0) {
+    LOG(ERROR) << "WeaselDeployer is still running after termination request; "
+                  "skipping rollback and server restart.";
+    return DeployerRunResult::FailedStillRunning;
+  }
+
+  return DeployerRunResult::FailedStopped;
+}
+}  // namespace
+
 static int CustomInstall(bool installing) {
   std::wstring profile = L"hans";
   bool silent = false;
@@ -62,25 +262,21 @@ static int CustomInstall(bool installing) {
 
   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
   HKEY hKey;
-  LSTATUS ret = RegOpenKey(HKEY_CURRENT_USER, KEY, &hKey);
+  LSTATUS ret =
+      RegOpenKeyW(per_user_root(), per_user_subkey(KEY).c_str(), &hKey);
   if (ret == ERROR_SUCCESS) {
-    WCHAR value[MAX_PATH];
-    DWORD len = sizeof(value);
-    DWORD type = 0;
-    DWORD data = 0;
-    ret =
-        RegQueryValueEx(hKey, L"RimeUserDir", NULL, &type, (LPBYTE)value, &len);
-    if (ret == ERROR_SUCCESS && type == REG_SZ) {
-      user_dir = value;
+    std::wstring stored;
+    if (read_reg_sz(hKey, L"RimeUserDir", stored)) {
+      user_dir = stored;
     }
-    len = sizeof(value);
-    ret = RegQueryValueEx(hKey, L"Profile", NULL, &type, (LPBYTE)value, &len);
-    if (ret == ERROR_SUCCESS && type == REG_SZ && value[0] != L'\0') {
-      profile = value;
+    if (read_reg_sz(hKey, L"Profile", stored) && !stored.empty()) {
+      profile = stored;
       if (installing)
         silent = true;
     } else {
-      len = sizeof(data);
+      DWORD data = 0;
+      DWORD len = sizeof(data);
+      DWORD type = 0;
       ret = RegQueryValueEx(hKey, L"Hant", NULL, &type, (LPBYTE)&data, &len);
       if (ret == ERROR_SUCCESS && type == REG_DWORD) {
         profile = (data != 0) ? L"hant" : L"hans";
@@ -90,69 +286,121 @@ static int CustomInstall(bool installing) {
     }
     RegCloseKey(hKey);
   }
+  // TSF 注册所用的 profile 与此持久化值一致（install() 同时写两者），
+  // 作为修改安装时判断 profile 是否变化的基准
+  const std::wstring registered_profile = profile;
   bool _has_installed = has_installed();
   if (!silent) {
     InstallOptionsDialog dlg;
     dlg.installed = _has_installed;
     dlg.profile = profile;
     dlg.user_dir = user_dir;
-    if (IDOK != dlg.DoModal()) {
-      if (!installing)
-        return 1;  // aborted by user
-    } else {
-      profile = dlg.profile;
-      user_dir = dlg.user_dir;
-      _has_installed = dlg.installed;
-    }
+    if (IDOK != dlg.DoModal())
+      return ERROR_CANCELLED;  // 与安装失败区分，外层安装器必须中止
+    profile = dlg.profile;
+    user_dir = dlg.user_dir;
+    _has_installed = dlg.installed;
   }
-  if (!_has_installed)
-    if (0 != install(profile, silent))
-      return 1;
 
-  if (user_dir.empty()) {
-    // default user dir %APPDATA%\Rime
-    WCHAR _path[MAX_PATH] = {0};
-    ExpandEnvironmentStringsW(L"%APPDATA%\\Rime", _path, _countof(_path));
-    user_dir = std::wstring(_path);
+  if (user_dir.empty())
+    user_dir = per_user_default_dir();
+
+  if (!_has_installed) {
+    if (0 != InstallRequestedProfile(profile, user_dir, silent))
+      return 1;
+    // Fresh install committed Profile/Hant/RimeUserDir atomically with the
+    // TSF registration and layout. Do not perform a second fallible write pass.
+    return 0;
   }
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, KEY, L"RimeUserDir", user_dir.c_str(),
-                       REG_SZ, false);
+
+  const std::wstring user_key = per_user_subkey(KEY);
+  std::vector<weasel::setup::detail::RegistryValueSnapshot> registry = {
+      {per_user_root(), user_key, L"RimeUserDir"},
+      {per_user_root(), user_key, L"Profile"},
+      {per_user_root(), user_key, L"Hant"},
+  };
+  for (auto& snapshot : registry) {
+    if (!snapshot.Capture())
+      return 1;
+  }
+  auto restore_registry = [&]() {
+    for (auto it = registry.rbegin(); it != registry.rend(); ++it)
+      it->Restore();
+  };
+  bool profile_switched = false;
+  auto rollback_modify_state = [&]() {
+    if (profile_switched &&
+        switch_registered_profile(profile, registered_profile, true) != 0) {
+      // switch_registered_profile is itself transactional. A failed reverse
+      // switch leaves the new profile state in place; keep the matching new
+      // registry values rather than creating a registry/TSF split-brain state.
+      LOG(ERROR) << "failed to restore the previous TSF profile after "
+                    "modify-install failure";
+      return false;
+    }
+    restore_registry();
+    return true;
+  };
+
+  ret = SetRegKeyValue(per_user_root(), user_key.c_str(), L"RimeUserDir",
+                       user_dir.c_str(), REG_SZ, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
+    restore_registry();
     MSG_BY_IDS(IDS_STR_ERR_WRITE_USER_DIR, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
   }
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, KEY, L"Profile", profile.c_str(),
-                       REG_SZ, false);
+  ret = SetRegKeyValue(per_user_root(), user_key.c_str(), L"Profile",
+                       profile.c_str(), REG_SZ, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
+    restore_registry();
     MSG_BY_IDS(IDS_STR_ERR_WRITE_PROFILE, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
   }
 
-  ret = SetRegKeyValue(HKEY_CURRENT_USER, KEY, L"Hant",
+  ret = SetRegKeyValue(per_user_root(), user_key.c_str(), L"Hant",
                        (profile == L"hant" ? 1 : 0), REG_DWORD, false);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
+    restore_registry();
     MSG_BY_IDS(IDS_STR_ERR_WRITE_HANT, IDS_STR_INSTALL_FAILED,
                MB_ICONERROR | MB_OK);
     return 1;
   }
-  if (_has_installed) {
-    std::wstring dir(install_dir());
-    std::thread th([dir]() {
-      ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"/q",
-                    NULL, SW_SHOWNORMAL);
-      Sleep(500);
-      ShellExecuteW(NULL, NULL, (dir + L"\\WeaselServer.exe").c_str(), L"",
-                    NULL, SW_SHOWNORMAL);
-      Sleep(500);
-      ShellExecuteW(NULL, NULL, (dir + L"\\WeaselDeployer.exe").c_str(),
-                    L"/deploy", NULL, SW_HIDE);
-    });
-    th.detach();
-    MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
-               MB_ICONINFORMATION | MB_OK);
+
+  if (profile != registered_profile) {
+    // Persist the requested state first. The profile switch has its own exact
+    // TSF/layout rollback; if it fails, restore the registry snapshot too so
+    // both sources of truth remain aligned.
+    if (0 != switch_registered_profile(registered_profile, profile, silent)) {
+      restore_registry();
+      return 1;
+    }
+    profile_switched = true;
   }
+
+  std::wstring dir(install_dir());
+  if (!RestartServer(dir)) {
+    (void)rollback_modify_state();
+    return 1;
+  }
+  const DeployerRunResult deploy_result = RunDeployer(dir);
+  if (deploy_result != DeployerRunResult::Success) {
+    if (deploy_result == DeployerRunResult::FailedStillRunning) {
+      // A live deployer may still own maintenance and mutate Rime data. Do not
+      // restore registry/profile state or restart WeaselServer underneath it.
+      return 1;
+    }
+
+    (void)rollback_modify_state();
+    // The deployer is confirmed stopped. Restore the previous registry/profile
+    // state, then restart the server so its process-local paths and Rime state
+    // no longer reference the failed modification.
+    (void)RestartServer(dir);
+    return 1;
+  }
+  MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
+             MB_ICONINFORMATION | MB_OK);
 
   return 0;
 }
@@ -164,6 +412,10 @@ LPCTSTR GetParamByPrefix(LPCTSTR lpCmdLine, LPCTSTR prefix) {
 }
 
 static int Run(LPTSTR lpCmdLine) {
+  // "/origsid:<S-...>" is appended by RestartAsAdmin so the elevated process
+  // can address the invoking user's hive. Strip the trailing parameter
+  // before any command-line matching.
+  apply_orig_sid_param(lpCmdLine);
   constexpr bool silent = true;
   // parameter /? or /help to show commandline args
   if (!wcscmp(L"/?", lpCmdLine) || !wcscmp(L"/help", lpCmdLine)) {
@@ -199,15 +451,29 @@ static int Run(LPTSTR lpCmdLine) {
   }
   bool uninstalling = !wcscmp(L"/u", lpCmdLine);
   if (uninstalling) {
-    if (IsProcAdmin())
-      return uninstall(silent);
-    else
+    if (IsProcAdmin()) {
+      const int result = uninstall(silent);
+      if (result != 0)
+        return result;
+      // Core uninstall has committed by this point. Exact CLSID/TIP cleanup
+      // is a best-effort sweep for stale historical registration entries and
+      // must not turn an otherwise successful uninstall into a failure.
+      if (!weasel::setup::CleanupTextServiceRegistrationAfterUninstall()) {
+        LOG(WARNING) << "Could not remove all stale TSF registration entries "
+                        "after uninstall.";
+      }
+      return 0;
+    } else {
       return RestartAsAdmin(lpCmdLine);
+    }
   }
 
   if (auto res = GetParamByPrefix(lpCmdLine, L"/userdir:")) {
-    return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
-                          L"RimeUserDir", res, REG_SZ);
+    // 剥离 /userdir:"..." 的引号；返回明确的成功/失败退出码（K15）
+    const LSTATUS ret =
+        SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
+                       L"RimeUserDir", unquote_argument(res), REG_SZ);
+    return ret == ERROR_SUCCESS ? 0 : 1;
   }
 
   if (!wcscmp(L"/ls", lpCmdLine)) {
@@ -253,19 +519,19 @@ static int Run(LPTSTR lpCmdLine) {
 
   bool hans = !wcscmp(L"/s", lpCmdLine);
   if (hans)
-    return install(L"hans", silent);
+    return InstallRequestedProfile(L"hans", L"", silent);
   bool hant = !wcscmp(L"/t", lpCmdLine);
   if (hant)
-    return install(L"hant", silent);
+    return InstallRequestedProfile(L"hant", L"", silent);
   bool hongkong = !wcscmp(L"/hk", lpCmdLine);
   if (hongkong)
-    return install(L"hongkong", silent);
+    return InstallRequestedProfile(L"hongkong", L"", silent);
   bool macau = !wcscmp(L"/mc", lpCmdLine);
   if (macau)
-    return install(L"macau", silent);
+    return InstallRequestedProfile(L"macau", L"", silent);
   bool singapore = !wcscmp(L"/sg", lpCmdLine);
   if (singapore)
-    return install(L"singapore", silent);
+    return InstallRequestedProfile(L"singapore", L"", silent);
   bool installing = !wcscmp(L"/i", lpCmdLine);
   return CustomInstall(installing);
 }
@@ -290,23 +556,53 @@ bool IsProcAdmin() {
 }
 
 int RestartAsAdmin(LPTSTR lpCmdLine) {
+  const bool interactive_launch = !lpCmdLine || !*lpCmdLine;
+
   SHELLEXECUTEINFO execInfo{0};
   TCHAR path[MAX_PATH];
   GetModuleFileName(GetModuleHandle(NULL), path, _countof(path));
+  std::wstring params = with_orig_sid_param(lpCmdLine);
   execInfo.lpFile = path;
-  execInfo.lpParameters = lpCmdLine;
+  execInfo.lpParameters = params.c_str();
   execInfo.lpVerb = _T("runas");
   execInfo.cbSize = sizeof(execInfo);
   execInfo.nShow = SW_SHOWNORMAL;
   execInfo.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
   execInfo.hwnd = NULL;
   execInfo.hProcess = NULL;
-  if (::ShellExecuteEx(&execInfo) && execInfo.hProcess != NULL) {
-    ::WaitForSingleObject(execInfo.hProcess, INFINITE);
-    DWORD dwExitCode = 0;
-    ::GetExitCodeProcess(execInfo.hProcess, &dwExitCode);
+  if (!::ShellExecuteEx(&execInfo) || execInfo.hProcess == NULL)
+    return -1;
+
+  if (interactive_launch) {
+    // The unelevated launcher has no work to perform after UAC succeeds.
+    // Leaving immediately avoids pinning a parent process while the user keeps
+    // the elevated configuration dialog open.
     ::CloseHandle(execInfo.hProcess);
-    return dwExitCode;
+    return 0;
   }
-  return -1;
+
+  const DWORD wait_result =
+      ::WaitForSingleObject(execInfo.hProcess, kElevationCommandTimeoutMs);
+  if (wait_result == WAIT_OBJECT_0) {
+    DWORD exit_code = ERROR_GEN_FAILURE;
+    const bool got_exit_code =
+        ::GetExitCodeProcess(execInfo.hProcess, &exit_code) != FALSE;
+    ::CloseHandle(execInfo.hProcess);
+    return got_exit_code ? static_cast<int>(exit_code) : -1;
+  }
+
+  if (wait_result == WAIT_TIMEOUT) {
+    LOG(ERROR) << "Elevated WeaselSetup exceeded the command timeout.";
+    ::CloseHandle(execInfo.hProcess);
+    // Do not terminate an elevated install/uninstall transaction from the
+    // unelevated launcher. Report timeout while allowing the child to finish
+    // or recover according to its own transactional/runtime safeguards.
+    return ERROR_TIMEOUT;
+  }
+
+  const DWORD wait_error = GetLastError();
+  LOG(ERROR) << "Waiting for elevated WeaselSetup failed, error: "
+             << wait_error;
+  ::CloseHandle(execInfo.hProcess);
+  return wait_error ? static_cast<int>(wait_error) : -1;
 }

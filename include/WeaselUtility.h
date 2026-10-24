@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <sstream>
+#include <cstdio>
 #include <wrl/client.h>
 using namespace Microsoft::WRL;
 
@@ -22,8 +23,9 @@ inline std::wstring getUsername() {
 
   wchar_t* username = new wchar_t[len + 1];
 
-  GetUserName(username, &len);
-  if (len <= 0) {
+  // the second call can fail too: then the buffer stays uninitialized
+  // while len keeps its input value, so it must not be used
+  if (!GetUserName(username, &len) || len <= 0) {
     delete[] username;
     return L"";
   }
@@ -67,7 +69,6 @@ inline std::wstring string_to_wstring(const std::string& str,
   // support CP_ACP and CP_UTF8 only
   if (code_page != 0 && code_page != CP_UTF8)
     return L"";
-  // calc len
   int len =
       MultiByteToWideChar(code_page, 0, str.c_str(), (int)str.size(), NULL, 0);
   if (len <= 0)
@@ -83,7 +84,6 @@ inline std::wstring string_to_wstring(const std::string& str,
 
 inline std::string wstring_to_string(const std::wstring& wstr,
                                      int code_page = CP_ACP) {
-  // support CP_ACP and CP_UTF8 only
   if (code_page != 0 && code_page != CP_UTF8)
     return "";
   int len = WideCharToMultiByte(code_page, 0, wstr.c_str(), (int)wstr.size(),
@@ -142,50 +142,104 @@ const wchar_t EscapeChar<wchar_t>::linefeed_escape = L'n';
 template <>
 const wchar_t EscapeChar<wchar_t>::tab_escape = L't';
 
+// IPC 协议转义：仅处理反斜杠、\n、\t（两侧对称）。纯字符串操作实现，
+// 免去每次调用的 stringstream 构造与 locale 查询（每键 ~6N 次调用）
 template <typename CharT>
 inline std::basic_string<CharT> escape_string(
     const std::basic_string<CharT>& input) {
   using Esc = EscapeChar<CharT>;
-  std::basic_stringstream<CharT> res;
-  for (auto p = input.begin(); p != input.end(); ++p) {
-    if (*p == Esc::escape) {
-      res << Esc::escape << Esc::escape;
-    } else if (*p == Esc::linefeed) {
-      res << Esc::escape << Esc::linefeed_escape;
-    } else if (*p == Esc::tab) {
-      res << Esc::escape << Esc::tab_escape;
+  std::basic_string<CharT> res;
+  res.reserve(input.size());
+  for (CharT c : input) {
+    if (c == Esc::escape) {
+      res.push_back(Esc::escape);
+      res.push_back(Esc::escape);
+    } else if (c == Esc::linefeed) {
+      res.push_back(Esc::escape);
+      res.push_back(Esc::linefeed_escape);
+    } else if (c == Esc::tab) {
+      res.push_back(Esc::escape);
+      res.push_back(Esc::tab_escape);
     } else {
-      res << *p;
+      res.push_back(c);
     }
   }
-  return res.str();
+  return res;
 }
 
 template <typename CharT>
 inline std::basic_string<CharT> unescape_string(
     const std::basic_string<CharT>& input) {
   using Esc = EscapeChar<CharT>;
-  std::basic_stringstream<CharT> res;
+  std::basic_string<CharT> res;
+  res.reserve(input.size());
   for (auto p = input.begin(); p != input.end(); ++p) {
     if (*p == Esc::escape) {
       if (++p == input.end()) {
         break;
       } else if (*p == Esc::linefeed_escape) {
-        res << Esc::linefeed;
+        res.push_back(Esc::linefeed);
       } else if (*p == Esc::tab_escape) {
-        res << Esc::tab;
-      } else {  // \a => a
-        res << *p;
+        res.push_back(Esc::tab);
+      } else {
+        res.push_back(*p);
       }
     } else {
-      res << *p;
+      res.push_back(*p);
     }
   }
-  return res.str();
+  return res;
 }
 
-// resource
 std::string GetCustomResource(const char* name, const char* type);
+
+inline bool IsSafeLabelTextFormat(const wchar_t* format) {
+  bool has_conversion = false;
+  for (const wchar_t* p = format; *p != L'\0'; ++p) {
+    if (*p != L'%')
+      continue;
+    const wchar_t next = p[1];
+    if (next == L's') {
+      if (has_conversion)
+        return false;
+      has_conversion = true;
+    } else if (next != L'%') {
+      return false;
+    }
+    ++p;
+  }
+  return true;
+}
+
+inline std::wstring FormatLabelText(const wchar_t* format,
+                                    const std::wstring& label) {
+  if (!format)
+    format = L"%s.";
+  const wchar_t* safe = IsSafeLabelTextFormat(format) ? format : L"%s.";
+  wchar_t buffer[128];
+  _snwprintf_s(buffer, _TRUNCATE, safe, label.c_str());
+  return std::wstring(buffer);
+}
+
+inline bool IsUtf16HighSurrogate(wchar_t ch) {
+  return ch >= 0xD800 && ch <= 0xDBFF;
+}
+inline bool IsUtf16LowSurrogate(wchar_t ch) {
+  return ch >= 0xDC00 && ch <= 0xDFFF;
+}
+
+inline std::wstring AbbreviateText(const std::wstring& str, size_t max_length) {
+  if (max_length == 0 || str.length() <= max_length)
+    return str;
+  size_t cut = max_length - 1;
+  if (cut > 0 && IsUtf16HighSurrogate(str[cut - 1]) &&
+      IsUtf16LowSurrogate(str[cut]))
+    --cut;
+  const std::wstring tail = IsUtf16LowSurrogate(str.back())
+                                ? str.substr(str.length() - 2)
+                                : str.substr(str.length() - 1);
+  return str.substr(0, cut) + L"..." + tail;
+}
 
 inline std::wstring get_weasel_ime_name() {
   LANGID langId = GetUserDefaultUILanguage();
@@ -206,7 +260,7 @@ inline LONG RegGetStringValue(HKEY key,
                               LPCWSTR lpValue,
                               std::wstring& value) {
   TCHAR szValue[MAX_PATH];
-  DWORD dwBufLen = MAX_PATH;
+  DWORD dwBufLen = sizeof(szValue);
 
   LONG lRes = RegGetValue(key, lpSubKey, lpValue, RRF_RT_REG_SZ, NULL, szValue,
                           &dwBufLen);
@@ -292,7 +346,6 @@ class DebugStream {
     if (enabled_)
       OutputDebugString(ss.str().c_str());
   }
-
   template <typename T>
   DebugStream& operator<<(const T& value) {
     if (enabled_)
@@ -301,7 +354,7 @@ class DebugStream {
   }
   DebugStream& operator<<(const char* value) {
     if (enabled_ && value) {
-      std::wstring wvalue(u8tow(value));  // utf-8
+      std::wstring wvalue(u8tow(value));
       ss << wvalue;
     }
     return *this;
@@ -309,7 +362,7 @@ class DebugStream {
   DebugStream& operator<<(const std::string& value) {
     if (!enabled_)
       return *this;
-    std::wstring wvalue(acptow(value));  // utf-8
+    std::wstring wvalue(u8tow(value));
     ss << wvalue;
     return *this;
   }
@@ -361,7 +414,7 @@ struct ComException {
 #define HR(result) HR_Impl(result, __FILE__, __LINE__)
 
 inline void HR_Impl(HRESULT const result, const char* file, int line) {
-  if (S_OK != result) {
+  if (FAILED(result)) {
     DebugStream() << "[" << current_time() << " " << file << ":" << line << "] "
                   << HRESULTToString(result);
     throw ComException(result);

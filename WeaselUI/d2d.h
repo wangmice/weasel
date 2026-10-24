@@ -14,14 +14,22 @@
 #include <dwrite_2.h>
 #include <dxgi1_3.h>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
+#include <wincodec.h>
 #include <WeaselUtility.h>
 
 namespace weasel {
 
 typedef ComPtr<IDWriteTextFormat1> PtTextFormat;
+
+constexpr D2D1_DEBUG_LEVEL SelectD2DDebugLevel(
+    bool enable_debug_layer) noexcept {
+  return enable_debug_layer ? D2D1_DEBUG_LEVEL_INFORMATION
+                            : D2D1_DEBUG_LEVEL_NONE;
+}
 
 template <typename T>
 void SafeRelease(ComPtr<T>& t) {
@@ -55,27 +63,44 @@ T MIN(T a, Args... args) {
   return a < min_rest ? a : min_rest;
 }
 
-// Shared device resources for Direct2D/Direct3D/DComposition/DWrite
-class DeviceResources {
- public:
-  static DeviceResources& Get();
-
-  HRESULT EnsureInitialized();
-  // release and reinitialize device resources (used on device lost)
-  void Reset();
-
+// Immutable process-shared graphics generation. D2D instances keep a shared
+// owner so a device-loss rollover can publish a fresh generation without
+// invalidating resources that another UI thread is still unwinding.
+//
+// DirectComposition devices stay per D2D instance so commits from independent
+// TSF threads remain separate transactions. WIC factories also stay local to
+// the owning UI/COM context instead of being passed directly across apartments.
+struct DeviceResourcesSnapshot {
+  uint64_t generation = 0;
   ComPtr<ID3D11Device> direct3dDevice;
   ComPtr<IDXGIDevice> dxgiDevice;
   ComPtr<IDXGIFactory2> dxFactory;
   ComPtr<ID2D1Factory2> d2Factory;
   ComPtr<ID2D1Device1> d2Device;
-  ComPtr<IDCompositionDevice> dcompDevice;
   ComPtr<IDWriteFactory2> m_pWriteFactory;
-  ComPtr<IWICImagingFactory> wicFactory;
+};
+
+// Publishes complete shared generations under a mutex, but owns them only
+// weakly. The final D2D owner therefore releases COM resources in its normal
+// destruction path instead of from a DLL/static destructor under loader lock.
+class DeviceResources {
+ public:
+  static DeviceResources& Get();
+
+  HRESULT Acquire(std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+  HRESULT RecreateAfterDeviceLoss(
+      uint64_t failed_generation,
+      std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+  bool HasLiveGeneration() const;
 
  private:
-  DeviceResources();
-  bool initialized;
+  DeviceResources() = default;
+  HRESULT CreateGenerationLocked(
+      std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+
+  mutable std::mutex mutex_;
+  std::weak_ptr<const DeviceResourcesSnapshot> current_;
+  uint64_t next_generation_ = 1;
 };
 
 struct IsToRoundStruct {
@@ -113,6 +138,11 @@ struct D2D {
                        const wstring& comment_font_face,
                        const int comment_font_point);
   void OnResize(UINT width, UINT height);
+  // Recover this D2D owner without allowing the panel to manipulate the
+  // process-shared generation directly. Device loss rolls to a replacement
+  // generation while ordinary paint failures rebuild only window resources.
+  HRESULT RecoverAfterDeviceLoss();
+  HRESULT RecoverPaintResources();
   void SetBrushColor(uint32_t color);
   void GetTextSize(const wstring& text,
                    size_t nCount,
@@ -157,6 +187,7 @@ struct D2D {
   PtTextFormat pLabelFormat;
   PtTextFormat pCommentFormat;
   ComPtr<IDWriteFactory2> m_pWriteFactory;
+  ComPtr<IWICImagingFactory> wicFactory;
   ComPtr<ID2D1SolidColorBrush> m_pBrush;
   HICON cachedIcon = nullptr;
   ComPtr<ID2D1Bitmap1> cachedIconBitmap;
@@ -171,9 +202,7 @@ struct D2D {
   std::mutex cacheMutex;
   // clear caches that depend on device/context
   void ClearDeviceDependentCaches();
-  // release per-window resources (swapchain/visual/bitmap/dc) without touching
-  // shared devices if keepResourcesOnHide is true, ReleaseWindowResources will
-  // be a no-op
+  // Release per-window resources without invalidating shared devices.
   void ReleaseWindowResources();
   UIStyle& m_style;
   HWND m_hWnd;
@@ -181,6 +210,61 @@ struct D2D {
   float m_dpiY;
   float m_dpiScaleFontPoint;
   float m_dpiScaleLayout;
+
+ private:
+  HRESULT AcquireSharedResources();
+  void AdoptSharedResources(
+      const std::shared_ptr<const DeviceResourcesSnapshot>& snapshot);
+  std::shared_ptr<const DeviceResourcesSnapshot> m_sharedResources;
 };
+
+inline HRESULT D2D::RecoverAfterDeviceLoss() {
+  const uint64_t failed_generation =
+      m_sharedResources ? m_sharedResources->generation : 0;
+  std::shared_ptr<const DeviceResourcesSnapshot> replacement;
+  HRESULT hr = DeviceResources::Get().RecreateAfterDeviceLoss(failed_generation,
+                                                              replacement);
+
+  const HWND hwnd = m_hWnd;
+  ReleaseWindowResources();
+  m_hWnd = hwnd;
+  // DirectComposition is created from the generation's DXGI device and must
+  // never survive a generation rollover.
+  dcompDevice.Reset();
+
+  if (FAILED(hr)) {
+    SafeReleaseAll(direct3dDevice, dxgiDevice, dxFactory, d2Factory, d2Device,
+                   m_pWriteFactory);
+    m_sharedResources.reset();
+    ClearDeviceDependentCaches();
+    return hr;
+  }
+
+  AdoptSharedResources(replacement);
+  InitDirect2D();
+  if (!dc || !swapChain || !bitmap || !visual || !target || !dcompDevice ||
+      !m_pBrush) {
+    return E_FAIL;
+  }
+  return S_OK;
+}
+
+inline HRESULT D2D::RecoverPaintResources() {
+  if (direct3dDevice && FAILED(direct3dDevice->GetDeviceRemovedReason())) {
+    return RecoverAfterDeviceLoss();
+  }
+
+  const HWND hwnd = m_hWnd;
+  if (!hwnd)
+    return E_HANDLE;
+  ReleaseWindowResources();
+  m_hWnd = hwnd;
+  InitDirect2D();
+  if (!dc || !swapChain || !bitmap || !visual || !target || !dcompDevice ||
+      !m_pBrush) {
+    return E_FAIL;
+  }
+  return S_OK;
+}
 }  // namespace weasel
 #endif

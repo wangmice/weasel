@@ -7,9 +7,8 @@ const wstring StandardLayout::_next = L">";
 
 namespace {
 wstring FormatCandidateLabel(const wstring& label, const wchar_t* format) {
-  wchar_t buffer[128];
-  swprintf_s<128>(buffer, format, label.c_str());
-  return wstring(buffer);
+  // Validate user formats and truncate without CRT invalid-parameter failure.
+  return FormatLabelText(format, label);
 }
 }  // namespace
 
@@ -28,7 +27,7 @@ CSize StandardLayout::_GetPreeditSize(const Text& text,
       wstring hilited_str =
           preedit.substr(range.start, range.end - range.start);
       wstring after_str = preedit.substr(range.end);
-      CSize beforesz, hilitedsz, aftersz;
+      CSize beforesz(0, 0), hilitedsz(0, 0), aftersz(0, 0);
       _pD2D->GetTextSize(before_str, before_str.length(), pTextFormat,
                          &beforesz);
       _pD2D->GetTextSize(hilited_str, hilited_str.length(), pTextFormat,
@@ -71,10 +70,10 @@ void StandardLayout::RecalculateSizes() {
   _candidateLabelSizes.clear();
   _candidateTextSizes.clear();
   _candidateCommentSizes.clear();
-  for (size_t i = 0; i < candidates.size(); ++i) {
+  for (int i = 0; i < candidates_count; ++i) {
     CSize labelSize(0, 0), textSize(0, 0), commentSize(0, 0);
     if (labelFontValid) {
-      const auto label = FormatCandidateLabel(labels.at(i).str,
+      const auto label = FormatCandidateLabel(TextAt(labels, i).str,
                                               _style.label_text_format.c_str());
       _pD2D->GetTextSize(label, label.length(), _pD2D->pLabelFormat,
                          &labelSize);
@@ -84,8 +83,9 @@ void StandardLayout::RecalculateSizes() {
                          _pD2D->pTextFormat, &textSize);
     }
     if (cmtFontValid) {
-      _pD2D->GetTextSize(comments.at(i).str, comments.at(i).str.length(),
-                         _pD2D->pCommentFormat, &commentSize);
+      const auto& comment = TextAt(comments, i).str;
+      _pD2D->GetTextSize(comment, comment.length(), _pD2D->pCommentFormat,
+                         &commentSize);
     }
     _candidateLabelSizes.push_back(labelSize);
     _candidateTextSizes.push_back(textSize);
@@ -168,7 +168,7 @@ void StandardLayout::_UpdateStatusIconLayout(int* width, int* height) {
 void StandardLayout::_CalcPageIndicator(bool vertical_text_layout,
                                         int& pgw,
                                         int& pgh) {
-  CSize pgszl, pgszr;
+  CSize pgszl(0, 0), pgszr(0, 0);
   if (!IsInlinePreedit()) {
     _pD2D->GetTextSize(_pre, _pre.length(), _pD2D->pPreeditFormat, &pgszl);
     _pD2D->GetTextSize(_next, _next.length(), _pD2D->pPreeditFormat, &pgszr);
@@ -427,7 +427,7 @@ void StandardLayout::_PrecomputePreeditRects(const CRect& baseRect,
   if (range.start >= range.end)
     return;
 
-  CSize beforesz, hilitedsz, aftersz;
+  CSize beforesz(0, 0), hilitedsz(0, 0), aftersz(0, 0);
   auto& fmt = _pD2D->pPreeditFormat;
 
   int x = baseRect.left, y = baseRect.top;
@@ -491,7 +491,7 @@ int StandardLayout::_CalcMarkMetrics(bool vertical_text_layout) {
     mark_gap = 0;
     return 0;
   }
-  CSize sg;
+  CSize sg(0, 0);
   if (_style.mark_text.empty())
     _pD2D->GetTextSize(L"|", 1, _pD2D->pTextFormat, &sg);
   else

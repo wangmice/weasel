@@ -17,6 +17,13 @@ namespace fs = std::filesystem;
 
 class WeaselServerApp {
  public:
+  inline static constexpr char kStableUpdateFeedUrl[] =
+      "https://raw.githubusercontent.com/wangmice/weasel/master/update/"
+      "appcast.xml";
+  inline static constexpr char kTestingUpdateFeedUrl[] =
+      "https://raw.githubusercontent.com/wangmice/weasel/master/update/"
+      "testing-appcast.xml";
+
   static bool execute(const fs::path& cmd, const std::wstring& args) {
     const int show = cmd.filename().wstring() == L"WeaselDeployer.exe"
                          ? SW_HIDE
@@ -36,18 +43,15 @@ class WeaselServerApp {
                                     SW_SHOWNORMAL) > 32;
   }
 
-  static bool check_update() {
-    // when checked manually, show testing versions too
-    std::string feed_url = GetCustomResource("ManualUpdateFeedURL", "APPCAST");
+  static const char* update_feed_url() {
     std::wstring channel{};
     auto ret = RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
                                  L"UpdateChannel", channel);
-    if (!ret && channel == L"testing") {
-      feed_url = GetCustomResource("TestingManualUpdateFeedURL", "APPCAST");
-    }
-    if (!feed_url.empty()) {
-      win_sparkle_set_appcast_url(feed_url.c_str());
-    }
+    return !ret && channel == L"testing" ? kTestingUpdateFeedUrl
+                                         : kStableUpdateFeedUrl;
+  }
+
+  static bool check_update() {
     win_sparkle_check_update_with_ui();
     return true;
   }
@@ -61,7 +65,7 @@ class WeaselServerApp {
  public:
   WeaselServerApp();
   ~WeaselServerApp();
-  int Run();
+  int Run(bool check_updates = false);
 
  protected:
   void SetupMenuHandlers();

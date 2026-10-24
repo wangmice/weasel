@@ -62,7 +62,8 @@ void weasel::VerticalLayout::DoLayout() {
     bool cmtFontNotTrans =
         (i == id && (_style.hilited_comment_text_color & 0xff000000)) ||
         (i != id && (_style.comment_text_color & 0xff000000));
-    if (!comments.at(i).str.empty() && cmtFontValid && cmtFontNotTrans) {
+    const std::wstring& comment = TextAt(comments, i).str;
+    if (!comment.empty() && cmtFontValid && cmtFontNotTrans) {
       w += space;
       comment_shift_width = MAX(comment_shift_width, w);
 

@@ -24,6 +24,7 @@ class Layout {
          const Context& context,
          const Status& status,
          an<D2D>& pD2D);
+  virtual ~Layout() = default;
   virtual void DoLayout() = 0;
   virtual CSize& GetContentSize() = 0;
   virtual CRect& GetPreeditRect() = 0;
@@ -38,6 +39,8 @@ class Layout {
   virtual CRect& GetPrepageRect() = 0;
   virtual CRect& GetNextpageRect() = 0;
   virtual const TextRange& GetPreeditRange() const = 0;
+  // Candidate vectors need not have equal lengths: missing text is empty.
+  static const Text& TextAt(const std::vector<Text>& texts, int index);
   virtual bool IsInlinePreedit() const = 0;
   virtual bool ShouldDisplayStatusIcon() const = 0;
   virtual const IsToRoundStruct& GetRoundInfo(int id) = 0;

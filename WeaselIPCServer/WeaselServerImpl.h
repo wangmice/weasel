@@ -1,15 +1,20 @@
 #pragma once
 #include <WeaselIPC.h>
+#include <WeaselInteractionPolicy.h>
 #include <map>
+#include <optional>
 #include <Winnt.h>   // for security attributes constants
 #include <aclapi.h>  // for ACL
 #include <boost/thread.hpp>
 #include <PipeChannel.h>
 
+#include "ClientProcessTracker.h"
 #include "SecurityAttribute.h"
+#include "SessionRoutingHandler.h"
 
 namespace weasel {
 class PipeServer;
+class ServerImplTestAccess;
 
 typedef CWinTraits<WS_DISABLED, WS_EX_TRANSPARENT> ServerWinTraits;
 
@@ -24,7 +29,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
   MESSAGE_HANDLER(WM_CLOSE, OnClose)
   MESSAGE_HANDLER(WM_QUERYENDSESSION, OnQueryEndSystemSession)
-  MESSAGE_HANDLER(WM_ENDSESSION, OnEndSystemSession)
+  MESSAGE_HANDLER(WM_ENDSESSION, OnEndSystemSessionChecked)
   MESSAGE_HANDLER(WM_DWMCOLORIZATIONCOLORCHANGED, OnColorChange)
   MESSAGE_HANDLER(WM_SETTINGCHANGE, OnColorChange)
   MESSAGE_HANDLER(WM_COMMAND, OnCommand)
@@ -46,6 +51,14 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
                              WPARAM wParam,
                              LPARAM lParam,
                              BOOL& bHandled);
+  LRESULT OnEndSystemSessionChecked(UINT uMsg,
+                                    WPARAM wParam,
+                                    LPARAM lParam,
+                                    BOOL& bHandled) {
+    if (!interaction_policy::ShouldFinalizeEndSession(wParam != FALSE))
+      return 0;
+    return OnEndSystemSession(uMsg, wParam, lParam, bHandled);
+  }
   LRESULT OnCommand(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
   LRESULT OnServiceNotifyMessage(UINT uMsg,
                                  WPARAM wParam,
@@ -85,28 +98,72 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
   int Run();
 
   void SetRequestHandler(RequestHandler* pHandler) {
-    m_pRequestHandler = pHandler;
+    session_router.SetBackend(pHandler);
+    m_pRequestHandler =
+        pHandler ? static_cast<RequestHandler*>(&session_router) : nullptr;
   }
   void AddMenuHandler(UINT uID, CommandHandler& handler) {
     m_MenuHandlers[uID] = handler;
   }
   void SetTrayRefreshCallback(std::function<void()> callback) {
-    m_trayRefreshCallback = callback;
+    m_trayRefreshCallback = std::move(callback);
+  }
+  void SetBeforeReadyCallback(std::function<void()> callback) {
+    m_beforeReadyCallback = std::move(callback);
   }
 
  private:
+  friend class ServerImplTestAccess;
+
+  using PPhysicalToLogicalPointForPerMonitorDPI = BOOL(WINAPI*)(HWND, LPPOINT);
+
   void _Finailize();
+  void _OnClientProcessExit(ClientProcessToken token);
+  // Caller must hold g_api_mutex for commands that change handler options.
+  LRESULT _HandleCommand(UINT uID, LPARAM lParam, BOOL& bHandled);
+  /* Bound the complete asynchronous runtime teardown with one hard watchdog. */
+  void _StopRuntime();
+  /* Interrupt and join the pipe listener and its workers; idempotent. */
+  void _StopPipeServer();
+  int _RequestStop() noexcept;
+  void _SetRuntimeLifecycle(ServerLifecycle lifecycle) noexcept;
+  ServerLifecycle _RuntimeLifecycle() const noexcept;
+  bool _TryTransitionRuntimeLifecycle(ServerLifecycle expected,
+                                      ServerLifecycle desired) noexcept;
+  bool _PublishRuntimeState() noexcept;
+  void _UnlockStartupLifecycleLock() noexcept;
   template <typename _Resp>
   void HandlePipeMessage(PipeMessage pipe_msg, _Resp resp);
 
+  // The channel stores a pointer to these attributes, so the security object
+  // must be constructed before the channel and destroyed after it.
+  SecurityAttribute sa;
   std::unique_ptr<PipeServer> channel;
   std::unique_ptr<boost::thread> pipeThread;
-  RequestHandler* m_pRequestHandler;  // reference
+  SessionRoutingHandler session_router;
+  // Declared after the router so it is destroyed first; _Finailize also stops
+  // it explicitly after pipe workers drain and before the handler/UI may die.
+  ClientProcessTracker process_tracker;
+  // Resolved from the actual named-pipe peer. The tracker token identifies a
+  // process generation rather than a numeric PID, so PID reuse cannot inherit
+  // maintenance ownership.
+  std::optional<ClientProcessToken> m_dispatchProcessOwner;
+  std::optional<ClientProcessToken> m_maintenanceOwner;
+  RequestHandler* m_pRequestHandler;  // points at session_router while active
+  ServerLifecycleLock m_startupLifecycleLock;
+  HANDLE m_singletonMutex;
+  HANDLE m_runtimeStateMapping;
+  ServerRuntimeState* m_runtimeState;
   std::map<UINT, CommandHandler> m_MenuHandlers;
   std::function<void()> m_trayRefreshCallback;
+  std::function<void()> m_beforeReadyCallback;
   HMODULE m_hUser32Module;
-  SecurityAttribute sa;
+  /* Resolved once in the ctor; stays null if user32 does not export it
+   * (below Win8.1), and OnUpdateInputPosition then keeps physical coords */
+  PPhysicalToLogicalPointForPerMonitorDPI
+      m_pPhysicalToLogicalPointForPerMonitorDPI;
   BOOL m_darkMode;
+  bool m_runtimeStopped = false;
 };
 
 }  // namespace weasel

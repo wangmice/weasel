@@ -27,7 +27,7 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
   /* did the selection change? */
   if (pEditRecord->GetSelectionStatus(&fSelectionChanged) == S_OK &&
       fSelectionChanged) {
-    if (_IsComposing()) {
+    if (_IsComposingInContext(pContext)) {
       /* if the caret moves out of composition range, stop the composition */
       TF_SELECTION tfSelection;
       ULONG cFetched;
@@ -41,6 +41,7 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
             _EndComposition(pContext, true);
           pRangeComposition->Release();
         }
+        tfSelection.range->Release();
       }
     }
   }
@@ -48,41 +49,52 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
   /* text modification? */
   if (pEditRecord->GetTextAndPropertyUpdates(TF_GTP_INCL_TEXT, NULL, 0,
                                              &pEnumTextChanges) == S_OK) {
-    if (pEnumTextChanges->Next(1, &pRange, NULL) == S_OK) {
+    if (pEnumTextChanges->Next(1, &pRange, NULL) == S_OK)
       pRange->Release();
-    }
     pEnumTextChanges->Release();
   }
+
+  // TF_E_LOCKED is only meaningful while another text service owns this
+  // context. Retry after that READWRITE session has ended instead of burning
+  // the bounded retry budget recursively inside the same lock stack.
+  if (_responseApplyQueue.ConsumeRetryRequest())
+    _ScheduleNextResponseApply(false);
+  if (_handoffWaitPauseToken != 0 && _handoffWaitContext == pContext)
+    _ResumeHandoffWait();
   return S_OK;
 }
 
 STDMETHODIMP WeaselTSF::OnLayoutChange(ITfContext* pContext,
                                        TfLayoutCode lcode,
                                        ITfContextView* pContextView) {
-  if (!_IsComposing())
+  if (!_IsComposingInContext(pContext))
     return S_OK;
 
   if (pContext != _pTextEditSinkContext)
     return S_OK;
 
-  if (lcode == TF_LC_CHANGE)
-    _UpdateCompositionWindow(pContext);
+  if (lcode == TF_LC_CHANGE) {
+    _UpdateCompositionWindow(pContext, _pendingUIGeneration);
+  }
   return S_OK;
 }
 
 BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
   com_ptr<ITfSource> pSource;
-  BOOL fRet;
 
-  /* clear out any previous sink first */
-  if (_dwTextEditSinkCookie != TF_INVALID_COOKIE) {
-    _pTextEditSinkContext->QueryInterface(&pSource);
+  if (_dwTextEditSinkCookie != TF_INVALID_COOKIE ||
+      _dwTextLayoutSinkCookie != TF_INVALID_COOKIE) {
+    if (_pTextEditSinkContext)
+      _pTextEditSinkContext->QueryInterface(&pSource);
     if (pSource != nullptr) {
-      pSource->UnadviseSink(_dwTextEditSinkCookie);
-      pSource->UnadviseSink(_dwTextLayoutSinkCookie);
+      if (_dwTextEditSinkCookie != TF_INVALID_COOKIE)
+        pSource->UnadviseSink(_dwTextEditSinkCookie);
+      if (_dwTextLayoutSinkCookie != TF_INVALID_COOKIE)
+        pSource->UnadviseSink(_dwTextLayoutSinkCookie);
     }
     _pTextEditSinkContext = nullptr;
     _dwTextEditSinkCookie = TF_INVALID_COOKIE;
+    _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
   }
   if (pDocMgr == NULL)
     return TRUE;
@@ -93,26 +105,28 @@ BOOL WeaselTSF::_InitTextEditSink(com_ptr<ITfDocumentMgr> pDocMgr) {
   if (_pTextEditSinkContext == NULL)
     return TRUE;
 
-  fRet = FALSE;
-
   pSource.Release();
-
-  if (_pTextEditSinkContext->QueryInterface(IID_ITfSource, (void**)&pSource) ==
+  if (_pTextEditSinkContext->QueryInterface(IID_ITfSource, (void**)&pSource) !=
       S_OK) {
-    if (pSource->AdviseSink(IID_ITfTextEditSink, (ITfTextEditSink*)this,
-                            &_dwTextEditSinkCookie) == S_OK)
-      fRet = TRUE;
-    else
-      _dwTextEditSinkCookie = TF_INVALID_COOKIE;
-    if (pSource->AdviseSink(IID_ITfTextLayoutSink, (ITfTextLayoutSink*)this,
-                            &_dwTextLayoutSinkCookie) == S_OK) {
-      fRet = TRUE;
-    } else
-      _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
-  }
-  if (fRet == FALSE) {
     _pTextEditSinkContext = nullptr;
+    return FALSE;
   }
 
-  return fRet;
+  // OnEndEdit is the retry trigger after TF_E_LOCKED. Without the text-edit
+  // sink the response FIFO can stall indefinitely, so it is required.
+  if (pSource->AdviseSink(IID_ITfTextEditSink, (ITfTextEditSink*)this,
+                          &_dwTextEditSinkCookie) != S_OK) {
+    _dwTextEditSinkCookie = TF_INVALID_COOKIE;
+    _pTextEditSinkContext = nullptr;
+    return FALSE;
+  }
+
+  // Layout notifications only improve candidate positioning. Keep text input
+  // functional when a host does not expose ITfTextLayoutSink.
+  if (pSource->AdviseSink(IID_ITfTextLayoutSink, (ITfTextLayoutSink*)this,
+                          &_dwTextLayoutSinkCookie) != S_OK) {
+    _dwTextLayoutSinkCookie = TF_INVALID_COOKIE;
+  }
+
+  return TRUE;
 }

@@ -52,6 +52,9 @@ void ContextUpdater::_StoreText(Text& target,
     if (k[2] == L"cursor") {
       std::vector<std::wstring> vec;
       split(vec, value, L",");
+      // start/end are required; upstream may omit the optional cursor field.
+      // Reject genuinely truncated data while preserving TextRange's default
+      // cursor=-1 when only start/end are present.
       if (vec.size() < 2)
         return;
 
@@ -71,10 +74,17 @@ void ContextUpdater::_StoreText(Text& target,
 void ContextUpdater::_StoreCand(Deserializer::KeyType k,
                                 std::wstring const& value) {
   CandidateInfo& cinfo = m_pTarget->p_context->cinfo;
-  std::wstringstream ss(value);
-  boost::archive::text_wiarchive ia(ss);
+  TryDeserialize(value, cinfo);
 
-  TryDeserialize(ia, cinfo);
+  // Guard against corrupt pipe data inflating the candidate vector; the UI
+  // never renders more than MAX_CANDIDATES_COUNT anyway (WeaselUI).
+  constexpr size_t kMaxCandCount = 100;
+  if (cinfo.candies.size() > kMaxCandCount) {
+    LOG(ERROR) << "IPC response dropped: " << cinfo.candies.size()
+               << " candidates exceeds the cap " << kMaxCandCount;
+    cinfo = CandidateInfo();
+    return;
+  }
 
   for (auto& cand : cinfo.candies)
     cand.str = unescape_string(cand.str);

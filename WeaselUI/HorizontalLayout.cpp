@@ -59,7 +59,8 @@ void HorizontalLayout::DoLayout() {
       bool cmtFontNotTrans =
           (i == id && (_style.hilited_comment_text_color & 0xff000000)) ||
           (i != id && (_style.comment_text_color & 0xff000000));
-      if (!comments.at(i).str.empty() && cmtFontValid && cmtFontNotTrans) {
+      const std::wstring& comment = TextAt(comments, i).str;
+      if (!comment.empty() && cmtFontValid && cmtFontNotTrans) {
         const auto& commentSize = _candidateCommentSizes[i];
         w += _style.hilite_spacing;
         _candidateCommentRects[i].SetRect(w, height, w + commentSize.cx,

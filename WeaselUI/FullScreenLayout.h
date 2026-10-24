@@ -8,7 +8,7 @@ class FullScreenLayout : public StandardLayout {
   FullScreenLayout(const UIStyle& style,
                    const Context& context,
                    const Status& status,
-                   const CRect& inputPos,
+                   const RECT& inputPos,
                    the<Layout> layout,
                    an<D2D>& pD2D)
       : StandardLayout(style, context, status, pD2D),
@@ -20,7 +20,9 @@ class FullScreenLayout : public StandardLayout {
  private:
   bool AdjustFontPoint(const CRect& workArea, int& step);
 
-  const CRect& mr_inputPos;
+  // Reference the panel's persistent RECT directly; converting to CRect
+  // would bind this member to a temporary destroyed after construction.
+  const RECT& mr_inputPos;
   the<Layout> m_layout;
 };
 };  // namespace weasel

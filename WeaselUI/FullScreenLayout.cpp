@@ -22,14 +22,23 @@ void weasel::FullScreenLayout::DoLayout() {
 
   int step = 32;
   bool adjusted = false;
-  do {
+  // Fixed margins/minimum sizes can make fitting impossible. Keep the last
+  // completed layout rather than letting font search monopolize the UI thread.
+  constexpr int kMaxLayoutPasses = 64;
+  for (int pass = 0; pass < kMaxLayoutPasses; ++pass) {
     if (adjusted) {
       // Font changed, recalculate cached sizes
       static_cast<StandardLayout*>(m_layout.get())->RecalculateSizes();
     }
     m_layout->DoLayout();
+    // Do not change fonts after the last pass: cached rectangles must still
+    // describe the formats that will be painted.
+    if (pass + 1 == kMaxLayoutPasses)
+      break;
     adjusted = AdjustFontPoint(workArea, step);
-  } while (adjusted);
+    if (!adjusted)
+      break;
+  }
 
   mark_height = m_layout->mark_height;
   mark_width = m_layout->mark_width;
@@ -40,22 +49,6 @@ void weasel::FullScreenLayout::DoLayout() {
   _preeditRect.OffsetRect(offsetx, offsety);
   _auxiliaryRect = m_layout->GetAuxiliaryRect();
   _auxiliaryRect.OffsetRect(offsetx, offsety);
-  // walkaround to make auxiliary rect center of the ContentRect when auxiliary
-  // text is not empty
-  if (_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN &&
-      !_context.aux.str.empty()) {
-    int aux_center_x = (_auxiliaryRect.left + _auxiliaryRect.right) / 2;
-    int aux_center_y = (_auxiliaryRect.top + _auxiliaryRect.bottom) / 2;
-    int target_x = workArea.Width() / 2;
-    int target_y = workArea.Height() / 2;
-    int delta_x = target_x - aux_center_x;
-    int delta_y = target_y - aux_center_y;
-    _auxiliaryRect.OffsetRect(delta_x, delta_y);
-    _auxBeforeRect.OffsetRect(delta_x, delta_y);
-    _auxHiliteRect.OffsetRect(delta_x, delta_y);
-    _auxAfterRect.OffsetRect(delta_x, delta_y);
-    _statusIconRect.SetRect(0, 0, 0, 0);  // hide status icon
-  }
   _highlightRect = m_layout->GetHighlightRect();
   _highlightRect.OffsetRect(offsetx, offsety);
 
@@ -77,8 +70,7 @@ void weasel::FullScreenLayout::DoLayout() {
     _candidateRects[i].OffsetRect(offsetx, offsety);
   }
   _statusIconRect = m_layout->GetStatusIconRect();
-  // VERTICAL_TEXT_FULLSCREEN with non-empty aux hides the icon;
-  // only offset if it wasn't hidden.
+  // Copy and offset first; apply fullscreen auxiliary overrides below.
   if (!_statusIconRect.IsRectNull())
     _statusIconRect.OffsetRect(offsetx, offsety);
 
@@ -97,6 +89,20 @@ void weasel::FullScreenLayout::DoLayout() {
   _auxHiliteRect.OffsetRect(offsetx, offsety);
   _auxAfterRect = m_layout->GetAuxAfterRect();
   _auxAfterRect.OffsetRect(offsetx, offsety);
+
+  // Apply centering after copying all cached rectangles so it is not lost.
+  if (_style.layout_type == UIStyle::LAYOUT_VERTICAL_TEXT_FULLSCREEN &&
+      !_context.aux.str.empty()) {
+    int aux_center_x = (_auxiliaryRect.left + _auxiliaryRect.right) / 2;
+    int aux_center_y = (_auxiliaryRect.top + _auxiliaryRect.bottom) / 2;
+    int delta_x = workArea.Width() / 2 - aux_center_x;
+    int delta_y = workArea.Height() / 2 - aux_center_y;
+    _auxiliaryRect.OffsetRect(delta_x, delta_y);
+    _auxBeforeRect.OffsetRect(delta_x, delta_y);
+    _auxHiliteRect.OffsetRect(delta_x, delta_y);
+    _auxAfterRect.OffsetRect(delta_x, delta_y);
+    _statusIconRect.SetRect(0, 0, 0, 0);
+  }
 
   _contentSize.SetSize(workArea.Width(), workArea.Height());
   _contentRect.SetRect(0, 0, workArea.Width(), workArea.Height());
@@ -126,45 +132,35 @@ bool FullScreenLayout::AdjustFontPoint(const CRect& workArea, int& step) {
                                _pD2D->m_dpiScaleFontPoint);
     else
       fontPointComment = 0;
+    const int oldFontPoint = fontPoint;
+    const int oldFontPointLabel = fontPointLabel;
+    const int oldFontPointComment = fontPointComment;
     CSize sz = m_layout->GetContentSize();
     if (sz.cx > ((CRect)workArea).Width() - offsetX * 2 ||
         sz.cy > ((CRect)workArea).Height() - offsetY * 2) {
       if (step > 0) {
         step = -(step >> 1);
       }
-      fontPoint += step;
-      fontPointLabel += step;
-      fontPointComment += step;
-      if (fontPoint < 1)
-        fontPoint = 1;
-      if (fontPointLabel < 1)
-        fontPointLabel = 1;
-      if (fontPointComment < 1)
-        fontPointComment = 1;
-      _pD2D->InitFontFormats(_style.label_font_face, fontPointLabel,
-                             _style.font_face, fontPoint,
-                             _style.comment_font_face, fontPointComment);
-      return true;
     } else if (sz.cx <= (((CRect)workArea).Width() - offsetX * 2) * 31 / 32 &&
                sz.cy <= (((CRect)workArea).Height() - offsetY * 2) * 31 / 32) {
       if (step < 0) {
         step = -step >> 1;
       }
-      fontPoint += step;
-      fontPointLabel += step;
-      fontPointComment += step;
-      if (fontPoint < 1)
-        fontPoint = 1;
-      if (fontPointLabel < 1)
-        fontPointLabel = 1;
-      if (fontPointComment < 1)
-        fontPointComment = 1;
-      _pD2D->InitFontFormats(_style.label_font_face, fontPointLabel,
-                             _style.font_face, fontPoint,
-                             _style.comment_font_face, fontPointComment);
-      return true;
+    } else {
+      return false;
     }
 
-    return false;
+    fontPoint = MAX(1, fontPoint + step);
+    fontPointLabel = MAX(1, fontPointLabel + step);
+    fontPointComment = MAX(1, fontPointComment + step);
+    // At the font floor, fixed layout dimensions cannot be reduced further.
+    // This also stops a search whose step has converged to zero.
+    if (fontPoint == oldFontPoint && fontPointLabel == oldFontPointLabel &&
+        fontPointComment == oldFontPointComment)
+      return false;
+    _pD2D->InitFontFormats(_style.label_font_face, fontPointLabel,
+                           _style.font_face, fontPoint,
+                           _style.comment_font_face, fontPointComment);
+    return true;
   }
 }

@@ -1,23 +1,123 @@
 ﻿#include "stdafx.h"
 #include "WeaselClientImpl.h"
 #include <StringAlgorithm.hpp>
+#include <WeaselInteractionPolicy.h>
 
 using namespace weasel;
 
+namespace {
+
+constexpr DWORD kStateChangingTransactionTimeoutMs = 3000;
+constexpr DWORD kMaintenanceTransactionTimeoutMs = 30000;
+constexpr DWORD kHostCallbackTransactionTimeoutMs = 100;
+constexpr DWORD kTeardownTransactionTimeoutMs = 100;
+
+DWORD TransactionTimeoutForCommand(WEASEL_IPC_COMMAND command) {
+  switch (command) {
+    case WEASEL_IPC_START_MAINTENANCE:
+    case WEASEL_IPC_END_MAINTENANCE:
+      return kMaintenanceTransactionTimeoutMs;
+    case WEASEL_IPC_ECHO:
+    case WEASEL_IPC_FOCUS_IN:
+    case WEASEL_IPC_FOCUS_OUT:
+    case WEASEL_IPC_UPDATE_INPUT_POS:
+      return kHostCallbackTransactionTimeoutMs;
+    case WEASEL_IPC_START_SESSION:
+    case WEASEL_IPC_SHUTDOWN_SERVER:
+    case WEASEL_IPC_COMMIT_COMPOSITION:
+    case WEASEL_IPC_CLEAR_COMPOSITION:
+    case WEASEL_IPC_TRAY_COMMAND:
+    case WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE:
+    case WEASEL_IPC_HIGHLIGHT_CANDIDATE_ON_CURRENT_PAGE:
+    case WEASEL_IPC_CHANGE_PAGE:
+      return kStateChangingTransactionTimeoutMs;
+    case WEASEL_IPC_END_SESSION:
+      return kTeardownTransactionTimeoutMs;
+    default:
+      return PipeChannelBase::kDefaultTransactionTimeoutMs;
+  }
+}
+
+DWORD RemainingTransactionTime(ULONGLONG deadline) {
+  const ULONGLONG now = GetTickCount64();
+  if (now >= deadline)
+    return 0;
+  return static_cast<DWORD>(deadline - now);
+}
+
+bool ServerRuntimeIsReady() noexcept {
+  const std::wstring state_name = GetServerRuntimeStateName();
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, state_name.c_str());
+  if (!mapping)
+    return false;
+
+  void* view =
+      MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(ServerRuntimeState));
+  if (!view) {
+    CloseHandle(mapping);
+    return false;
+  }
+
+  const auto* shared = static_cast<const ServerRuntimeState*>(view);
+  const UINT32 version = shared->version;
+  const UINT32 process_id = shared->process_id;
+  const UINT64 creation_time = shared->process_creation_time;
+  const LONG lifecycle =
+      *reinterpret_cast<const volatile LONG*>(&shared->lifecycle);
+  UnmapViewOfFile(view);
+  CloseHandle(mapping);
+  return version == kServerRuntimeStateVersion && process_id != 0 &&
+         creation_time != 0 &&
+         lifecycle == static_cast<LONG>(ServerLifecycle::Ready);
+}
+
+bool HasInvalidSessionResponse(PipeChannel<PipeMessage>& channel,
+                               UINT64 previous_serial) {
+  if (channel.ResponseSerial() == previous_serial)
+    return false;
+
+  // The server emits this small exceptional response before librime sees a
+  // stale key. Compare only the fixed prefix instead of line-scanning the
+  // entire normal response (which TSF parses immediately afterwards anyway).
+  static constexpr wchar_t kInvalidSessionPrefix[] =
+      L"action=noop\nsession.invalid=1\n";
+  static constexpr size_t kPrefixLength =
+      sizeof(kInvalidSessionPrefix) / sizeof(kInvalidSessionPrefix[0]) - 1;
+
+  bool found = false;
+  channel.HandleResponseData([&](LPWSTR buffer, DWORD length) {
+    if (!buffer || length < kPrefixLength)
+      return false;
+    found = std::char_traits<wchar_t>::compare(buffer, kInvalidSessionPrefix,
+                                               kPrefixLength) == 0;
+    return true;
+  });
+  return found;
+}
+
+}  // namespace
+
 ClientImpl::ClientImpl()
-    : session_id(0), channel(GetPipeName()), is_ime(false) {
+    : session_id(0),
+      session_key_generator_(GenerateSessionKey),
+      is_ime(false),
+      channel(GetPipeName(), NULL, 64 * 1024, GetLegacyPipeName()) {
   _InitializeClientInfo();
 }
 
 ClientImpl::~ClientImpl() {
   if (channel.Connected())
     Disconnect();
+  // Destruction is always a final logical-session boundary, including a
+  // failed START whose transport was already torn down.
+  _RetireSessionKey();
 }
 
-// http://stackoverflow.com/questions/557081/how-do-i-get-the-hmodule-for-the-currently-executing-code
+// http://stackoverflow.com/questions/557081/how-do-i-get-the-hmodule-for-the-currently-executed-code
 HMODULE GetCurrentModule() {  // NB: XP+ solution!
   HMODULE hModule = NULL;
-  GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+  GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                     (LPCTSTR)GetCurrentModule, &hModule);
 
   return hModule;
@@ -41,11 +141,19 @@ void ClientImpl::_InitializeClientInfo() {
   is_ime = ends_with(path, L".ime");
 }
 
-bool ClientImpl::Connect(ServerLauncher const& launcher) {
+bool ClientImpl::Connect() {
   return channel.Connect();
 }
 
+bool ClientImpl::Connect(DWORD timeout_ms) {
+  return channel.Connect(timeout_ms);
+}
+
 void ClientImpl::Disconnect() {
+  // If a logical session is established, Disconnect remains a full teardown.
+  // If transport/session routing is already inactive (the recovery path),
+  // close only this thread's pipe and preserve SessionKey so START_SESSION can
+  // retry the same logical identity after a lost response.
   if (_Active())
     EndSession();
   channel.Disconnect();
@@ -55,51 +163,131 @@ void ClientImpl::ShutdownServer() {
   _SendMessage(WEASEL_IPC_SHUTDOWN_SERVER, 0, 0);
 }
 
-bool ClientImpl::ProcessKeyEvent(KeyEvent const& keyEvent) {
-  if (!_Active())
-    return false;
+KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent) {
+  return ProcessKeyEventEx(keyEvent,
+                           PipeChannelBase::kDefaultTransactionTimeoutMs);
+}
 
-  LRESULT ret =
-      _SendMessage(WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, session_id);
-  return ret != 0;
+KeyEventResult ClientImpl::ProcessKeyEventEx(KeyEvent const& keyEvent,
+                                             DWORD timeout_ms) {
+  const UINT request_session = _SessionId();
+  if (!_Connected() || request_session == 0)
+    return KeyEventResult::TransportNotDelivered;
+
+  const UINT64 response_serial = channel.ResponseSerial();
+  LRESULT ret = 0;
+  try {
+    PipeMessage req{WEASEL_IPC_PROCESS_KEY_EVENT, keyEvent, request_session};
+    ret = channel.Transact(req, timeout_ms);
+  } catch (const PipeTransactionError& error) {
+    _ClearSessionIdIf(request_session);
+    return error.request_may_have_been_delivered
+               ? KeyEventResult::TransportError
+               : KeyEventResult::TransportNotDelivered;
+  } catch (...) {
+    // Unknown transport failures stay conservative: without delivery-stage
+    // evidence, replaying could process one physical key twice.
+    _ClearSessionIdIf(request_session);
+    return KeyEventResult::TransportError;
+  }
+
+  // Another thread may have replaced/ended the logical session after this
+  // request was sent. Never apply or replay an old-session result as though it
+  // belonged to the newer routing id.
+  if (!_Connected() || _SessionId() != request_session)
+    return KeyEventResult::TransportError;
+
+  // InvalidSession is emitted only before librime receives the key, making a
+  // single caller-controlled retry safe. Retire the key only if this response
+  // still names the current session; a newer concurrent session must survive.
+  if (HasInvalidSessionResponse(channel, response_serial)) {
+    {
+      std::lock_guard<std::mutex> lock(session_key_mutex_);
+      if (_SessionId() == request_session) {
+        _SetSessionId(0);
+        _RetireSessionKeyLocked();
+      }
+    }
+    return KeyEventResult::InvalidSession;
+  }
+
+  return ret != 0 ? KeyEventResult::Handled : KeyEventResult::Unhandled;
+}
+
+bool ClientImpl::ProcessKeyEvent(KeyEvent const& keyEvent) {
+  return ProcessKeyEventEx(keyEvent) == KeyEventResult::Handled;
 }
 
 bool ClientImpl::CommitComposition() {
   if (!_Active())
     return false;
 
-  LRESULT ret = _SendMessage(WEASEL_IPC_COMMIT_COMPOSITION, 0, session_id);
+  LRESULT ret = _SendMessage(WEASEL_IPC_COMMIT_COMPOSITION, 0, _SessionId());
   return ret != 0;
 }
 
 bool ClientImpl::ClearComposition() {
+  return ClearComposition(0);
+}
+
+bool ClientImpl::ClearComposition(DWORD timeout_ms) {
   if (!_Active())
     return false;
 
-  LRESULT ret = _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, session_id);
+  LRESULT ret =
+      _SendMessage(WEASEL_IPC_CLEAR_COMPOSITION, 0, _SessionId(), timeout_ms);
   return ret != 0;
 }
 
 bool ClientImpl::SelectCandidateOnCurrentPage(size_t index) {
-  if (!_Active())
-    return false;
-  LRESULT ret = _SendMessage(WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE, index,
-                             session_id);
-  return ret != 0;
+  const auto result = SelectCandidateOnCurrentPageEx(index);
+  return result == CandidateSelectResult::Selected ||
+         result == CandidateSelectResult::LegacyResponse;
+}
+
+CandidateSelectResult ClientImpl::SelectCandidateOnCurrentPageEx(size_t index) {
+  const UINT request_session = _SessionId();
+  if (!_Connected() || request_session == 0)
+    return CandidateSelectResult::NotDelivered;
+
+  const UINT64 previous_serial = channel.ResponseSerial();
+  DWORD result = 0;
+  try {
+    PipeMessage request{WEASEL_IPC_SELECT_CANDIDATE_ON_CURRENT_PAGE,
+                        static_cast<DWORD>(index), request_session};
+    result = channel.Transact(request, kStateChangingTransactionTimeoutMs);
+  } catch (const PipeTransactionError& error) {
+    _ClearSessionIdIf(request_session);
+    return error.request_may_have_been_delivered
+               ? CandidateSelectResult::Ambiguous
+               : CandidateSelectResult::NotDelivered;
+  } catch (...) {
+    _ClearSessionIdIf(request_session);
+    return CandidateSelectResult::Ambiguous;
+  }
+
+  if (!_Connected() || _SessionId() != request_session)
+    return CandidateSelectResult::Ambiguous;
+  if (result == 1)
+    return CandidateSelectResult::Selected;
+  // Old servers return zero even after selecting and emitting a response.
+  if (result == 0 && channel.ResponseSerial() != previous_serial)
+    return CandidateSelectResult::LegacyResponse;
+  return CandidateSelectResult::Rejected;
 }
 
 bool ClientImpl::HighlightCandidateOnCurrentPage(size_t index) {
   if (!_Active())
     return false;
   LRESULT ret = _SendMessage(WEASEL_IPC_HIGHLIGHT_CANDIDATE_ON_CURRENT_PAGE,
-                             index, session_id);
+                             index, _SessionId());
   return ret != 0;
 }
 
 bool ClientImpl::ChangePage(bool backward) {
   if (!_Active())
     return false;
-  LRESULT ret = _SendMessage(WEASEL_IPC_CHANGE_PAGE, backward, session_id);
+  LRESULT ret = _SendMessage(WEASEL_IPC_CHANGE_PAGE, backward, _SessionId());
   return ret != 0;
 }
 
@@ -126,52 +314,138 @@ void ClientImpl::UpdateInputPosition(RECT const& rc) {
   int height = max(0, min(127, (rc.bottom - rc.top) >> hi_res));
   DWORD compressed_rect = ((hi_res & 0x01) << 31) | ((height & 0x7f) << 24) |
                           ((top & 0xfff) << 12) | (left & 0xfff);
-  _SendMessage(WEASEL_IPC_UPDATE_INPUT_POS, compressed_rect, session_id);
+  _SendMessage(WEASEL_IPC_UPDATE_INPUT_POS, compressed_rect, _SessionId());
 }
 
 void ClientImpl::FocusIn() {
   DWORD client_caps = 0; /* TODO */
-  _SendMessage(WEASEL_IPC_FOCUS_IN, client_caps, session_id);
+  _SendMessage(WEASEL_IPC_FOCUS_IN, client_caps, _SessionId());
 }
 
 void ClientImpl::FocusOut() {
-  _SendMessage(WEASEL_IPC_FOCUS_OUT, 0, session_id);
+  _SendMessage(WEASEL_IPC_FOCUS_OUT, 0, _SessionId());
 }
 
 void ClientImpl::TrayCommand(UINT menuId) {
-  _SendMessage(WEASEL_IPC_TRAY_COMMAND, menuId, session_id);
+  _SendMessage(WEASEL_IPC_TRAY_COMMAND, menuId, _SessionId());
 }
 
 void ClientImpl::StartSession() {
-  if (_Active() && Echo())
+  StartSession(TransactionTimeoutForCommand(WEASEL_IPC_START_SESSION));
+}
+
+void ClientImpl::StartSession(DWORD timeout_ms) {
+  if (!timeout_ms)
+    timeout_ms = TransactionTimeoutForCommand(WEASEL_IPC_START_SESSION);
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+
+  if (_Active()) {
+    const UINT expected_session = _SessionId();
+    const DWORD remaining = RemainingTransactionTime(deadline);
+    if (!remaining)
+      return;
+
+    const DWORD echo_timeout =
+        remaining < PipeChannelBase::kDefaultTransactionTimeoutMs
+            ? remaining
+            : PipeChannelBase::kDefaultTransactionTimeoutMs;
+    const UINT server_echo = static_cast<UINT>(
+        _SendMessage(WEASEL_IPC_ECHO, 0, expected_session, echo_timeout));
+    if (weasel::interaction_policy::EchoConfirmsSession(
+            expected_session, _SessionId(), server_echo)) {
+      return;
+    }
+  }
+
+  std::uint64_t generation = 0;
+  if (!_WriteClientInfo(&generation)) {
+    const UINT current = _SessionId();
+    _ClearSessionIdIf(current);
+    return;
+  }
+
+  const DWORD remaining = RemainingTransactionTime(deadline);
+  if (!remaining) {
+    channel.ClearBufferStream();
+    return;
+  }
+
+  const UINT ret = static_cast<UINT>(
+      _SendMessage(WEASEL_IPC_START_SESSION, 0, 0, remaining));
+  if (!ret)
     return;
 
-  _WriteClientInfo();
-  UINT ret = _SendMessage(WEASEL_IPC_START_SESSION, 0, 0);
-  session_id = ret;
+  bool published = false;
+  {
+    std::lock_guard<std::mutex> lock(session_key_mutex_);
+    if (session_key_ && session_generation_ == generation) {
+      _SetSessionId(ret);
+      published = true;
+    }
+  }
+
+  if (!published) {
+    // EndSession/maintenance retired this logical generation while START was
+    // in flight. Do not revive it with a late response; clean up the concrete
+    // server session best-effort without touching a newer shared routing id.
+    _EndSessionId(ret);
+  }
 }
 
 void ClientImpl::EndSession() {
-  _SendMessage(WEASEL_IPC_END_SESSION, 0, session_id);
-  session_id = 0;
+  UINT ending = 0;
+  {
+    std::lock_guard<std::mutex> lock(session_key_mutex_);
+    ending = _SessionId();
+    _RetireSessionKeyLocked();
+    _ClearSessionIdIf(ending);
+  }
+  _EndSessionId(ending);
 }
 
-void ClientImpl::StartMaintenance() {
-  _SendMessage(WEASEL_IPC_START_MAINTENANCE, 0, 0);
-  session_id = 0;
+bool ClientImpl::StartMaintenance() {
+  const LRESULT ret = _SendMessage(WEASEL_IPC_START_MAINTENANCE, 0, 0);
+  _InvalidateLogicalSession();
+  return ret != 0;
 }
 
-void ClientImpl::EndMaintenance() {
-  _SendMessage(WEASEL_IPC_END_MAINTENANCE, 0, 0);
-  session_id = 0;
+bool ClientImpl::EndMaintenance() {
+  const LRESULT ret = _SendMessage(WEASEL_IPC_END_MAINTENANCE, 0, 0);
+  _InvalidateLogicalSession();
+  if (ret != 0)
+    return true;
+
+  // The immediately-previous server protocol returned 0 even after a
+  // successful resume. Runtime Ready also covers an ACK lost after delivery,
+  // while a genuinely undelivered request remains in Maintenance.
+  return ServerRuntimeIsReady();
 }
 
 bool ClientImpl::Echo() {
-  if (!_Active())
+  const UINT expected_session = _SessionId();
+  if (!_Connected() || expected_session == 0)
     return false;
 
-  UINT serverEcho = _SendMessage(WEASEL_IPC_ECHO, 0, session_id);
-  return (serverEcho == session_id);
+  const UINT server_echo = _SendMessage(WEASEL_IPC_ECHO, 0, expected_session);
+  return weasel::interaction_policy::EchoConfirmsSession(
+      expected_session, _SessionId(), server_echo);
+}
+
+bool ClientImpl::ProbeServer(DWORD timeout_ms) {
+  if (!_Connected() || !timeout_ms)
+    return false;
+
+  try {
+    // Session id 0 is intentionally invalid. Liveness is established by the
+    // bounded request/response completing, not by the ECHO return value. This
+    // probes the pipe dispatcher without creating, destroying, or activating a
+    // Rime session.
+    PipeMessage req{WEASEL_IPC_ECHO, 0, 0};
+    channel.Transact(req, timeout_ms);
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
 
 bool ClientImpl::GetResponseData(ResponseHandler const& handler) {
@@ -182,21 +456,95 @@ bool ClientImpl::GetResponseData(ResponseHandler const& handler) {
   return channel.HandleResponseData(handler);
 }
 
+bool ClientImpl::_EnsureSessionKey() {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  if (session_key_)
+    return true;
+  if (!session_key_generator_)
+    return false;
+
+  const std::optional<SessionKey> generated = session_key_generator_();
+  if (!generated)
+    return false;
+  session_key_ = *generated;
+  return true;
+}
+
+void ClientImpl::_RetireSessionKeyLocked() {
+  session_key_.reset();
+  ++session_generation_;
+  if (session_generation_ == 0)
+    ++session_generation_;
+}
+
+void ClientImpl::_RetireSessionKey() {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  _RetireSessionKeyLocked();
+}
+
+void ClientImpl::_InvalidateLogicalSession() {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  _SetSessionId(0);
+  _RetireSessionKeyLocked();
+}
+
 bool ClientImpl::_WriteClientInfo() {
+  return _WriteClientInfo(nullptr);
+}
+
+bool ClientImpl::_WriteClientInfo(std::uint64_t* generation) {
+  std::lock_guard<std::mutex> lock(session_key_mutex_);
+  if (!session_key_) {
+    if (!session_key_generator_) {
+      channel.ClearBufferStream();
+      return false;
+    }
+    const std::optional<SessionKey> generated = session_key_generator_();
+    if (!generated) {
+      channel.ClearBufferStream();
+      return false;
+    }
+    session_key_ = *generated;
+  }
+
+  if (generation)
+    *generation = session_generation_;
+  const SessionKey key = *session_key_;
+
   channel << L"action=session\n";
+  channel << L"session.client_key=" << FormatSessionKey(key) << L"\n";
   channel << L"session.client_app=" << app_name.c_str() << L"\n";
   channel << L"session.client_type=" << (is_ime ? L"ime" : L"tsf") << L"\n";
   channel << L".\n";
   return true;
 }
 
+void ClientImpl::_EndSessionId(UINT id) {
+  if (!id)
+    return;
+  try {
+    PipeMessage req{WEASEL_IPC_END_SESSION, 0, id};
+    channel.Transact(req, kTeardownTransactionTimeoutMs);
+  } catch (...) {
+    // END_SESSION is best-effort at this boundary. The logical key is already
+    // retired locally and process ownership supplies the final cleanup bound.
+  }
+}
+
 LRESULT ClientImpl::_SendMessage(WEASEL_IPC_COMMAND Msg,
                                  DWORD wParam,
-                                 DWORD lParam) {
+                                 DWORD lParam,
+                                 DWORD timeout_ms) {
+  const UINT observed_session = _SessionId();
   try {
     PipeMessage req{Msg, wParam, lParam};
-    return channel.Transact(req);
-  } catch (DWORD /* ex */) {
+    if (!timeout_ms)
+      timeout_ms = TransactionTimeoutForCommand(Msg);
+    return channel.Transact(req, timeout_ms);
+  } catch (...) {
+    // Transport failure invalidates only the routing id that was current when
+    // this request began. A concurrent newer START_SESSION must not be erased.
+    _ClearSessionIdIf(observed_session);
     return 0;
   }
 }
@@ -208,8 +556,12 @@ Client::~Client() {
     delete m_pImpl;
 }
 
-bool Client::Connect(ServerLauncher launcher) {
-  return m_pImpl->Connect(launcher);
+bool Client::Connect() {
+  return m_pImpl->Connect();
+}
+
+bool Client::Connect(DWORD timeout_ms) {
+  return m_pImpl->Connect(timeout_ms);
 }
 
 void Client::Disconnect() {
@@ -224,6 +576,15 @@ bool Client::ProcessKeyEvent(KeyEvent const& keyEvent) {
   return m_pImpl->ProcessKeyEvent(keyEvent);
 }
 
+KeyEventResult Client::ProcessKeyEventEx(KeyEvent const& keyEvent) {
+  return m_pImpl->ProcessKeyEventEx(keyEvent);
+}
+
+KeyEventResult Client::ProcessKeyEventEx(KeyEvent const& keyEvent,
+                                         DWORD timeout_ms) {
+  return m_pImpl->ProcessKeyEventEx(keyEvent, timeout_ms);
+}
+
 bool Client::CommitComposition() {
   return m_pImpl->CommitComposition();
 }
@@ -232,8 +593,16 @@ bool Client::ClearComposition() {
   return m_pImpl->ClearComposition();
 }
 
+bool Client::ClearComposition(DWORD timeout_ms) {
+  return m_pImpl->ClearComposition(timeout_ms);
+}
+
 bool Client::SelectCandidateOnCurrentPage(size_t index) {
   return m_pImpl->SelectCandidateOnCurrentPage(index);
+}
+
+CandidateSelectResult Client::SelectCandidateOnCurrentPageEx(size_t index) {
+  return m_pImpl->SelectCandidateOnCurrentPageEx(index);
 }
 
 bool Client::HighlightCandidateOnCurrentPage(size_t index) {
@@ -260,16 +629,20 @@ void Client::StartSession() {
   m_pImpl->StartSession();
 }
 
+void Client::StartSession(DWORD timeout_ms) {
+  m_pImpl->StartSession(timeout_ms);
+}
+
 void Client::EndSession() {
   m_pImpl->EndSession();
 }
 
-void Client::StartMaintenance() {
-  m_pImpl->StartMaintenance();
+bool Client::StartMaintenance() {
+  return m_pImpl->StartMaintenance();
 }
 
-void Client::EndMaintenance() {
-  m_pImpl->EndMaintenance();
+bool Client::EndMaintenance() {
+  return m_pImpl->EndMaintenance();
 }
 
 void Client::TrayCommand(UINT menuId) {
@@ -280,6 +653,18 @@ bool Client::Echo() {
   return m_pImpl->Echo();
 }
 
+bool Client::ProbeServer(DWORD timeout_ms) {
+  return m_pImpl->ProbeServer(timeout_ms);
+}
+
+bool Client::IsSessionActive() {
+  return m_pImpl->IsSessionActive();
+}
+
 bool Client::GetResponseData(ResponseHandler handler) {
   return m_pImpl->GetResponseData(handler);
+}
+
+UINT64 Client::ResponseSerial() {
+  return m_pImpl->ResponseSerial();
 }

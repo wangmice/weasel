@@ -2,12 +2,20 @@
 
 #include "WeaselTSF.h"
 
-void WeaselTSF::_ClearCompositionDisplayAttributes(TfEditCookie ec,
-                                                   _In_ ITfContext* pContext) {
+void WeaselTSF::_ClearCompositionDisplayAttributes(
+    TfEditCookie ec,
+    _In_ ITfContext* pContext,
+    _In_opt_ ITfComposition* pComposition) {
+  // Operate on the caller's composition, not the service member: an
+  // async end session can run after _FinalizeComposition() nulled it (or
+  // after a new composition replaced it).
+  if (pComposition == nullptr)
+    return;
+
   ITfRange* pRangeComposition = nullptr;
   ITfProperty* pDisplayAttributeProperty = nullptr;
 
-  if (FAILED(_pComposition->GetRange(&pRangeComposition))) {
+  if (FAILED(pComposition->GetRange(&pRangeComposition))) {
     return;
   }
 
@@ -24,11 +32,22 @@ void WeaselTSF::_ClearCompositionDisplayAttributes(TfEditCookie ec,
 BOOL WeaselTSF::_SetCompositionDisplayAttributes(TfEditCookie ec,
                                                  _In_ ITfContext* pContext,
                                                  ITfRange* pRangeComposition) {
+  // atom 0 means _InitDisplayAttributeGuidAtom() failed (apps without
+  // display-attribute support, e.g. some OpenGL hosts): never write a bogus
+  // atom into GUID_PROP_ATTRIBUTE.
+  if (_gaDisplayAttributeInput == 0)
+    return FALSE;
+
   ITfProperty* pDisplayAttributeProperty = nullptr;
   HRESULT hr = S_OK;
 
-  if (pRangeComposition == nullptr)
+  // An async session can run after _FinalizeComposition() nulled the member;
+  // without a range or a composition there is nothing to annotate.
+  if (pRangeComposition == nullptr) {
+    if (_pComposition == nullptr)
+      return FALSE;
     hr = _pComposition->GetRange(&pRangeComposition);
+  }
   if (FAILED(hr)) {
     return FALSE;
   }

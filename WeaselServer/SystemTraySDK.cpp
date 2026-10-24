@@ -105,10 +105,16 @@ void CSystemTray::Initialise() {
 
   m_bShowIconPending = FALSE;
 
+  m_hInstance = NULL;
+  m_hWnd = NULL;
+  m_hTargetWnd = NULL;
+
   m_uIDTimer = 0;
+  m_nCurrentIcon = 0;
+  m_StartTime = 0;
+  m_nAnimationPeriod = 0;
   m_hSavedIcon = NULL;
 
-  m_hTargetWnd = NULL;
   m_uCreationFlags = 0;
 
 #ifdef SYSTEMTRAY_USEW2K
@@ -125,6 +131,10 @@ void CSystemTray::Initialise() {
 #else
   m_bWin2K = FALSE;
 #endif
+}
+
+BOOL CSystemTray::NotifyIcon(DWORD message) {
+  return ::Shell_NotifyIcon(message, &m_tnd);
 }
 
 ATOM CSystemTray::RegisterClass(HINSTANCE hInstance) {
@@ -300,8 +310,10 @@ BOOL CSystemTray::AddIcon() {
     m_tnd.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     if (!Shell_NotifyIcon(NIM_ADD, &m_tnd))
       m_bShowIconPending = TRUE;
-    else
+    else {
+      m_bShowIconPending = FALSE;
       m_bRemoved = m_bHidden = FALSE;
+    }
   }
   return (m_bRemoved == FALSE);
 }
@@ -349,7 +361,8 @@ BOOL CSystemTray::ShowIcon() {
     m_tnd.uFlags = NIF_STATE;
     m_tnd.dwState = 0;
     m_tnd.dwStateMask = NIS_HIDDEN;
-    Shell_NotifyIcon(NIM_MODIFY, &m_tnd);
+    if (Shell_NotifyIcon(NIM_MODIFY, &m_tnd))
+      m_bHidden = FALSE;
   } else
 #endif
     AddIcon();
@@ -428,7 +441,7 @@ BOOL CSystemTray::SetIconList(HICON* pHIconList, UINT nNumIcons) {
   m_IconList.clear();
 
   try {
-    for (UINT i = 0; i <= nNumIcons; i++)
+    for (UINT i = 0; i < nNumIcons; i++)
       m_IconList.push_back(pHIconList[i]);
   } catch (...) {
     m_IconList.clear();
@@ -693,7 +706,8 @@ BOOL CSystemTray::SetMenuDefaultItem(UINT uItem, BOOL bByPos) {
 
   ::SetMenuDefaultItem(hSubMenu, m_DefaultMenuItemID, m_DefaultMenuItemByPos);
 
-  ::DestroyMenu(hSubMenu);
+  // DestroyMenu(hMenu) recursively destroys its submenus; destroying
+  // hSubMenu separately here would destroy it twice
   ::DestroyMenu(hMenu);
 
   return TRUE;
@@ -744,6 +758,11 @@ LRESULT CSystemTray::OnTimer(UINT nIDEvent) {
 // and restarts. Please note that the WM_TASKBARCREATED message is only passed
 // to TOP LEVEL windows (like WM_QUERYNEWPALETTE)
 LRESULT CSystemTray::OnTaskbarCreated(WPARAM wParam, LPARAM lParam) {
+  // Explorer discards notification icons when its taskbar is recreated. Only
+  // icons that were intentionally visible should be reinstalled; a prior
+  // failed NIM_ADD already has m_bShowIconPending set and is retried as well.
+  if (m_bEnabled && !m_bHidden && !m_bRemoved)
+    m_bShowIconPending = TRUE;
   InstallIconPending();
   return 0L;
 }
@@ -763,10 +782,11 @@ LRESULT CSystemTray::OnTrayNotification(WPARAM wParam, LPARAM lParam) {
 
   HWND hTargetWnd = GetTargetWnd();
   if (!hTargetWnd)
-    return 0L;
+    return 0;
 
-    // Clicking with right button brings up a context menu
-#if defined(_WIN32_WCE)  //&& _WIN32_WCE < 211
+// Clicking with right button brings up a context menu
+//&& _WIN32_WCE < 211
+#if defined(_WIN32_WCE)
   BOOL bAltPressed =
       ((GetKeyState(VK_MENU) & (1 << (sizeof(SHORT) * 8 - 1))) != 0);
   if (LOWORD(lParam) == WM_LBUTTONUP && bAltPressed)
@@ -825,8 +845,10 @@ LRESULT CSystemTray::OnTrayNotification(WPARAM wParam, LPARAM lParam) {
         return 0;
 
       HMENU hSubMenu = ::GetSubMenu(hMenu, 0);
-      if (!hSubMenu)
+      if (!hSubMenu) {
+        ::DestroyMenu(hMenu);  // Be sure to Destroy Menu Before Returning
         return 0;
+      }
       uItem = ::GetMenuItemID(hSubMenu, m_DefaultMenuItemID);
 
       DestroyMenu(hMenu);
@@ -847,7 +869,7 @@ LRESULT PASCAL CSystemTray::WindowProc(HWND hWnd,
   // The option here is to maintain a list of all TrayIcon windows,
   // and iterate through them. If you do this, remove these 3 lines.
   CSystemTray* pTrayIcon = m_pThis;
-  if (pTrayIcon->GetSafeHwnd() != hWnd)
+  if (!pTrayIcon || pTrayIcon->GetSafeHwnd() != hWnd)
     return ::DefWindowProc(hWnd, message, wParam, lParam);
 
   // If maintaining a list of TrayIcon windows, then the following...
@@ -864,9 +886,11 @@ LRESULT PASCAL CSystemTray::WindowProc(HWND hWnd,
   if (message == WM_TIMER && wParam == pTrayIcon->GetTimerID())
     return pTrayIcon->OnTimer(wParam);
 
-  // Settings changed
-  if (message == WM_SETTINGCHANGE && wParam == pTrayIcon->GetTimerID())
-    return pTrayIcon->OnSettingChange(wParam, (LPCTSTR)lParam);
+  // WM_SETTINGCHANGE wParam is an SPI_* action, not this tray object's timer
+  // id. Dispatch every settings change and let OnSettingChange filter it.
+  if (message == WM_SETTINGCHANGE)
+    return pTrayIcon->OnSettingChange(static_cast<UINT>(wParam),
+                                      (LPCTSTR)lParam);
 
   // Is the message from the icon for this TrayIcon?
   if (message == pTrayIcon->GetCallbackMessage())
@@ -880,20 +904,18 @@ LRESULT PASCAL CSystemTray::WindowProc(HWND hWnd,
 }
 
 void CSystemTray::InstallIconPending() {
-  // Is the icon display pending, and it's not been set as "hidden"?
-  if (!m_bShowIconPending || m_bHidden)
+  if (!m_bShowIconPending)
     return;
 
-  // Reset the flags to what was used at creation
+  // Reset the flags to what was used at creation. A failed initial/recovery
+  // NIM_ADD can leave m_bHidden/m_bRemoved set, but pending itself means the
+  // caller still wants the icon installed, so do not gate the retry on them.
   m_tnd.uFlags = m_uCreationFlags;
 
-  // Try and recreate the icon
-  m_bHidden = !Shell_NotifyIcon(NIM_ADD, &m_tnd);
-
-  // If it's STILL hidden, then have another go next time...
-  m_bShowIconPending = !m_bHidden;
-
-  ASSERT(m_bHidden == FALSE);
+  const BOOL installed = NotifyIcon(NIM_ADD);
+  m_bShowIconPending = !installed;
+  if (installed)
+    m_bRemoved = m_bHidden = FALSE;
 }
 
 /////////////////////////////////////////////////////////////////////////////

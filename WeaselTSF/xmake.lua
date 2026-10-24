@@ -3,8 +3,13 @@ target("WeaselTSF")
   add_files("./*.cpp", "WeaselTSF.def")
   add_rules("add_rcfiles", "use_weaselconstants")
   add_deps("WeaselIPC", "WeaselUI")
-  add_links("oleaut32")
-  add_cxflags("/GL-", {force = true})
+  -- Static-library dependencies do not propagate their Windows system links
+  -- to this shared library on every MSVC architecture. Mirror the vcxproj
+  -- AdditionalDependencies explicitly so ARM32 resolves the desktop SDK APIs.
+  add_syslinks(
+    "Usp10", "d2d1", "dwrite", "d3d11", "dxgi", "dcomp", "shcore",
+    "kernel32", "user32", "gdi32", "winspool", "comdlg32", "advapi32",
+    "shell32", "ole32", "oleaut32", "uuid", "odbc32", "odbccp32")
   local fname = ''
   if is_arch("x86") then
     fname = "weasel.dll"
@@ -18,7 +23,11 @@ target("WeaselTSF")
   set_filename(fname)
 
   add_files("$(projectdir)/PerMonitorHighDPIAware.manifest")
-  add_shflags("/DEBUG /OPT:REF /OPT:ICF")
+  if is_mode("debug") then
+    add_shflags("/DEBUG", "/OPT:REF", "/OPT:ICF", {force = true})
+  else
+    add_shflags("/DEBUG", "/OPT:REF", "/OPT:ICF", "/LTCG", "/INCREMENTAL:NO", {force = true})
+  end
   before_build(function(target)
     local target_dir = path.join(target:targetdir(), target:name())
     if not os.exists(target_dir) then

@@ -8,10 +8,10 @@
 
 #define WM_WEASEL_TRAY_NOTIFY (WEASEL_IPC_LAST_COMMAND + 100)
 
-// Snapshot of the tray-relevant UI state, computed on the pipe worker thread
-// and applied on the server message thread. Keeps Shell_NotifyIcon off the
-// pipe worker threads (and away from g_api_mutex), avoiding the deadlock loop
-// where the taskbar UI thread waits on the pipe while the server waits for the
+// Snapshot of the tray-relevant UI state, captured and consumed on the server
+// message thread (ApplyRefresh). Keeps Shell_NotifyIcon off the pipe worker
+// threads (and away from g_api_mutex), avoiding the deadlock loop where the
+// taskbar UI thread waits on the pipe while the server waits for the
 // taskbar UI thread inside Shell_NotifyIcon.
 struct WeaselTrayIconState {
   WeaselTrayIconState()
@@ -64,12 +64,14 @@ class WeaselTrayIcon : public CSystemTray {
 
   BOOL Create(HWND hTargetWnd);
 
-  // Captures the tray-relevant state and posts a refresh request to the server
-  // message thread. Never calls Shell_NotifyIcon itself.
+  // Posts a refresh request to the server message thread. Never reads the UI
+  // state (m_style/m_status) nor calls Shell_NotifyIcon itself: callers run on
+  // pipe worker threads while the UI thread may be writing that state.
   void RequestRefresh();
   void DisableRefresh();
 
-  // Runs on the server message thread (no g_api_mutex held).
+  // Runs on the server message thread (no g_api_mutex held); captures the
+  // state snapshot here, where the UI thread's writes are serialized.
   void ApplyRefresh();
 
  protected:
@@ -88,7 +90,6 @@ class WeaselTrayIcon : public CSystemTray {
   bool m_refresh_enabled = true;
   bool m_refresh_pending = false;
   bool m_refresh_in_progress = false;
-  WeaselTrayIconState m_pending_state;
   std::mutex m_state_mutex;
   std::condition_variable m_state_cv;
 };

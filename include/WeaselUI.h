@@ -5,6 +5,7 @@
 #include <string>
 #include <windows.h>
 #include <wrl.h>
+#include <WeaselUtility.h>
 
 namespace weasel {
 using namespace Microsoft::WRL;
@@ -19,6 +20,16 @@ typedef std::function<
 
 enum ClientCapabilities {
   INLINE_PREEDIT_CAPABLE = 1,
+};
+
+// Preserve WNDPROC state if bounded owner-thread teardown cannot complete.
+struct UISharedState {
+  Context ctx;
+  Status status;
+  UIStyle style;
+  UIStyle ostyle;
+  bool in_server = false;
+  UICallbackFunc callback;
 };
 
 class UIImpl;
@@ -42,27 +53,28 @@ class UI {
   void RepositionPreview();
   // 置输入焦点位置（光标跟随时移动候选窗）但不重绘
   void UpdateInputPosition(RECT const& rc);
-  // 更新界面显示内容
+  // Updates and style writes are marshalled to the window thread.
   void Update(Context const& ctx, Status const& status);
-  Context& ctx() { return ctx_; }
-  Status& status() { return status_; }
-  UIStyle& style() { return style_; }
-  UIStyle& ostyle() { return ostyle_; }
+  void SetStyle(UIStyle const& style);
+  Context& ctx() { return state_->ctx; }
+  // Last context that completed a panel paint. Kept as an accessor rather
+  // than a second UI-owned copy so fork paint-recovery tests can distinguish
+  // state delivery from an actually rendered frame.
+  Context& octx();
+  Status& status() { return state_->status; }
+  UIStyle& style() { return state_->style; }
+  UIStyle& ostyle() { return state_->ostyle; }
   bool GetIsReposition();
-  UICallbackFunc& uiCallback() { return _uiCallback; }
+  UICallbackFunc& uiCallback() { return state_->callback; }
   // compatibility shim for existing call sites
-  void SetUICallBack(const UICallbackFunc& func) { _uiCallback = func; }
-  void SetCallback(const UICallbackFunc& func) { _uiCallback = func; }
-  bool& InServer() { return in_server_; }
+  void SetUICallBack(const UICallbackFunc& func) { state_->callback = func; }
+  void SetCallback(const UICallbackFunc& func) { state_->callback = func; }
+  bool& InServer() { return state_->in_server; }
+  std::shared_ptr<UISharedState> SharedState() const { return state_; }
   HWND hwnd();
 
  private:
+  std::shared_ptr<UISharedState> state_;
   the<UIImpl> pimpl_;
-  Context ctx_;
-  Status status_;
-  UIStyle style_;
-  UIStyle ostyle_;
-  bool in_server_;
-  UICallbackFunc _uiCallback;
 };
 }  // namespace weasel

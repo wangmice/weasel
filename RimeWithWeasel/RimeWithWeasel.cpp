@@ -2,6 +2,8 @@
 #include <RimeWithWeasel.h>
 #include <StringAlgorithm.hpp>
 #include <WeaselConstants.h>
+#include <WeaselInteractionPolicy.h>
+#include <WeaselSessionIdAllocator.h>
 #include <WeaselStyleColor.h>
 #include <WeaselUtility.h>
 
@@ -17,11 +19,6 @@
 using namespace weasel;
 
 static RimeApi* rime_api;
-WeaselSessionId _GenerateNewWeaselSessionId(SessionStatusMap sm, DWORD pid) {
-  if (sm.empty())
-    return (WeaselSessionId)(pid + 1);
-  return (WeaselSessionId)(sm.rbegin()->first + 1);
-}
 
 int expand_ibus_modifier(int m) {
   return (m & 0xff) | ((m & 0xff00) << 16);
@@ -48,6 +45,7 @@ RimeWithWeaselHandler::RimeWithWeaselHandler(UI* ui)
     }
   }
   m_pid = (m_pid << (31 - msbit));
+  m_next_ipc_session_id = m_pid + 1;
   LOG(INFO) << "setting up Rime traits";
   _Setup();
   LOG(INFO) << "RimeWithWeaselHandler constructed";
@@ -60,25 +58,19 @@ RimeWithWeaselHandler::~RimeWithWeaselHandler() {
 }
 
 bool add_session = false;
-void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize);
+void _UpdateUIStyle(RimeConfig* config, UIStyle& style, bool initialize);
 bool _UpdateUIStyleColor(RimeConfig* config,
                          UIStyle& style,
                          const std::string& color = std::string());
 void _LoadAppOptions(RimeConfig* config, AppOptionsByAppName& app_options);
 
-void _RefreshTrayIcon(const RimeSessionId session_id,
-                      const std::function<void()> _UpdateUICallback) {
-  // Dangerous, don't touch
-  static char app_name[256] = {0};
-  auto ret = rime_api->get_property(session_id, "client_app", app_name,
-                                    sizeof(app_name) - 1);
-  if (!ret || u8tow(app_name) == std::wstring(L"explorer.exe"))
-    boost::thread th([=]() {
-      ::Sleep(100);
-      if (_UpdateUICallback)
-        _UpdateUICallback();
-    });
-  else if (_UpdateUICallback)
+void _RefreshTrayIcon(const std::function<void()>& _UpdateUICallback) {
+  // explorer.exe 曾需延迟 100ms 的 detached 线程垫片（上游 45cf1120）：当时
+  // 本回调在管道工作线程上直接执行 Shell_NotifyIcon，而资源管理器的 UI 线程
+  // 正阻塞等待本次管道响应，两者互等挂起。d73f629 落地 PostMessage 合并刷新
+  // 后，回调只做投递，Shell_NotifyIcon 一律在服务端消息线程执行，垫片已无
+  // 必要，直接调用即可，client_app（含 explorer 判断）也随之无需每键查询。
+  if (_UpdateUICallback)
     _UpdateUICallback();
 }
 
@@ -101,25 +93,36 @@ void RimeWithWeaselHandler::_Setup() {
 }
 
 void RimeWithWeaselHandler::Initialize() {
-  m_disabled = _IsDeployerRunning();
-  if (m_disabled) {
+  _Initialize(true);
+}
+
+void RimeWithWeaselHandler::_Initialize(bool detect_deployer) {
+  // Startup may refuse to initialize while a deployer owns local Rime,
+  // whereas END_MAINTENANCE already carries explicit lifecycle ownership and
+  // must bypass that startup-only probe. Real Rime sessions are created only
+  // after the server pipe reaches Ready.
+  m_disabled = true;
+  if (detect_deployer && _IsDeployerRunning()) {
     return;
   }
 
   LOG(INFO) << "Initializing la rime.";
   LOG(INFO) << "calling rime_api->initialize";
   rime_api->initialize(NULL);
-  LOG(INFO) << "starting Rime maintenance";
-  if (rime_api->start_maintenance(/*full_check = */ False)) {
-    m_disabled = true;
-    LOG(INFO) << "waiting for Rime maintenance";
-    rime_api->join_maintenance_thread();
-  }
 
+  // Do not run librime maintenance synchronously during WeaselServer startup
+  // or END_MAINTENANCE recovery. ServerImpl still owns the startup lifecycle
+  // lock here and has not published a usable pipe yet; blocking on internal
+  // maintenance can strand the process in Starting and make every TSF client
+  // observe a singleton with no service. Workspace maintenance is owned
+  // explicitly by WeaselDeployer through START/END_MAINTENANCE.
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
-      _UpdateUIStyle(&config, m_ui, true);
+      // 在本地副本上重建基础样式：Initialize 可能经 EndMaintenance 在 IPC
+      // 工作线程被调用，style_ 的写入必须走 SetStyle 的 marshal 通道
+      UIStyle style = m_base_style;
+      _UpdateUIStyle(&config, style, true);
       _UpdateShowNotifications(&config, true);
       m_current_dark_mode = IsUserDarkMode();
       if (m_current_dark_mode) {
@@ -128,10 +131,11 @@ void RimeWithWeaselHandler::Initialize() {
         if (rime_api->config_get_string(&config, "style/color_scheme_dark",
                                         buffer, BUF_SIZE)) {
           std::string color_name(buffer);
-          _UpdateUIStyleColor(&config, m_ui->style(), color_name);
+          _UpdateUIStyleColor(&config, style, color_name);
         }
       }
-      m_base_style = m_ui->style();
+      m_base_style = style;
+      m_ui->SetStyle(style);
       // Warm up UI resources with finalized style to avoid first-show latency.
       m_ui->Refresh();
       m_ui->Hide();
@@ -146,6 +150,12 @@ void RimeWithWeaselHandler::Initialize() {
     rime_api->config_close(&config);
   }
   m_last_schema_id.clear();
+
+  // Real session creation may lazily load schemas and dictionaries. Keep that
+  // work on START_SESSION, after ServerImpl has started IPC and published
+  // Ready; otherwise a slow/corrupt schema can strand the process in Starting
+  // with no usable pipe, blocking input, restart, and uninstall at once.
+  m_disabled = false;
 }
 
 void RimeWithWeaselHandler::Finalize() {
@@ -156,23 +166,50 @@ void RimeWithWeaselHandler::Finalize() {
   rime_api->finalize();
 }
 
+bool RimeWithWeaselHandler::_ValidateRimeSession(WeaselSessionId ipc_id,
+                                                 bool force) {
+  auto it = m_session_status_map.find(ipc_id);
+  if (it == m_session_status_map.end())
+    return false;
+
+  SessionStatus& session_status = it->second;
+  if (!force && !weasel::interaction_policy::NeedsRimeSessionValidation(
+                    session_status.validated_cleanup_epoch, m_cleanup_epoch))
+    return true;
+
+  if (rime_api->find_session(session_status.session_id)) {
+    session_status.validated_cleanup_epoch = m_cleanup_epoch;
+    return true;
+  }
+
+  DLOG(INFO) << "Rime session expired: ipc_id = " << ipc_id
+             << ", session_id = " << session_status.session_id;
+  if (m_active_session == ipc_id)
+    m_active_session = 0;
+  m_session_status_map.erase(it);
+  return false;
+}
+
 DWORD RimeWithWeaselHandler::FindSession(WeaselSessionId ipc_id) {
-  if (m_disabled)
+  if (m_disabled || !_ValidateRimeSession(ipc_id, true))
     return 0;
-  Bool found = rime_api->find_session(to_session_id(ipc_id));
-  DLOG(INFO) << "Find session: session_id = " << to_session_id(ipc_id)
-             << ", found = " << found;
-  return found ? (ipc_id) : 0;
+  return ipc_id;
 }
 
 DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
-  if (m_disabled) {
-    DLOG(INFO) << "Trying to resume service.";
-    EndMaintenance();
-    if (m_disabled)
-      return 0;
-  }
+  // Maintenance is an explicit server lifecycle. A stale START_SESSION must
+  // never reinitialize librime behind the deployer's START/END_MAINTENANCE
+  // ownership.
+  if (m_disabled)
+    return 0;
   RimeSessionId session_id = (RimeSessionId)rime_api->create_session();
+  if (!session_id) {
+    // rime 初始化失败/维护中：建会话失败。返回 0 让客户端感知失败
+    // （客户端 session_id=0 即未激活），下次 StartSession 自动重试；
+    // 不再把 0 会话入表，避免后续 rime 调用全链路静默失败
+    LOG(ERROR) << "AddSession: rime create_session failed.";
+    return 0;
+  }
   if (m_global_ascii_mode) {
     for (const auto& pair : m_session_status_map) {
       if (pair.first) {
@@ -183,28 +220,37 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
     }
   }
 
-  WeaselSessionId ipc_id =
-      _GenerateNewWeaselSessionId(m_session_status_map, m_pid);
+  WeaselSessionId ipc_id = AllocateMonotonicSessionId(
+      m_next_ipc_session_id, [this](WeaselSessionId candidate) {
+        return m_session_status_map.find(candidate) !=
+               m_session_status_map.end();
+      });
+  if (!ipc_id) {
+    LOG(ERROR) << "AddSession: exhausted IPC session ids.";
+    rime_api->destroy_session(session_id);
+    return 0;
+  }
   DLOG(INFO) << "Add session: created session_id = " << session_id
              << ", ipc_id = " << ipc_id;
   SessionStatus& session_status = new_session_status(ipc_id);
   session_status.style = m_base_style;
   session_status.session_id = session_id;
+  session_status.validated_cleanup_epoch = m_cleanup_epoch;
   _ReadClientInfo(ipc_id, buffer);
 
   RIME_STRUCT(RimeStatus, status);
   if (rime_api->get_status(session_id, &status)) {
-    std::string schema_id = status.schema_id;
+    const std::string schema_id = status.schema_id ? status.schema_id : "";
     m_last_schema_id = schema_id;
     _LoadSchemaSpecificSettings(ipc_id, schema_id);
     _LoadAppInlinePreeditSet(ipc_id, true);
     _UpdateInlinePreeditStatus(ipc_id);
-    _RefreshTrayIcon(session_id, _UpdateUICallback);
+    _RefreshTrayIcon(_UpdateUICallback);
     session_status.status = status;
     session_status.__synced = false;
     rime_api->free_status(&status);
   }
-  m_ui->style() = session_status.style;
+  m_ui->SetStyle(session_status.style);
   // show session's welcome message :-) if any
   if (eat) {
     _Respond(ipc_id, eat);
@@ -217,15 +263,22 @@ DWORD RimeWithWeaselHandler::AddSession(LPWSTR buffer, EatLine eat) {
 }
 
 DWORD RimeWithWeaselHandler::RemoveSession(WeaselSessionId ipc_id) {
-  if (m_ui)
-    m_ui->Hide();
   if (m_disabled)
     return 0;
+
   DLOG(INFO) << "Remove session: session_id = " << to_session_id(ipc_id);
+
+  // Ending a background or stale session must not hide the candidate UI or
+  // clear the routing identity of another session that is still active.
+  if (m_active_session == ipc_id) {
+    if (m_ui)
+      m_ui->Hide();
+    m_active_session = 0;
+  }
+
   // TODO: force committing? otherwise current composition would be lost
   rime_api->destroy_session(to_session_id(ipc_id));
   m_session_status_map.erase(ipc_id);
-  m_active_session = 0;
   return 0;
 }
 
@@ -233,7 +286,8 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   RimeConfig config = {NULL};
   if (rime_api->config_open("weasel", &config)) {
     if (m_ui) {
-      _UpdateUIStyle(&config, m_ui, true);
+      UIStyle style = m_base_style;
+      _UpdateUIStyle(&config, style, true);
       m_current_dark_mode = darkMode;
       if (darkMode) {
         const int BUF_SIZE = 255;
@@ -241,10 +295,11 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
         if (rime_api->config_get_string(&config, "style/color_scheme_dark",
                                         buffer, BUF_SIZE)) {
           std::string color_name(buffer);
-          _UpdateUIStyleColor(&config, m_ui->style(), color_name);
+          _UpdateUIStyleColor(&config, style, color_name);
         }
       }
-      m_base_style = m_ui->style();
+      m_base_style = style;
+      m_ui->SetStyle(style);
     }
     rime_api->config_close(&config);
   }
@@ -252,7 +307,8 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
   for (auto& pair : m_session_status_map) {
     RIME_STRUCT(RimeStatus, status);
     if (rime_api->get_status(to_session_id(pair.first), &status)) {
-      _LoadSchemaSpecificSettings(pair.first, std::string(status.schema_id));
+      _LoadSchemaSpecificSettings(pair.first,
+                                  status.schema_id ? status.schema_id : "");
       _LoadAppInlinePreeditSet(pair.first, true);
       _UpdateInlinePreeditStatus(pair.first);
       pair.second.status = status;
@@ -260,7 +316,14 @@ void RimeWithWeaselHandler::UpdateColorTheme(BOOL darkMode) {
       rime_api->free_status(&status);
     }
   }
-  m_ui->style() = get_session_status(m_active_session).style;
+  if (m_ui) {
+    // 无活动会话（维护清表后等）：退回刚刷新的基础样式；
+    // 不再向会话表插入死条目（默认构造的 UIStyle 会把面板打成裸样式）
+    if (SessionStatus* active = find_session_status(m_active_session))
+      m_ui->SetStyle(active->style);
+    else
+      m_ui->SetStyle(m_base_style);
+  }
 }
 
 BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
@@ -268,12 +331,25 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
                                             EatLine eat) {
   DLOG(INFO) << "Process key event: keycode = " << keyEvent.keycode
              << ", mask = " << keyEvent.mask << ", ipc_id = " << ipc_id;
-  if (m_disabled)
+
+  // Maintenance and cleanup_stale_sessions() can invalidate the underlying
+  // librime session while the pipe and Weasel IPC mapping survive. Validate
+  // once per cleanup epoch before the key reaches librime; healthy typing
+  // keeps the no-Echo/no-find_session fast path.
+  if (m_disabled || !_ValidateRimeSession(ipc_id, false)) {
+    if (eat) {
+      std::wstring response = L"action=noop\n";
+      response.append(kInvalidSessionResponseField).append(L"\n.\n");
+      eat(response);
+    }
     return FALSE;
+  }
+
   RimeSessionId session_id = to_session_id(ipc_id);
   Bool handled = rime_api->process_key(session_id, keyEvent.keycode,
                                        expand_ibus_modifier(keyEvent.mask));
   // vim_mode when keydown only
+  bool state_changed = false;
   if (!handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK)) {
     bool isVimBackInCommandMode =
         (keyEvent.keycode == ibus::Keycode::Escape) ||
@@ -285,19 +361,30 @@ BOOL RimeWithWeaselHandler::ProcessKeyEvent(KeyEvent keyEvent,
         rime_api->get_option(session_id, "vim_mode") &&
         !rime_api->get_option(session_id, "ascii_mode")) {
       rime_api->set_option(session_id, "ascii_mode", True);
+      state_changed = true;
     }
   }
-  _Respond(ipc_id, eat);
-  _UpdateUI(ipc_id);
+  // 直通键判定交由 _Respond 补全（出现上屏/组词/状态联动/待展示通知即清除）
+  RespondContext rc;
+  rc.passthrough = !handled && !state_changed;
+  _Respond(ipc_id, eat, &rc);
+  // 直通键早退（B11a）：未吃键、无上屏、未组词、无状态联动、无待展示通知
+  // —— rime 会话与服务端 UI 状态均无变化，跳过 UI 全刷新（第二次
+  // get_status、get_option、_ShowMessage、托盘刷新）。TSF 客户端的候选窗
+  // 由应用进程按 _Respond 的响应行自行渲染，与服务端刷新无关，不受影响
+  if (!rc.passthrough)
+    _UpdateUI(ipc_id, &rc);
   m_active_session = ipc_id;
   return (BOOL)handled;
 }
 
-void RimeWithWeaselHandler::CommitComposition(WeaselSessionId ipc_id) {
+void RimeWithWeaselHandler::CommitComposition(WeaselSessionId ipc_id,
+                                              EatLine eat) {
   DLOG(INFO) << "Commit composition: ipc_id = " << ipc_id;
   if (m_disabled)
     return;
   rime_api->commit_composition(to_session_id(ipc_id));
+  _Respond(ipc_id, eat);
   _UpdateUI(ipc_id);
   m_active_session = ipc_id;
 }
@@ -311,14 +398,21 @@ void RimeWithWeaselHandler::ClearComposition(WeaselSessionId ipc_id) {
   m_active_session = ipc_id;
 }
 
-void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(
-    size_t index,
-    WeaselSessionId ipc_id) {
+bool RimeWithWeaselHandler::SelectCandidateOnCurrentPage(size_t index,
+                                                         WeaselSessionId ipc_id,
+                                                         EatLine eat) {
   DLOG(INFO) << "select candidate on current page, ipc_id = " << ipc_id
              << ", index = " << index;
-  if (m_disabled)
-    return;
-  rime_api->select_candidate_on_current_page(to_session_id(ipc_id), index);
+  if (m_disabled || !_ValidateRimeSession(ipc_id, false))
+    return false;
+  if (!rime_api->select_candidate_on_current_page(to_session_id(ipc_id), index))
+    return false;
+  // Rime has already accepted this selection. The response can be applied
+  // asynchronously by TSF, but a failure to deliver it must not trigger an
+  // automatic replay of the same candidate.
+  _Respond(ipc_id, eat);
+  _UpdateUI(ipc_id);
+  return true;
 }
 
 bool RimeWithWeaselHandler::HighlightCandidateOnCurrentPage(
@@ -359,8 +453,12 @@ void RimeWithWeaselHandler::FocusOut(DWORD param, WeaselSessionId ipc_id) {
   if (m_ui)
     m_ui->Hide();
   m_active_session = 0;
-  if (!m_disabled && RIME_API_AVAILABLE(rime_api, cleanup_stale_sessions))
+  if (!m_disabled && RIME_API_AVAILABLE(rime_api, cleanup_stale_sessions)) {
     rime_api->cleanup_stale_sessions();
+    // Existing Weasel mappings may now refer to sessions librime reclaimed.
+    // Defer validation until each session becomes active again.
+    ++m_cleanup_epoch;
+  }
 }
 
 void RimeWithWeaselHandler::UpdateInputPosition(RECT const& rc,
@@ -429,8 +527,12 @@ void RimeWithWeaselHandler::_ReadClientInfo(WeaselSessionId ipc_id,
       app_name = wtou8(lwr.substr(kClientAppKey.length()));
     }
   }
-  SessionStatus& session_status = get_session_status(ipc_id);
-  RimeSessionId session_id = session_status.session_id;
+  SessionStatus* session_status = find_session_status(ipc_id);
+  if (!session_status)
+    return;  // 仅 AddSession 建表后调用；防御未知会话
+  RimeSessionId session_id = session_status->session_id;
+  // 会话期内 client_app 不变，缓存供后续查询（_LoadAppInlinePreeditSet 等）
+  session_status->client_app = app_name;
   // set app specific options
   if (!app_name.empty()) {
     rime_api->set_property(session_id, "client_app", app_name.c_str());
@@ -445,7 +547,7 @@ void RimeWithWeaselHandler::_ReadClientInfo(WeaselSessionId ipc_id,
     }
   }
   // inline preedit
-  bool inline_preedit = session_status.style.inline_preedit;
+  bool inline_preedit = session_status->style.inline_preedit;
   rime_api->set_option(session_id, "inline_preedit", Bool(inline_preedit));
   // show soft cursor on weasel panel but not inline
   rime_api->set_option(session_id, "soft_cursor", Bool(!inline_preedit));
@@ -484,7 +586,10 @@ void RimeWithWeaselHandler::StartMaintenance() {
 
 void RimeWithWeaselHandler::EndMaintenance() {
   if (m_disabled) {
-    Initialize();
+    // START/END_MAINTENANCE is already the authority for this transition.
+    // The owning deployer is normally still alive here, so the startup-only
+    // deployer probe must not suppress Rime reinitialization.
+    _Initialize(false);
     _UpdateUI(0);
   }
   m_session_status_map.clear();
@@ -514,20 +619,27 @@ void RimeWithWeaselHandler::OnUpdateUI(std::function<void()> const& cb) {
 }
 
 bool RimeWithWeaselHandler::_IsDeployerRunning() {
-  HANDLE hMutex = CreateMutex(NULL, TRUE, L"WeaselDeployerMutex");
-  bool deployer_detected = hMutex && GetLastError() == ERROR_ALREADY_EXISTS;
-  if (hMutex) {
-    CloseHandle(hMutex);
+  HANDLE mutex =
+      OpenMutexW(SYNCHRONIZE, FALSE, weasel::kDeployerExclusiveMutexName);
+  if (mutex) {
+    CloseHandle(mutex);
+    return true;
   }
-  return deployer_detected;
+
+  // Access denied still proves that the named object exists; treat it as an
+  // active deployer instead of racing local Rime initialization against it.
+  return GetLastError() == ERROR_ACCESS_DENIED;
 }
 
-void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
+void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id,
+                                      const RespondContext* rc) {
   // if m_ui nullptr, _UpdateUI meaningless
   if (!m_ui)
     return;
 
-  Status& weasel_status = m_ui->status();
+  // 用本地状态填充后随 Update 的快照投递：status_/ctx_ 的写入只允许发生在
+  // UI 线程，IPC 工作线程不得借 m_ui->status() 引用就地改写
+  Status weasel_status;
   Context weasel_context;
 
   RimeSessionId session_id = to_session_id(ipc_id);
@@ -535,20 +647,24 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
   if (ipc_id == 0)
     weasel_status.disabled = m_disabled;
 
-  _GetStatus(weasel_status, ipc_id, weasel_context);
+  // rc 携带 _Respond 本键已取得的状态快照时，_GetStatus 不再第二次 get_status
+  _GetStatus(weasel_status, ipc_id, weasel_context, rc);
 
-  SessionStatus& session_status = get_session_status(ipc_id);
-  if (rime_api->get_option(session_id, "inline_preedit"))
-    session_status.style.client_caps |= INLINE_PREEDIT_CAPABLE;
-  else
-    session_status.style.client_caps &= ~INLINE_PREEDIT_CAPABLE;
+  // 仅已知会话刷新 client_caps；维护路径（ipc_id=0）与未知会话直接跳过，
+  // 不再向会话表插入死条目
+  if (SessionStatus* session_status = find_session_status(ipc_id)) {
+    if (rime_api->get_option(session_id, "inline_preedit"))
+      session_status->style.client_caps |= INLINE_PREEDIT_CAPABLE;
+    else
+      session_status->style.client_caps &= ~INLINE_PREEDIT_CAPABLE;
+  }
 
   if (!_ShowMessage(weasel_context, weasel_status)) {
     m_ui->Hide();
     m_ui->Update(weasel_context, weasel_status);
   }
 
-  _RefreshTrayIcon(session_id, _UpdateUICallback);
+  _RefreshTrayIcon(_UpdateUICallback);
 
   {
     std::lock_guard<std::mutex> lock(m_notifier_mutex);
@@ -564,15 +680,19 @@ void RimeWithWeaselHandler::_LoadSchemaSpecificSettings(
     const std::string& schema_id) {
   if (!m_ui)
     return;
+  SessionStatus* session_status = find_session_status(ipc_id);
+  if (!session_status)
+    return;  // 无表内条目则无处存放方案样式
   RimeConfig config;
   if (!rime_api->schema_open(schema_id.c_str(), &config))
     return;
   _UpdateShowNotifications(&config);
-  m_ui->style() = m_base_style;
-  _UpdateUIStyle(&config, m_ui, false);
-  SessionStatus& session_status = get_session_status(ipc_id);
-  session_status.style = m_ui->style();
-  UIStyle& style = session_status.style;
+  // 在本地副本上计算方案样式，不再借用 m_ui->style() 作草稿：
+  // style_ 的写入只允许发生在 UI 线程（由 SetStyle 投递）
+  UIStyle schema_style = m_base_style;
+  _UpdateUIStyle(&config, schema_style, false);
+  session_status->style = schema_style;
+  UIStyle& style = session_status->style;
   // load schema color style config
   const int BUF_SIZE = 255;
   char buffer[BUF_SIZE + 1] = {0};
@@ -626,16 +746,17 @@ void RimeWithWeaselHandler::_LoadSchemaSpecificSettings(
 
 void RimeWithWeaselHandler::_LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
                                                      bool ignore_app_name) {
-  SessionStatus& session_status = get_session_status(ipc_id);
-  RimeSessionId session_id = session_status.session_id;
-  static char _app_name[50];
-  rime_api->get_property(session_id, "client_app", _app_name,
-                         sizeof(_app_name) - 1);
-  std::string app_name(_app_name);
+  SessionStatus* session_status = find_session_status(ipc_id);
+  if (!session_status)
+    return;  // 未知/已失效会话：无样式可设置
+  RimeSessionId session_id = session_status->session_id;
+  // client_app 已随会话缓存（_ReadClientInfo），不再经 get_property 交叉查询；
+  // 客户端未提供时缓存为空串，也不再残留上一次调用的静态缓冲
+  const std::string& app_name = session_status->client_app;
   if (!ignore_app_name && m_last_app_name == app_name)
     return;
   m_last_app_name = app_name;
-  bool inline_preedit = session_status.style.inline_preedit;
+  bool inline_preedit = session_status->style.inline_preedit;
   bool found = false;
   if (!app_name.empty()) {
     auto it = m_app_options.find(app_name);
@@ -645,7 +766,7 @@ void RimeWithWeaselHandler::_LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
         if (pair.first == "inline_preedit") {
           rime_api->set_option(session_id, pair.first.c_str(),
                                Bool(pair.second));
-          session_status.style.inline_preedit = Bool(pair.second);
+          session_status->style.inline_preedit = Bool(pair.second);
           found = true;
           break;
         }
@@ -653,31 +774,32 @@ void RimeWithWeaselHandler::_LoadAppInlinePreeditSet(WeaselSessionId ipc_id,
     }
   }
   if (!found) {
-    session_status.style.inline_preedit = m_base_style.inline_preedit;
+    session_status->style.inline_preedit = m_base_style.inline_preedit;
     // load from schema.
     RIME_STRUCT(RimeStatus, status);
     if (rime_api->get_status(session_id, &status)) {
-      std::string schema_id = status.schema_id;
+      const std::string schema_id = status.schema_id ? status.schema_id : "";
       RimeConfig config;
       if (rime_api->schema_open(schema_id.c_str(), &config)) {
         Bool value = False;
         if (rime_api->config_get_bool(&config, "style/inline_preedit",
                                       &value)) {
-          session_status.style.inline_preedit = value;
+          session_status->style.inline_preedit = value;
         }
         rime_api->config_close(&config);
       }
       rime_api->free_status(&status);
     }
   }
-  if (session_status.style.inline_preedit != inline_preedit)
+  if (session_status->style.inline_preedit != inline_preedit)
     _UpdateInlinePreeditStatus(ipc_id);
 }
 
 bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
   std::lock_guard<std::mutex> lock(m_notifier_mutex);
+  const bool counter = m_ui->IsCountingDown();
   if (m_message_type.empty() || m_message_value.empty())
-    return m_ui->IsCountingDown();
+    return counter;
   // show as auxiliary string
   std::wstring& tips(ctx.aux.str);
   bool show_icon = false;
@@ -718,7 +840,6 @@ bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
     if (m_message_value == "full_shape" || m_message_value == "!full_shape")
       status.type = FULL_SHAPE;
   }
-  auto counter = m_ui->IsCountingDown();
   if (!show_icon && counter)
     return counter;
   auto foption = m_show_notifications.find(m_option_name);
@@ -734,27 +855,34 @@ bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
       m_ui->ShowWithTimeout(m_show_notifications_time);
     return true;
   } else {
-    return m_ui->IsCountingDown();
+    return counter;
   }
 }
 inline std::string _GetLabelText(const std::vector<Text>& labels,
                                  int id,
                                  const wchar_t* format) {
-  wchar_t buffer[128];
-  swprintf_s<128>(buffer, format, labels.at(id).str.c_str());
-  return wtou8(std::wstring(buffer));
+  // 有界安全格式化：超长截断、非法格式回退（B23，见 WeaselUtility.h）
+  return wtou8(FormatLabelText(format, labels.at(id).str));
 }
 
-bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id,
+                                     EatLine eat,
+                                     RespondContext* rc) {
   std::wstring body;
   body.reserve(4096);
   std::vector<const char*> actions;
   actions.reserve(8);
 
-  SessionStatus& session_status = get_session_status(ipc_id);
+  // 未知/已失效会话：以本地默认状态应答（session_id=0 使 rime 调用全部
+  // 落空，响应仅含 config/style 行，与旧行为一致），不再向会话表插入死条目
+  SessionStatus orphan;
+  SessionStatus* found = find_session_status(ipc_id);
+  SessionStatus& session_status = found ? *found : orphan;
   RimeSessionId session_id = session_status.session_id;
   RIME_STRUCT(RimeCommit, commit);
   if (rime_api->get_commit(session_id, &commit)) {
+    if (rc)
+      rc->passthrough = false;  // 有上屏文本：非直通键
     actions.push_back("commit");
     std::wstring commit_text_w = escape_string(u8tow(commit.text));
     body.append(L"commit=").append(commit_text_w).append(L"\n");
@@ -766,6 +894,19 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
   static const std::wstring Bool_wstring[] = {L"0", L"1"};
   if (rime_api->get_status(session_id, &status)) {
     is_composing = !!status.is_composing;
+    if (rc) {
+      // 转换一次供 _UpdateUI/_GetStatus 复用（B11b，免第二次 get_status）；
+      // schema 字段判空：NULL 构造 std::string 是 UB
+      rc->have_status = true;
+      rc->status.schema_name =
+          status.schema_name ? u8tow(status.schema_name) : std::wstring();
+      rc->status.schema_id =
+          status.schema_id ? u8tow(status.schema_id) : std::wstring();
+      rc->status.ascii_mode = !!status.is_ascii_mode;
+      rc->status.composing = !!status.is_composing;
+      rc->status.disabled = !!status.is_disabled;
+      rc->status.full_shape = !!status.is_full_shape;
+    }
     actions.push_back("status");
     body.append(L"status.ascii_mode=")
         .append(Bool_wstring[!!status.is_ascii_mode])
@@ -784,6 +925,8 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
         .append(L"\n");
     if (m_global_ascii_mode &&
         (session_status.status.is_ascii_mode != status.is_ascii_mode)) {
+      if (rc)
+        rc->passthrough = false;  // ascii_mode 联动过其他会话：状态已变化
       for (auto& pair : m_session_status_map) {
         if (pair.first != ipc_id)
           rime_api->set_option(to_session_id(pair.first), "ascii_mode",
@@ -793,9 +936,24 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
     session_status.status = status;
     rime_api->free_status(&status);
   }
+  {
+    // Shift 等开关键：librime 不吃键（kNoop）但已在 process_key 内切换
+    // ascii_mode 等开关，通知经 OnNotify 同步送达、待 _UpdateUI 消费展示。
+    // 有待展示通知即状态已变化，非直通键
+    std::lock_guard<std::mutex> lock(m_notifier_mutex);
+    if (rc && !m_message_type.empty())
+      rc->passthrough = false;
+  }
+  if (rc && is_composing)
+    rc->passthrough = false;  // 组词中：非直通键
 
   RIME_STRUCT(RimeContext, ctx);
-  if (rime_api->get_context(session_id, &ctx)) {
+  // 直通键早退（B11a，旧报告 4.3）：无上屏、未组词时 rime 上下文必为空
+  // （librime 的 get_context 仅在 IsComposing() 时填充 composition、
+  // HasMenu() 时填充 menu，二者均以非空组词为前提），跳过本次 C 交叉。
+  // 此时响应本就不含 ctx.* 行，客户端按 action 列表逐行解析、
+  // Context 每键新建，协议形态与字节流不变
+  if (!(rc && rc->passthrough) && rime_api->get_context(session_id, &ctx)) {
     bool has_candidates = ctx.menu.num_candidates > 0;
     CandidateInfo cinfo;
     if (has_candidates) {
@@ -859,11 +1017,11 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
           for (auto i = 0; i < ctx.menu.num_candidates; i++) {
             std::wstring label_w;
             if (label_valid) {
-              wchar_t buf_lbl[128];
-              swprintf_s<128>(buf_lbl,
-                              session_status.style.label_text_format.c_str(),
-                              cinfo.labels.at(i).str.c_str());
-              label_w = std::wstring(buf_lbl);
+              // 有界安全格式化：超长截断、非法格式回退（B23，见
+              // WeaselUtility.h）
+              label_w = FormatLabelText(
+                  session_status.style.label_text_format.c_str(),
+                  cinfo.labels.at(i).str);
             }
             std::wstring comment_w =
                 comment_valid ? cinfo.comments.at(i).str : std::wstring();
@@ -1349,8 +1507,10 @@ void LoadWeaselUIStyle(RimeConfig* config,
     _UpdateUIStyleColor(config, style, color_scheme);
 }
 
-static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize) {
-  LoadWeaselUIStyle(config, ui->style(), initialize);
+static void _UpdateUIStyle(RimeConfig* config,
+                           UIStyle& style,
+                           bool initialize) {
+  LoadWeaselUIStyle(config, style, initialize);
 }
 // load color configs to style, by "style/color_scheme" or specific scheme name
 // "color" which is default empty
@@ -1432,42 +1592,69 @@ static void _LoadAppOptions(RimeConfig* config,
 
 void RimeWithWeaselHandler::_GetStatus(Status& stat,
                                        WeaselSessionId ipc_id,
-                                       Context& ctx) {
-  SessionStatus& session_status = get_session_status(ipc_id);
-  RimeSessionId session_id = session_status.session_id;
-  RIME_STRUCT(RimeStatus, status);
-  if (rime_api->get_status(session_id, &status)) {
-    std::string schema_id = "";
-    if (status.schema_id)
-      schema_id = status.schema_id;
-    stat.schema_name = u8tow(status.schema_name);
-    stat.schema_id = u8tow(status.schema_id);
-    stat.ascii_mode = !!status.is_ascii_mode;
-    stat.composing = !!status.is_composing;
-    stat.disabled = !!status.is_disabled;
-    stat.full_shape = !!status.is_full_shape;
-    if (schema_id != m_last_schema_id) {
-      session_status.__synced = false;
-      m_last_schema_id = schema_id;
-      if (schema_id != ".default") {  // don't load for schema select menu
-        bool inline_preedit = session_status.style.inline_preedit;
-        _LoadSchemaSpecificSettings(ipc_id, schema_id);
-        _LoadAppInlinePreeditSet(ipc_id, true);
-        if (session_status.style.inline_preedit != inline_preedit)
-          // in case of inline_preedit set in schema
-          _UpdateInlinePreeditStatus(ipc_id);
-        // refresh icon after schema changed
-        _RefreshTrayIcon(session_id, _UpdateUICallback);
-        m_ui->style() = session_status.style;
-        if (m_show_notifications.find("schema") != m_show_notifications.end() &&
-            m_show_notifications_time > 0) {
-          ctx.aux.str = stat.schema_name;
-          m_ui->Update(ctx, stat);
-          m_ui->ShowWithTimeout(m_show_notifications_time);
-        }
+                                       Context& ctx,
+                                       const RespondContext* rc) {
+  // schema_id 的字符串形态：方案切换检测与 m_last_schema_id 比较用
+  std::string schema_id;
+  bool status_valid = false;
+  if (rc != nullptr && rc->have_status) {
+    // 复用 _Respond 本键已取得的快照：省一次 get_status C 交叉与全量拷贝
+    stat.schema_name = rc->status.schema_name;
+    stat.schema_id = rc->status.schema_id;
+    stat.ascii_mode = rc->status.ascii_mode;
+    stat.composing = rc->status.composing;
+    stat.disabled = rc->status.disabled;
+    stat.full_shape = rc->status.full_shape;
+    // schema id 为 ASCII，UTF-8 往返无损
+    schema_id = wtou8(rc->status.schema_id);
+    status_valid = true;
+  } else {
+    // 未知/已失效会话：to_session_id 为 0，get_status 必然失败
+    RimeSessionId session_id = to_session_id(ipc_id);
+    RIME_STRUCT(RimeStatus, status);
+    if (rime_api->get_status(session_id, &status)) {
+      // schema_name/schema_id 可能为 NULL，NULL 构造 std::string 是 UB
+      // （_Respond 已有同样的判空）
+      if (status.schema_id)
+        schema_id = status.schema_id;
+      stat.schema_name =
+          status.schema_name ? u8tow(status.schema_name) : std::wstring();
+      stat.schema_id = u8tow(schema_id);
+      stat.ascii_mode = !!status.is_ascii_mode;
+      stat.composing = !!status.is_composing;
+      stat.disabled = !!status.is_disabled;
+      stat.full_shape = !!status.is_full_shape;
+      status_valid = true;
+      rime_api->free_status(&status);
+    }
+  }
+  if (!status_valid)
+    return;
+  // 状态有效必源于表内真实会话（to_session_id 非 0 才可能取到状态）；
+  // 未知会话无样式可同步，早退且不向会话表插入条目
+  SessionStatus* session_status = find_session_status(ipc_id);
+  if (!session_status)
+    return;
+  if (schema_id != m_last_schema_id) {
+    session_status->__synced = false;
+    m_last_schema_id = schema_id;
+    if (schema_id != ".default") {  // don't load for schema select menu
+      bool inline_preedit = session_status->style.inline_preedit;
+      _LoadSchemaSpecificSettings(ipc_id, schema_id);
+      _LoadAppInlinePreeditSet(ipc_id, true);
+      if (session_status->style.inline_preedit != inline_preedit)
+        // in case of inline_preedit set in schema
+        _UpdateInlinePreeditStatus(ipc_id);
+      // refresh icon after schema changed
+      _RefreshTrayIcon(_UpdateUICallback);
+      m_ui->SetStyle(session_status->style);
+      if (m_show_notifications.find("schema") != m_show_notifications.end() &&
+          m_show_notifications_time > 0) {
+        ctx.aux.str = stat.schema_name;
+        m_ui->Update(ctx, stat);
+        m_ui->ShowWithTimeout(m_show_notifications_time);
       }
     }
-    rime_api->free_status(&status);
   }
 }
 
@@ -1499,10 +1686,12 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
 void RimeWithWeaselHandler::_UpdateInlinePreeditStatus(WeaselSessionId ipc_id) {
   if (!m_ui)
     return;
-  SessionStatus& session_status = get_session_status(ipc_id);
-  RimeSessionId session_id = session_status.session_id;
+  SessionStatus* session_status = find_session_status(ipc_id);
+  if (!session_status)
+    return;
+  RimeSessionId session_id = session_status->session_id;
   // set inline_preedit option
-  bool inline_preedit = session_status.style.inline_preedit;
+  bool inline_preedit = session_status->style.inline_preedit;
   rime_api->set_option(session_id, "inline_preedit", Bool(inline_preedit));
   // show soft cursor on weasel panel but not inline
   rime_api->set_option(session_id, "soft_cursor", Bool(!inline_preedit));

@@ -9,8 +9,10 @@ void static OpenFolderAndSelectItem(std::wstring filepath) {
   filepath = std::filesystem::path(filepath).make_preferred().wstring();
   std::wstring directory = std::filesystem::path(filepath).parent_path();
 
-  HRESULT hr;
-  hr = CoInitializeEx(0, COINIT_MULTITHREADED);
+  // 主线程为 STA（_tWinMain 已 CoInitialize），MTA 初始化在此返回
+  // RPC_E_CHANGED_MODE 且不加计数；仅真正加了计数（S_OK/S_FALSE）才配对
+  // CoUninitialize，否则每次调用拆一层主线程 COM 计数
+  HRESULT hr = CoInitializeEx(0, COINIT_MULTITHREADED);
 
   auto folder = ILCreateFromPath(directory.c_str());
   std::vector<LPITEMIDLIST> v;
@@ -22,7 +24,9 @@ void static OpenFolderAndSelectItem(std::wstring filepath) {
     ILFree(idl);
   }
   ILFree(folder);
-  CoUninitialize();
+  if (SUCCEEDED(hr)) {
+    CoUninitialize();
+  }
 }
 
 template <typename T, typename U>
@@ -58,12 +62,34 @@ inline static std::wstring DoFileDialog(HWND hwndOwner,
 }
 
 DictManagementDialog::DictManagementDialog() {
-  api_ = (RimeLeversApi*)rime_get_api()->find_module("levers")->get_api();
+  // levers 模块缺失（部署损坏）时 find_module 返回空，不能解引用；
+  // 留空 api_，由 OnInitDialog 提示并关闭
+  RimeModule* levers = rime_get_api()->find_module("levers");
+  api_ = levers ? (RimeLeversApi*)levers->get_api() : nullptr;
+  if (!api_) {
+    LOG(ERROR)
+        << "Rime levers module not found; dict management is unavailable.";
+  }
 }
 
 DictManagementDialog::~DictManagementDialog() {}
 
+static bool ArmDictionaryEnumerationWatchdog(
+    RimeOperationWatchdog& watchdog) noexcept {
+  if (watchdog.Arm())
+    return true;
+  LOG(ERROR) << "Could not arm dictionary enumeration watchdog.";
+  MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+  return false;
+}
+
 void DictManagementDialog::Populate() {
+  user_dict_list_.ResetContent();
+
+  RimeOperationWatchdog operation_watchdog;
+  if (!ArmDictionaryEnumerationWatchdog(operation_watchdog))
+    return;
+
   RimeUserDictIterator iter = {0};
   api_->user_dict_iterator_init(&iter);
   while (const char* dict = api_->next_user_dict(&iter)) {
@@ -71,10 +97,21 @@ void DictManagementDialog::Populate() {
     user_dict_list_.AddString(txt.c_str());
   }
   api_->user_dict_iterator_destroy(&iter);
+  operation_watchdog.Disarm();
+
   user_dict_list_.SetCurSel(-1);
+  // 程序化 SetCurSel(-1) 不触发 LBN_SELCHANGE，须手动复位按钮状态
+  backup_.EnableWindow(FALSE);
+  export_.EnableWindow(FALSE);
+  import_.EnableWindow(FALSE);
 }
 
 LRESULT DictManagementDialog::OnInitDialog(UINT, WPARAM, LPARAM, BOOL&) {
+  if (!api_) {
+    MSG_BY_IDS(IDS_STR_ERR_LEVERS_MISSING, IDS_STR_SAD, MB_OK | MB_ICONERROR);
+    EndDialog(IDCANCEL);
+    return FALSE;
+  }
   user_dict_list_.Attach(GetDlgItem(IDC_USER_DICT_LIST));
   backup_.Attach(GetDlgItem(IDC_BACKUP));
   backup_.EnableWindow(FALSE);
@@ -98,6 +135,17 @@ LRESULT DictManagementDialog::OnClose(UINT, WPARAM, LPARAM, BOOL&) {
   return 0;
 }
 
+// LB_GETTEXT 不截断整串拷贝，须先查长度再动态分配，防止栈溢出
+static std::wstring GetSelectedDictName(CListBox& list, int sel) {
+  int len = list.GetTextLen(sel);
+  if (len == LB_ERR)
+    return std::wstring();
+  std::vector<wchar_t> buf(len + 1, L'\0');
+  if (list.GetText(sel, buf.data()) == LB_ERR)
+    return std::wstring();
+  return std::wstring(buf.data());
+}
+
 LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   int sel = user_dict_list_.GetCurSel();
   if (sel < 0 || sel >= user_dict_list_.GetCount()) {
@@ -109,9 +157,8 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
   {
     char dir[MAX_PATH] = {0};
     rime_get_api()->get_user_data_sync_dir(dir, _countof(dir));
-    WCHAR wdir[MAX_PATH] = {0};
-    MultiByteToWideChar(CP_ACP, 0, dir, -1, wdir, _countof(wdir));
-    path = wdir;
+    // rime 返回的同步目录为 UTF-8 编码，CP_ACP 解码必乱（同 A16）
+    path = u8tow(dir);
   }
   if (_waccess_s(path.c_str(), 0) != 0 &&
       !CreateDirectoryW(path.c_str(), NULL) &&
@@ -119,11 +166,15 @@ LRESULT DictManagementDialog::OnBackup(WORD, WORD code, HWND, BOOL&) {
     MSG_BY_IDS(IDS_STR_ERREXPORT_SYNC_UV, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     return 0;
   }
-  WCHAR dict_name[100] = {0};
-  user_dict_list_.GetText(sel, dict_name);
+  std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
   path += std::wstring(L"\\") + dict_name + L".userdb.txt";
   std::string dict_name_str = wtou8(dict_name);
-  if (!api_->backup_user_dict(dict_name_str.c_str())) {
+
+  // Backup can rewrite userdb metadata when the stored user id changes. Do
+  // not hard-kill a mutating userdb operation mid-write.
+  const bool backup_ok = api_->backup_user_dict(dict_name_str.c_str());
+
+  if (!backup_ok) {
     MSG_BY_IDS(IDS_STR_ERR_EXPORT_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     return 0;
   } else if (_waccess(path.c_str(), 0) != 0) {
@@ -155,12 +206,16 @@ LRESULT DictManagementDialog::OnRestore(WORD, WORD code, HWND, BOOL&) {
   std::wstring selected_path = DoFileDialog<IFileOpenDialog, FileOpenDialog>(
       m_hWnd, open_str, ARRAYSIZE(filter), filter, NULL, L"snapshot");
   if (!selected_path.empty()) {
-    char path[MAX_PATH] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, selected_path.c_str(), -1, path,
-                        _countof(path), NULL, NULL);
-    if (!api_->restore_user_dict(path)) {
+    const std::string path = wtou8(selected_path);
+    // Restore merges entries incrementally into the destination userdb.
+    // Forced process termination here could leave only part of the snapshot
+    // applied, so let the operation complete or fail naturally.
+    const bool restore_ok = api_->restore_user_dict(path.c_str());
+
+    if (!restore_ok) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {
+      Populate();  // 词典内容已变，重载列表反映恢复结果
       MSG_BY_IDS(IDS_STR_ERR_SUCCESS, IDS_STR_HAPPY,
                  MB_OK | MB_ICONINFORMATION);
     }
@@ -185,10 +240,8 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
                MB_OK | MB_ICONINFORMATION);
     return 0;
   }
-  WCHAR dict_name[MAX_PATH] = {0};
-  user_dict_list_.GetText(sel, dict_name);
-  std::wstring file_name(dict_name);
-  file_name += L"_export.txt";
+  std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
+  std::wstring file_name = dict_name + L"_export.txt";
 
   COMDLG_FILTERSPEC filter[2] = {{txt_files_name.c_str(), L"*.txt"},
                                  {all_files_name.c_str(), L"*.*"}};
@@ -198,11 +251,12 @@ LRESULT DictManagementDialog::OnExport(WORD, WORD code, HWND, BOOL&) {
       m_hWnd, save_as_str, ARRAYSIZE(filter), filter, file_name.c_str(),
       L"txt");
   if (!selected_path.empty()) {
-    char path[MAX_PATH] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, selected_path.c_str(), -1, path,
-                        _countof(path), NULL, NULL);
+    const std::string path = wtou8(selected_path);
     std::string dict_name_str = wtou8(dict_name);
-    int result = api_->export_user_dict(dict_name_str.c_str(), path);
+    // librime writes export output directly to the selected path. Do not
+    // hard-kill the process while that file may be only partially rewritten.
+    int result = api_->export_user_dict(dict_name_str.c_str(), path.c_str());
+
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else if (_waccess(selected_path.c_str(), 0) != 0) {
@@ -236,10 +290,8 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
                MB_OK | MB_ICONINFORMATION);
     return 0;
   }
-  WCHAR dict_name[MAX_PATH] = {0};
-  user_dict_list_.GetText(sel, dict_name);
-  std::wstring file_name(dict_name);
-  file_name += L"_export.txt";
+  std::wstring dict_name = GetSelectedDictName(user_dict_list_, sel);
+  std::wstring file_name = dict_name + L"_export.txt";
 
   COMDLG_FILTERSPEC filter[2] = {{txt_files_name.c_str(), L"*.txt"},
                                  {all_files_name.c_str(), L"*.*"}};
@@ -248,10 +300,11 @@ LRESULT DictManagementDialog::OnImport(WORD, WORD code, HWND, BOOL&) {
   std::wstring selected_path = DoFileDialog<IFileOpenDialog, FileOpenDialog>(
       m_hWnd, open_str, ARRAYSIZE(filter), filter, file_name.c_str(), L"txt");
   if (!selected_path.empty()) {
-    char path[MAX_PATH] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, selected_path.c_str(), -1, path,
-                        _countof(path), NULL, NULL);
-    int result = api_->import_user_dict(wtou8(dict_name).c_str(), path);
+    const std::string path = wtou8(selected_path);
+    // Import is also an incremental userdb mutation; never attach the
+    // process-killing watchdog to this call.
+    int result = api_->import_user_dict(wtou8(dict_name).c_str(), path.c_str());
+
     if (result < 0) {
       MSG_BY_IDS(IDS_STR_ERR_UNKNOWN, IDS_STR_SAD, MB_OK | MB_ICONERROR);
     } else {

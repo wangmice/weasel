@@ -1,0 +1,5 @@
+target("TestPipeConnectFailure")
+  set_kind("binary")
+  add_files("./*.cpp")
+  add_deps("WeaselIPC")
+  add_rules("subcmd")

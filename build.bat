@@ -8,11 +8,8 @@ if exist env.bat call env.bat
 
 if not defined WEASEL_ROOT set WEASEL_ROOT=%CD%
 
-if not defined VERSION_MAJOR set VERSION_MAJOR=0
-if not defined VERSION_MINOR set VERSION_MINOR=17
-if not defined VERSION_PATCH set VERSION_PATCH=4
-
-if not defined WEASEL_VERSION set WEASEL_VERSION=%VERSION_MAJOR%.%VERSION_MINOR%.%VERSION_PATCH%
+call "%~dp0update\load-version.bat"
+if errorlevel 1 exit /b 1
 if not defined WEASEL_BUILD set WEASEL_BUILD=0
 
 rem use numeric build version for release build
@@ -50,10 +47,20 @@ if defined GITHUB_ENV (
 	echo git_ref_name=%PRODUCT_VERSION%>>!GITHUB_ENV!
 )
 
-if defined BOOST_ROOT (
-  if exist "%BOOST_ROOT%\boost" goto boost_found
-)
+if not defined BOOST_ROOT goto boost_missing
+if not exist "%BOOST_ROOT%\boost\version.hpp" goto boost_incomplete
+if not exist "%BOOST_ROOT%\bootstrap.bat" goto boost_incomplete
+if not exist "%BOOST_ROOT%\boost-build.jam" goto boost_incomplete
+if not exist "%BOOST_ROOT%\tools\build\src\build-system.jam" goto boost_incomplete
+goto boost_found
+
+:boost_missing
 echo Error: Boost not found! Please set BOOST_ROOT in env.bat.
+exit /b 1
+
+:boost_incomplete
+echo Error: incomplete Boost source tree at "%BOOST_ROOT%".
+echo Expected boost\version.hpp, bootstrap.bat, boost-build.jam and tools\build\src\build-system.jam.
 exit /b 1
 
 :boost_found
@@ -127,7 +134,7 @@ if %build_rime% == 0 (
 )))))
 
 rem quit WeaselServer.exe before building
-cd /d %WEASEL_ROOT%
+cd /d "%WEASEL_ROOT%"
 if exist output\weaselserver.exe (
   output\weaselserver.exe /q
 )
@@ -136,7 +143,7 @@ rem build booost
 if %build_boost% == 1 (
   call :build_boost
   if errorlevel 1 exit /b 1
-  cd /d %WEASEL_ROOT%
+  cd /d "%WEASEL_ROOT%"
 )
 
 rem -------------------------------------------------------------------------
@@ -145,7 +152,7 @@ if %build_rime% == 1 (
   if not exist librime\build.bat (
     git submodule update --init --recursive
   )
-  cd %WEASEL_ROOT%\librime
+  cd /d "%WEASEL_ROOT%\librime"
   rem clean cache before building
   for %%a in ( build dist lib ^
     deps\glog\build ^
@@ -160,9 +167,11 @@ if %build_rime% == 1 (
   rem build x64 librime
   set ARCH=x64
   call :build_librime_platform x64 %WEASEL_ROOT%\lib64 %WEASEL_ROOT%\output
+  if errorlevel 1 goto error
   rem build Win32 librime
   set ARCH=Win32
   call :build_librime_platform Win32 %WEASEL_ROOT%\lib %WEASEL_ROOT%\output\Win32
+  if errorlevel 1 goto error
   rem clean the modified file
   rem git checkout .
   rem git submodule foreach git checkout .
@@ -177,12 +186,18 @@ if %build_weasel% == 1 (
     set build_opencc=1
   )
 )
-if %build_data% == 1 call :build_data
-if %build_opencc% == 1 call :build_opencc_data
+if %build_data% == 1 (
+  call :build_data
+  if errorlevel 1 goto error
+)
+if %build_opencc% == 1 (
+  call :build_opencc_data
+  if errorlevel 1 goto error
+)
 
 if %build_weasel% == 0 goto end
 
-cd /d %WEASEL_ROOT%
+cd /d "%WEASEL_ROOT%"
 
 set WEASEL_PROJECT_PROPERTIES=BOOST_ROOT^
   PLATFORM_TOOLSET^
@@ -234,6 +249,29 @@ if %build_installer% == 1 (
 goto end
 
 rem -------------------------------------------------------------------------
+rem validate or rebuild the B2 launcher for the selected source tree
+:ensure_boost_b2
+  cd /d "%BOOST_ROOT%"
+  if exist b2.exe (
+    rem A version-only probe can succeed without loading boost-build.jam.
+    rem Dry-run a real Boost target so auto-discovery of the current source
+    rem tree and the requested toolset must both succeed before reuse.
+    b2 -n --with-filesystem stage toolset=%BJAM_TOOLSET% >nul 2>&1
+    if not errorlevel 1 exit /b 0
+    echo Existing b2.exe cannot load this Boost source tree; rebuilding it...
+    del /q b2.exe
+    if errorlevel 1 exit /b 1
+  )
+  call bootstrap.bat
+  if errorlevel 1 exit /b 1
+  b2 -n --with-filesystem stage toolset=%BJAM_TOOLSET% >nul 2>&1
+  if errorlevel 1 (
+    echo Error: bootstrapped b2.exe still cannot load this Boost source tree.
+    exit /b 1
+  )
+  exit /b 0
+
+rem -------------------------------------------------------------------------
 rem build boost
 :build_boost
   set BJAM_OPTIONS_COMMON=-j%NUMBER_OF_PROCESSORS%^
@@ -268,9 +306,9 @@ rem build boost
     architecture=arm^
     address-model=64
   
-  cd /d %BOOST_ROOT%
-  if not exist b2.exe call bootstrap.bat
+  call :ensure_boost_b2
   if errorlevel 1 goto error
+  cd /d "%BOOST_ROOT%"
   b2 %BJAM_OPTIONS_X86% stage %BOOST_COMPILED_LIBS%
   if errorlevel 1 goto error
   b2 %BJAM_OPTIONS_X64% stage %BOOST_COMPILED_LIBS%
@@ -282,7 +320,7 @@ rem build boost
     b2 %BJAM_OPTIONS_ARM64% stage %BOOST_COMPILED_LIBS%
     if errorlevel 1 goto error
   )
-  exit /b
+  exit /b 0
 
 rem ---------------------------------------------------------------------------
 :build_data
@@ -299,11 +337,11 @@ rem ---------------------------------------------------------------------------
 rem ---------------------------------------------------------------------------
 :build_opencc_data
   if not exist %WEASEL_ROOT%\librime\share\opencc\TSCharacters.ocd2 (
-    cd %WEASEL_ROOT%\librime
+    cd /d "%WEASEL_ROOT%\librime"
     call build.bat deps %rime_build_variant%
     if errorlevel 1 goto error
   )
-  cd %WEASEL_ROOT%
+  cd /d "%WEASEL_ROOT%"
   if not exist output\data\opencc mkdir output\data\opencc
   copy %WEASEL_ROOT%\librime\share\opencc\*.* output\data\opencc\
   if errorlevel 1 goto error
@@ -313,7 +351,7 @@ rem ---------------------------------------------------------------------------
 rem %1 : ARCH
 rem %2 : push | pop , push to backup when pop to restore
 :stash_build
-  pushd %WEASEL_ROOT%\librime
+  pushd "%WEASEL_ROOT%\librime"
   for %%a in ( build dist lib ^
     deps\glog\build ^
     deps\googletest\build ^
@@ -322,10 +360,10 @@ rem %2 : push | pop , push to backup when pop to restore
     deps\opencc\build ^
     deps\yaml-cpp\build ) do (
     if "%2"=="push" (
-      if exist %%a  move %%a %%a_%1 
+      if exist %%a  move %%a %%a_%1
     )
     if "%2"=="pop" (
-      if exist %%a_%1  move %%a_%1 %%a 
+      if exist %%a_%1  move %%a_%1 %%a
     )
   )
   popd
@@ -339,7 +377,7 @@ rem %3 : target_path of rime.dll, base %WEASEL_ROOT% or abs path
   rem restore backuped %1 build
   call :stash_build %1 pop
 
-  cd %WEASEL_ROOT%\librime
+  cd /d "%WEASEL_ROOT%\librime"
   if not exist env.bat (
     copy %WEASEL_ROOT%\env.bat env.bat
   )
@@ -356,7 +394,7 @@ rem %3 : target_path of rime.dll, base %WEASEL_ROOT% or abs path
     goto error
   )
 
-  cd %WEASEL_ROOT%\librime
+  cd /d "%WEASEL_ROOT%\librime"
   call :stash_build %1 push
 
   copy /Y %WEASEL_ROOT%\librime\dist_%1\include\rime_*.h %WEASEL_ROOT%\include\
@@ -371,9 +409,9 @@ rem ---------------------------------------------------------------------------
 
 :error
 
-cd %WEASEL_ROOT%
+cd /d "%WEASEL_ROOT%"
 echo error building weasel...
 exit /b 1
 
 :end
-cd %WEASEL_ROOT%
+cd /d "%WEASEL_ROOT%"
