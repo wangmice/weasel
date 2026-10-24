@@ -40,8 +40,8 @@ constexpr bool CanRetryApplyFailure(ApplyProgress progress,
 // request. Only its current flight may retire the accepted candidate UI;
 // RestoreFront retries and stale edit sessions must leave it untouched.
 constexpr bool ShouldRetireCandidateOnApplyDispose(bool executed,
-                                                  bool terminalFailure,
-                                                  bool ownsFlight) {
+                                                   bool terminalFailure,
+                                                   bool ownsFlight) {
   return ownsFlight && (terminalFailure || !executed);
 }
 
@@ -50,13 +50,13 @@ constexpr bool ShouldRetireCandidateOnApplyDispose(bool executed,
 // retry budget. Only the still-current, unexecuted flight may initiate
 // bounded cleanup while the pending response FIFO remains paused.
 constexpr bool ShouldRetireAbandonedHandoff(bool executed,
-                                           bool ownsFlight,
-                                           bool sameComposition) {
+                                            bool ownsFlight,
+                                            bool sameComposition) {
   return !executed && ownsFlight && sameComposition;
 }
 
 constexpr bool ShouldScheduleAbandonedHandoffCleanup(bool outstanding,
-                                                      unsigned attempts) {
+                                                     unsigned attempts) {
   return !outstanding && attempts < kMaxApplyRetries;
 }
 

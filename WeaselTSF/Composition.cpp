@@ -612,13 +612,12 @@ class CApplyResponseEditSession : public CEditSession {
         _queue(queue) {}
 
   ~CApplyResponseEditSession() override {
-    const bool ownsFlight = _queue && _queue->InFlight() &&
-                            _queue->FlightToken() == _flightToken;
+    const bool ownsFlight =
+        _queue && _queue->InFlight() && _queue->FlightToken() == _flightToken;
     if (ownsFlight && _resetOnDispose && _ShouldResetEngine()) {
       _pTextService->_AbortComposition();
-    } else if (_request &&
-               weasel::tsf::ShouldRetireCandidateOnApplyDispose(
-                   _executed, _resetOnDispose, ownsFlight)) {
+    } else if (_request && weasel::tsf::ShouldRetireCandidateOnApplyDispose(
+                               _executed, _resetOnDispose, ownsFlight)) {
       // An accepted async edit session can be destroyed without ever
       // receiving DoEditSession. Retire only its matching UIElement so the
       // host cannot be left with a permanently locked Finalize.
@@ -697,8 +696,8 @@ class CContextHandoffEditSession : public CEditSession {
         _queue(queue) {}
 
   ~CContextHandoffEditSession() override {
-    const bool ownsFlight = _queue && _queue->InFlight() &&
-                            _queue->FlightToken() == _flightToken;
+    const bool ownsFlight =
+        _queue && _queue->InFlight() && _queue->FlightToken() == _flightToken;
     if (weasel::tsf::ShouldRetireAbandonedHandoff(
             _executed, ownsFlight,
             _pTextService->_IsCurrentComposition(_pComposition))) {
@@ -748,11 +747,10 @@ class CContextHandoffEditSession : public CEditSession {
 
 class CAbandonedHandoffCleanupEditSession : public CEditSession {
  public:
-  CAbandonedHandoffCleanupEditSession(
-      com_ptr<WeaselTSF> pTextService,
-      com_ptr<ITfContext> pContext,
-      com_ptr<ITfComposition> pComposition,
-      UINT64 pauseToken)
+  CAbandonedHandoffCleanupEditSession(com_ptr<WeaselTSF> pTextService,
+                                      com_ptr<ITfContext> pContext,
+                                      com_ptr<ITfComposition> pComposition,
+                                      UINT64 pauseToken)
       : CEditSession(pTextService, pContext),
         _pComposition(pComposition),
         _pauseToken(pauseToken) {}
@@ -770,8 +768,7 @@ class CAbandonedHandoffCleanupEditSession : public CEditSession {
     const HRESULT hr = _pTextService->_EndCompositionLocked(
         ec, _pContext, _pComposition, TRUE, FALSE);
     if (SUCCEEDED(hr))
-      _pTextService->_FinishAbandonedHandoffCleanup(_pComposition,
-                                                     _pauseToken);
+      _pTextService->_FinishAbandonedHandoffCleanup(_pComposition, _pauseToken);
     return hr;
   }
 
@@ -781,7 +778,8 @@ class CAbandonedHandoffCleanupEditSession : public CEditSession {
 };
 
 void WeaselTSF::_BeginAbandonedHandoffCleanup(
-    com_ptr<ITfContext> context, com_ptr<ITfComposition> composition) {
+    com_ptr<ITfContext> context,
+    com_ptr<ITfComposition> composition) {
   if (!context || !composition || !_IsCurrentComposition(composition) ||
       _abandonedHandoffPauseToken != 0)
     return;
@@ -801,15 +799,15 @@ void WeaselTSF::_BeginAbandonedHandoffCleanup(
     _ScheduleAbandonedHandoffCleanup();
 }
 
-bool WeaselTSF::_IsAbandonedHandoffCleanupCurrent(
-    ITfComposition* composition, UINT64 pauseToken) const {
+bool WeaselTSF::_IsAbandonedHandoffCleanupCurrent(ITfComposition* composition,
+                                                  UINT64 pauseToken) const {
   return pauseToken != 0 && _abandonedHandoffPauseToken == pauseToken &&
          _abandonedHandoffComposition == composition;
 }
 
 void WeaselTSF::_ScheduleAbandonedHandoffCleanup() {
-  if (_abandonedHandoffPauseToken == 0 ||
-      !_abandonedHandoffContext || !_abandonedHandoffComposition ||
+  if (_abandonedHandoffPauseToken == 0 || !_abandonedHandoffContext ||
+      !_abandonedHandoffComposition ||
       !weasel::tsf::ShouldScheduleAbandonedHandoffCleanup(
           _abandonedHandoffRequestOutstanding, _abandonedHandoffAttempts))
     return;
@@ -838,14 +836,14 @@ void WeaselTSF::_ScheduleAbandonedHandoffCleanup() {
   }
 }
 
-void WeaselTSF::_OnAbandonedHandoffCleanupReleased(
-    ITfComposition* composition, UINT64 pauseToken) {
+void WeaselTSF::_OnAbandonedHandoffCleanupReleased(ITfComposition* composition,
+                                                   UINT64 pauseToken) {
   if (_IsAbandonedHandoffCleanupCurrent(composition, pauseToken))
     _abandonedHandoffRequestOutstanding = false;
 }
 
-void WeaselTSF::_FinishAbandonedHandoffCleanup(
-    ITfComposition* composition, UINT64 pauseToken) {
+void WeaselTSF::_FinishAbandonedHandoffCleanup(ITfComposition* composition,
+                                               UINT64 pauseToken) {
   if (!_IsAbandonedHandoffCleanupCurrent(composition, pauseToken))
     return;
   if (_IsCurrentComposition(composition))
@@ -996,7 +994,8 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
     if (shouldResetRequestEngine()) {
       _AbortComposition();
     } else {
-      _RetireUnappliedCandidateFinalization(failedContext, failureIdentity.serial);
+      _RetireUnappliedCandidateFinalization(failedContext,
+                                            failureIdentity.serial);
       _ScheduleNextResponseApply(false);
     }
   };
@@ -1083,8 +1082,7 @@ STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
                                         _abandonedHandoffPauseToken)) {
     // Host termination is authoritative even if our own cleanup edit
     // session was never granted a lock.
-    _FinishAbandonedHandoffCleanup(pComposition,
-                                   _abandonedHandoffPauseToken);
+    _FinishAbandonedHandoffCleanup(pComposition, _abandonedHandoffPauseToken);
     return S_OK;
   }
   if (!_IsCurrentComposition(pComposition))

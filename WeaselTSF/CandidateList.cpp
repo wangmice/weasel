@@ -584,8 +584,8 @@ void WeaselTSF::_RenewCandidateUI(com_ptr<ITfContext> pContext,
     _UpdateUI(ctx, status);
 }
 
-void WeaselTSF::_RetireUnappliedCandidateFinalization(
-    ITfContext* context, UINT64 responseSerial) {
+void WeaselTSF::_RetireUnappliedCandidateFinalization(ITfContext* context,
+                                                      UINT64 responseSerial) {
   if (_cand->HasAcceptedFinalization(responseSerial) &&
       _pCandidateUIContext == context)
     _EndUI();
@@ -636,10 +636,9 @@ CandidateSelectResult WeaselTSF::_SelectCandidateOnCurrentPage(
 
   // Legacy servers return zero even for accepted selections. Without their
   // explicit acknowledgement, only fresh committed text proves success.
-  const bool accepted =
-      result == CandidateSelectResult::Selected ||
-      (result == CandidateSelectResult::LegacyResponse &&
-       _pendingCommit.size() > previous_commit_length);
+  const bool accepted = result == CandidateSelectResult::Selected ||
+                        (result == CandidateSelectResult::LegacyResponse &&
+                         _pendingCommit.size() > previous_commit_length);
   if (accepted)
     _cand->MarkFinalizationAccepted(received_serial);
 

@@ -204,7 +204,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _BeginAbandonedHandoffCleanup(com_ptr<ITfContext> context,
                                      com_ptr<ITfComposition> composition);
   bool _IsAbandonedHandoffCleanupCurrent(ITfComposition* composition,
-                                        UINT64 pauseToken) const;
+                                         UINT64 pauseToken) const;
   void _ScheduleAbandonedHandoffCleanup();
   void _OnAbandonedHandoffCleanupReleased(ITfComposition* composition,
                                           UINT64 pauseToken);
@@ -233,7 +233,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   // A confirmed candidate selection with an unapplyable TSF response must
   // retire its old UIElement instead of leaving Finalize permanently locked.
   void _RetireUnappliedCandidateFinalization(ITfContext* context,
-                                              UINT64 responseSerial);
+                                             UINT64 responseSerial);
   com_ptr<ITfContext> _GetUIContextDocument();
 
   /* Display Attribute */

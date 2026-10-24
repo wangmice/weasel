@@ -15,8 +15,8 @@ using weasel::tsf::RetryBudget;
 using weasel::tsf::ScheduleFailureAction;
 using weasel::tsf::ShouldClearCompositionRange;
 using weasel::tsf::ShouldPublishCandidateImmediately;
-using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
 using weasel::tsf::ShouldRetireAbandonedHandoff;
+using weasel::tsf::ShouldRetireCandidateOnApplyDispose;
 using weasel::tsf::ShouldScheduleAbandonedHandoffCleanup;
 
 static_assert(CanRetryApplyFailure(ApplyProgress::BeforeCommit,
