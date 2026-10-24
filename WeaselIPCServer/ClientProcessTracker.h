@@ -99,6 +99,9 @@ class ClientProcessTracker {
       entries_[pid] = std::move(entry);
     }
 
+    // The entry stays in the registry while WatchExit installs its callback.
+    // An immediate exit may mark it dead, but cannot retire/destroy the
+    // Process until the new watch has been published.
     Entry* installed = nullptr;
     ClientProcessToken token;
     {
@@ -126,14 +129,26 @@ class ClientProcessTracker {
       return std::nullopt;
     }
 
+    bool retired_early = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       const auto it = entries_.find(pid);
       if (it == entries_.end() || it->second->token != token)
         return std::nullopt;
       it->second->watch = std::move(watch);
+      it->second->registering = false;
+      if (it->second->exit_notified) {
+        auto retired = std::move(it->second);
+        entries_.erase(it);
+        retired->retired_next = std::move(retired_head_);
+        retired_head_ = std::move(retired);
+        retired_early = true;
+      }
     }
-    return token;
+    if (retired_early)
+      retire_cv_.notify_one();
+    return retired_early ? std::nullopt
+                         : std::optional<ClientProcessToken>(token);
   }
 
   // Call after acquiring the session/API serialization lock and immediately
@@ -201,6 +216,7 @@ class ClientProcessTracker {
     ClientProcessToken token;
     std::unique_ptr<Process> process;
     std::unique_ptr<ExitWatch> watch;
+    bool registering = true;
     bool exit_notified = false;
     // Intrusive retirement list avoids allocating from a noexcept wait
     // callback.
@@ -216,6 +232,7 @@ class ClientProcessTracker {
 
   void HandleExit(std::uint32_t pid, ClientProcessToken token) noexcept {
     ExitCallback callback;
+    bool retired_now = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (stopping_ || stopped_)
@@ -227,17 +244,21 @@ class ClientProcessTracker {
       }
 
       it->second->exit_notified = true;
-      auto retired = std::move(it->second);
-      entries_.erase(it);
-      retired->retired_next = std::move(retired_head_);
-      retired_head_ = std::move(retired);
+      if (!it->second->registering) {
+        auto retired = std::move(it->second);
+        entries_.erase(it);
+        retired->retired_next = std::move(retired_head_);
+        retired_head_ = std::move(retired);
+        retired_now = true;
+      }
       callback = on_exit_;
     }
 
-    // Never destroy Win32ExitWatch from its own registered-wait callback:
-    // UnregisterWaitEx(..., INVALID_HANDLE_VALUE) blocks for callbacks to exit.
-    // A dedicated reaper owns destruction after this callback releases locks.
-    retire_cv_.notify_one();
+    // A callback may run before WatchExit returns. In that case Resolve()
+    // publishes the watch and enqueues retirement after registration finishes.
+    // Never destroy a watch from its own registered-wait callback.
+    if (retired_now)
+      retire_cv_.notify_one();
 
     if (callback) {
       try {
