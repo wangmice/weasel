@@ -87,12 +87,31 @@ if ($finalize -notmatch '_finalization_started\s*=\s*true' -or
     $finalize -notmatch 'Destroy\(\);[\s\S]*?return E_FAIL') {
   throw 'candidate Finalize must retry only definite failures and retire ambiguous confirmations'
 }
-if ($finalize -notmatch '_registration_in_progress' -or
-    $finalize -notmatch '_deferred_finalize\s*=\s*true' -or
+# BeginUIElement is an external COM boundary and can call SetSelection or
+# Finalize before registering the element. Selection updates remain valid in
+# that phase, but an early Finalize must fail without changing Rime state.
+$registrationGuard = $finalize.IndexOf('if (_registration_in_progress)')
+$normalFinalize = $finalize.IndexOf('if (!_uiStarted', $registrationGuard)
+if ($registrationGuard -lt 0 -or $normalFinalize -le $registrationGuard) {
+  throw 'Finalize must reject selection before UI registration completes'
+}
+$guardBody = $finalize.Substring($registrationGuard, $normalFinalize - $registrationGuard)
+$setSelectionStart = $candidate.IndexOf('STDMETHODIMP CCandidateList::SetSelection(UINT nIndex)')
+$setSelectionEnd = $candidate.IndexOf('STDMETHODIMP CCandidateList::Finalize(void)', $setSelectionStart)
+if ($guardBody -notmatch 'return E_FAIL;' -or
+    $guardBody -match '(return S_OK|_SelectCandidateOnCurrentPage|m_client\.)' -or
+    $setSelectionStart -lt 0 -or $setSelectionEnd -le $setSelectionStart) {
+  throw 'early Finalize must not commit, report success or issue IPC'
+}
+$setSelection = $candidate.Substring($setSelectionStart, $setSelectionEnd - $setSelectionStart)
+if ($setSelection -notmatch '_registration_in_progress' -or
+    $setSelection -notmatch 'nIndex\s*>=\s*cinfo\.candies\.size\(\)' -or
     $candidate -notmatch '_registration_in_progress\s*=\s*true' -or
     $candidate -notmatch 'BeginUIElement\(this,' -or
-    $candidate -notmatch 'if\s*\(_deferred_finalize\)\s*\{[\s\S]*?Finalize\(\)') {
-  throw 'BeginUIElement reentrant confirmation must be deferred until registration completes'
+    $candidate -notmatch '_registration_in_progress\s*=\s*false' -or
+    $candidate -match '_deferred_finalize' -or
+    $candidateHeader -match '_deferred_finalize') {
+  throw 'registration may update selection but cannot retain a pending confirm'
 }
 if ($candidate -notmatch 'CCandidateList::SetIntegrationStyle\([\s\S]*?E_NOTIMPL' -or
     $candidate -notmatch 'CCandidateList::OnKeyDown\([\s\S]*?\*pIsEaten\s*=\s*FALSE' -or

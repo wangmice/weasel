@@ -212,15 +212,12 @@ STDMETHODIMP CCandidateList::SetSelection(UINT nIndex) {
 STDMETHODIMP CCandidateList::Finalize(void) {
   if (!_tsf)
     return E_UNEXPECTED;
-  if (_registration_in_progress) {
-    // BeginUIElement may invoke this before an element ID has been returned.
-    // Defer confirmation until after BeginUIElement completes registration.
-    if (!_pContextDocument || _deferred_finalize ||
-        _ui->ctx().cinfo.candies.empty())
-      return E_FAIL;
-    _deferred_finalize = true;
-    return S_OK;
-  }
+  // A host can call Finalize synchronously from BeginUIElement. Until
+  // registration returns, no valid UIElement ID exists to end and the
+  // result of an eventual selection cannot be reported to this caller.
+  // Reject early confirmation instead of queuing it and returning S_OK.
+  if (_registration_in_progress)
+    return E_FAIL;
   if (!_uiStarted || !_pContextDocument || _finalization_started ||
       _tsf->_pCandidateUIContext != _pContextDocument)
     return E_FAIL;
@@ -451,7 +448,6 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
   // response/composition target before registering the UIElement.
   _pContextDocument = pContext;
   _registration_in_progress = true;
-  _deferred_finalize = false;
   _finalization_started = false;
   _pbShow = TRUE;
 
@@ -459,13 +455,11 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
       pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
   _registration_in_progress = false;
   if (FAILED(begin_result)) {
-    _deferred_finalize = false;
     _pContextDocument = nullptr;
     return;
   }
   if (_pContextDocument != pContext) {
     // Focus/teardown may have reentered during BeginUIElement.
-    _deferred_finalize = false;
     pUIElementMgr->EndUIElement(uiid);
     return;
   }
@@ -481,14 +475,9 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
       _ui_warmed_up = true;
     }
   }
-  if (_deferred_finalize) {
-    _deferred_finalize = false;
-    Finalize();
-  }
 }
 
 void CCandidateList::EndUI() {
-  _deferred_finalize = false;
   if (!_uiStarted) {
     _pContextDocument = nullptr;
     return;
