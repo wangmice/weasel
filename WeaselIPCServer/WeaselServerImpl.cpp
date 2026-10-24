@@ -234,7 +234,17 @@ void ServerImpl::_OnClientProcessExit(ClientProcessToken token) {
   // the same API serialization boundary as normal pipe dispatch so Rime and
   // SessionManager state can never be mutated concurrently.
   std::lock_guard guard(g_api_mutex);
-  m_sessionEpoch.fetch_add(1, std::memory_order_relaxed);
+  // Invalidate only sessions belonging to the exited process generation.
+  // Unrelated live sessions must keep their queued ASCII commands.
+  {
+    std::lock_guard<std::mutex> lock(m_controlMutex);
+    for (auto it = m_controlSessions.begin(); it != m_controlSessions.end();) {
+      if (it->second.owner && *it->second.owner == token)
+        it = m_controlSessions.erase(it);
+      else
+        ++it;
+    }
+  }
   if (m_pRequestHandler)
     session_router.RemoveClient(token);
 
@@ -278,8 +288,7 @@ LRESULT ServerImpl::OnColorChange(UINT uMsg,
       m_appliedDarkMode.load(std::memory_order_acquire) !=
           (dark_mode ? 1 : 0)) {
     m_darkMode = dark_mode;
-    _QueueControlTask(
-        {ControlTaskKind::Color, 0, dark_mode != FALSE, 0});
+    _QueueControlTask({ControlTaskKind::Color, 0, dark_mode != FALSE, 0});
   }
   return 0;
 }
@@ -340,9 +349,10 @@ LRESULT ServerImpl::OnCommand(UINT uMsg,
   // serialized path through _HandleCommand.
   if (uID == ID_WEASELTRAY_ENABLE_ASCII || uID == ID_WEASELTRAY_DISABLE_ASCII) {
     const DWORD session_id = static_cast<DWORD>(lParam);
+    // _QueueControlTask snapshots the target's lifetime under the short
+    // control mutex without waiting on the Rime API lock.
     _QueueControlTask({ControlTaskKind::Ascii, session_id,
-                       uID == ID_WEASELTRAY_ENABLE_ASCII,
-                       m_sessionEpoch.load(std::memory_order_relaxed)});
+                       uID == ID_WEASELTRAY_ENABLE_ASCII, 0});
     return 0;
   }
   return _HandleCommand(uID, lParam, bHandled);
@@ -403,6 +413,7 @@ void ServerImpl::_StopControlWorker() {
     std::lock_guard<std::mutex> lock(m_controlMutex);
     m_controlStopping = true;
     m_controlTasks.clear();
+    m_deferredControlTask.reset();
   }
   m_controlCv.notify_all();
   // _StopRuntime arms the existing hard watchdog before joining. A stuck
@@ -421,8 +432,8 @@ void ServerImpl::_SetControlSuspended(bool suspended) {
 }
 
 void ServerImpl::_QueueControlTask(ControlTask task) {
-  // Starting work can be queued until the backend reaches Ready. Maintenance
-  // work is deferred; Stopping never accepts new work.
+  // The window message thread never waits on g_api_mutex. A targeted command
+  // captures the current identity of *that* session only.
   if (_RuntimeLifecycle() == ServerLifecycle::Stopping)
     return;
   try {
@@ -430,19 +441,42 @@ void ServerImpl::_QueueControlTask(ControlTask task) {
       std::lock_guard<std::mutex> lock(m_controlMutex);
       if (m_controlStopping)
         return;
+      if (task.kind == ControlTaskKind::Ascii && task.session_id) {
+        const auto target = m_controlSessions.find(task.session_id);
+        if (target == m_controlSessions.end())
+          return;
+        task.session_generation = target->second.generation;
+      }
+
       const auto same_target = [&task](const ControlTask& pending) {
         return pending.kind == task.kind &&
                (task.kind == ControlTaskKind::Color ||
                 pending.session_id == task.session_id);
       };
-      const auto existing =
-          std::find_if(m_controlTasks.begin(), m_controlTasks.end(), same_target);
-      if (existing != m_controlTasks.end())
-        m_controlTasks.erase(existing);
-      // The message thread never waits for librime or an unbounded queue.
-      if (m_controlTasks.size() >= kMaxControlTasks)
-        m_controlTasks.pop_front();
-      m_controlTasks.push_back(task);
+      // Maintenance may have deferred one task after dequeuing it. Replace
+      // that slot directly; no allocation or reordering of an older command.
+      if (m_deferredControlTask && same_target(*m_deferredControlTask)) {
+        *m_deferredControlTask = task;
+      } else {
+        const auto existing = std::find_if(
+            m_controlTasks.begin(), m_controlTasks.end(), same_target);
+        if (existing != m_controlTasks.end())
+          m_controlTasks.erase(existing);
+
+        if (m_controlTasks.size() >= kMaxControlTasks) {
+          // A pending theme is a state synchronization, not a disposable
+          // command. Evict an older ASCII task rather than dropping it.
+          const auto victim = std::find_if(
+              m_controlTasks.begin(), m_controlTasks.end(),
+              [](const ControlTask& pending) {
+                return pending.kind == ControlTaskKind::Ascii;
+              });
+          if (victim == m_controlTasks.end())
+            return;
+          m_controlTasks.erase(victim);
+        }
+        m_controlTasks.push_back(task);
+      }
     }
     m_controlCv.notify_one();
   } catch (const std::exception& ex) {
@@ -452,24 +486,23 @@ void ServerImpl::_QueueControlTask(ControlTask task) {
   }
 }
 
-void ServerImpl::_RequeueDeferredControlTask(ControlTask task) {
-  // Called only after releasing g_api_mutex. Never replace a newer request
-  // submitted while this task was waiting for the API lock.
+void ServerImpl::_RequeueDeferredControlTask(ControlTask task) noexcept {
+  // Only the worker calls this helper. Store its one in-flight task in a
+  // pre-existing optional slot: maintenance deferral cannot allocate or
+  // throw when resources are exhausted.
   {
     std::lock_guard<std::mutex> lock(m_controlMutex);
     if (m_controlStopping)
       return;
-    const auto existing = std::find_if(
+    const auto newer = std::find_if(
         m_controlTasks.begin(), m_controlTasks.end(),
         [&task](const ControlTask& pending) {
           return pending.kind == task.kind &&
                  (task.kind == ControlTaskKind::Color ||
                   pending.session_id == task.session_id);
         });
-    if (existing != m_controlTasks.end() ||
-        m_controlTasks.size() >= kMaxControlTasks)
-      return;
-    m_controlTasks.push_front(task);
+    if (newer == m_controlTasks.end())
+      m_deferredControlTask = task;
   }
   m_controlCv.notify_one();
 }
@@ -481,17 +514,23 @@ void ServerImpl::_RunControlWorker() {
       std::unique_lock<std::mutex> lock(m_controlMutex);
       m_controlCv.wait(lock, [this] {
         return m_controlStopping ||
-               (!m_controlSuspended && !m_controlTasks.empty());
+               (!m_controlSuspended &&
+                (m_deferredControlTask || !m_controlTasks.empty()));
       });
       if (m_controlStopping)
         return;
-      task = m_controlTasks.front();
-      m_controlTasks.pop_front();
+      if (m_deferredControlTask) {
+        task = *m_deferredControlTask;
+        m_deferredControlTask.reset();
+      } else {
+        task = m_controlTasks.front();
+        m_controlTasks.pop_front();
+      }
     }
 
     bool deferred_for_maintenance = false;
     {
-      // No control-task mutex is held when acquiring the API lock.
+      // Never hold the queue mutex while acquiring g_api_mutex.
       std::lock_guard<std::mutex> api_lock(g_api_mutex);
       const ServerLifecycle lifecycle = _RuntimeLifecycle();
       if (lifecycle == ServerLifecycle::Maintenance) {
@@ -503,15 +542,25 @@ void ServerImpl::_RunControlWorker() {
               m_pRequestHandler->UpdateColorTheme(task.value ? TRUE : FALSE);
               m_appliedDarkMode.store(task.value ? 1 : 0,
                                       std::memory_order_release);
-            } else if (!task.session_id ||
-                       (m_sessionEpoch.load(std::memory_order_relaxed) ==
-                            task.session_epoch &&
-                        m_pRequestHandler->FindSession(task.session_id) ==
-                            task.session_id)) {
-              // A targeted command must not affect a recycled session ID.
-              // Session creation, disposal and maintenance invalidate it.
-              m_pRequestHandler->SetOption(task.session_id, "ascii_mode",
-                                           task.value);
+            } else {
+              bool valid_target = task.session_id == 0;
+              if (task.session_id) {
+                // IPC calls hold g_api_mutex before the control mutex. An
+                // unrelated session's creation/removal cannot invalidate this
+                // target, but removal/recreation and owner exit can.
+                std::lock_guard<std::mutex> lock(m_controlMutex);
+                const auto target = m_controlSessions.find(task.session_id);
+                valid_target = target != m_controlSessions.end() &&
+                               target->second.generation ==
+                                   task.session_generation;
+              }
+              if (valid_target &&
+                  (!task.session_id ||
+                   m_pRequestHandler->FindSession(task.session_id) ==
+                       task.session_id)) {
+                m_pRequestHandler->SetOption(task.session_id, "ascii_mode",
+                                             task.value);
+              }
             }
           }
         } catch (const std::exception& ex) {
@@ -678,6 +727,8 @@ int ServerImpl::Run() {
           dispatch = false;
         } else {
           session_router.SetCurrentOwner(SessionOwner{owner});
+          // Mirror the same process generation for targeted window commands.
+          m_dispatchProcessOwner = owner;
         }
       }
 
@@ -830,8 +881,22 @@ DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
         *channel << msg;
         return true;
       });
-  if (session_id)
-    m_sessionEpoch.fetch_add(1, std::memory_order_relaxed);
+  if (session_id) {
+    // A START_SESSION retry may reuse its ID; refreshing the generation is
+    // conservative and also protects against backend ID recycling.
+    try {
+      std::lock_guard<std::mutex> lock(m_controlMutex);
+      std::uint64_t generation = ++m_nextControlSessionGeneration;
+      if (generation == 0)
+        generation = ++m_nextControlSessionGeneration;
+      m_controlSessions[session_id] =
+          ControlSession{generation, m_dispatchProcessOwner};
+    } catch (const std::exception& ex) {
+      // Do not turn an already-created Rime session into a failed IPC request
+      // just because auxiliary window control bookkeeping exhausted memory.
+      LOG(ERROR) << "Could not track window-control session: " << ex.what();
+    }
+  }
   return session_id;
 }
 
@@ -840,7 +905,10 @@ DWORD ServerImpl::OnEndSession(WEASEL_IPC_COMMAND uMsg,
                                DWORD lParam) {
   if (!m_pRequestHandler)
     return 0;
-  m_sessionEpoch.fetch_add(1, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(m_controlMutex);
+    m_controlSessions.erase(lParam);
+  }
   return m_pRequestHandler->RemoveSession(lParam);
 }
 
@@ -936,7 +1004,10 @@ DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
   // Publish the owner before finalizing Rime. If it exits immediately, the
   // process tracker callback queues behind g_api_mutex and recovers this exact
   // maintenance generation after the acknowledgement path releases the lock.
-  m_sessionEpoch.fetch_add(1, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(m_controlMutex);
+    m_controlSessions.clear();
+  }
   _SetControlSuspended(true);
   m_maintenanceOwner = m_dispatchProcessOwner;
   try {
@@ -974,7 +1045,6 @@ DWORD ServerImpl::OnEndMaintenance(WEASEL_IPC_COMMAND uMsg,
     throw;
   }
   m_maintenanceOwner.reset();
-  m_sessionEpoch.fetch_add(1, std::memory_order_relaxed);
 
   if (!m_pRequestHandler->IsReadyForSessions()) {
     _SetRuntimeLifecycle(ServerLifecycle::Stopping);

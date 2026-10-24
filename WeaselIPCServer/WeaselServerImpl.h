@@ -133,14 +133,18 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
     ControlTaskKind kind = ControlTaskKind::Color;
     DWORD session_id = 0;
     bool value = false;
-    std::uint64_t session_epoch = 0;
+    std::uint64_t session_generation = 0;
+  };
+  struct ControlSession {
+    std::uint64_t generation = 0;
+    std::optional<ClientProcessToken> owner;
   };
   static constexpr std::size_t kMaxControlTasks = 64;
   bool _StartControlWorker();
   void _StopControlWorker();
   void _SetControlSuspended(bool suspended);
   void _QueueControlTask(ControlTask task);
-  void _RequeueDeferredControlTask(ControlTask task);
+  void _RequeueDeferredControlTask(ControlTask task) noexcept;
   void _RunControlWorker();
   /* Bound the complete asynchronous runtime teardown with one hard watchdog. */
   void _StopRuntime();
@@ -185,12 +189,14 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
       m_pPhysicalToLogicalPointForPerMonitorDPI;
   BOOL m_darkMode;  // Window-thread desired theme
   std::atomic<int> m_appliedDarkMode;  // Last successfully applied theme
-  // Session generation invalidates queued targeted ASCII commands after
-  // session creation/disposal, process exit or maintenance.
-  std::atomic<std::uint64_t> m_sessionEpoch{0};
+  // Protected by m_controlMutex; session generations are local to one ID,
+  // preventing unrelated process/session changes from dropping commands.
   std::mutex m_controlMutex;
+  std::uint64_t m_nextControlSessionGeneration = 0;
+  std::map<DWORD, ControlSession> m_controlSessions;
   std::condition_variable m_controlCv;
   std::deque<ControlTask> m_controlTasks;
+  std::optional<ControlTask> m_deferredControlTask;
   std::thread m_controlWorker;
   bool m_controlSuspended = false;
   bool m_controlStopping = false;

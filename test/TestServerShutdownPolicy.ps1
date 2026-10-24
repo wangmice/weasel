@@ -92,9 +92,27 @@ if ($header -notmatch 'kMaxControlTasks\s*=\s*64' -or
     $serverImpl -notmatch 'm_controlTasks\.pop_front\(\)') {
   throw 'control queue must be bounded, with pending tasks coalesced'
 }
-if ($serverImpl -notmatch 'm_sessionEpoch\.fetch_add\(' -or
-    $serverImpl -notmatch 'm_sessionEpoch\.load\([\s\S]*?task\.session_epoch') {
-  throw 'targeted ASCII work must reject invalidated session generations'
+if ($header -notmatch 'std::map<DWORD,\s*ControlSession>\s+m_controlSessions' -or
+    $serverImpl -notmatch 'm_controlSessions\[session_id\]' -or
+    $serverImpl -notmatch 'target->second\.generation\s*==\s*task\.session_generation' -or
+    $serverImpl -notmatch 'm_controlSessions\.erase\(lParam\)' -or
+    $serverImpl -notmatch 'm_controlSessions\.clear\(\)' -or
+    $serverImpl -notmatch 'it->second\.owner\s*&&\s*\*it->second\.owner\s*==\s*token') {
+  throw 'targeted ASCII commands must use per-session generations and owner-exit invalidation'
+}
+if ($serverImpl -match 'm_sessionEpoch' -or
+    $serverImpl -notmatch 'm_dispatchProcessOwner\s*=\s*owner;') {
+  throw 'unrelated sessions must not globally invalidate targeted ASCII commands'
+}
+if ($serverImpl -notmatch 'pending\.kind\s*==\s*ControlTaskKind::Ascii' -or
+    $serverImpl -notmatch 'm_controlTasks\.erase\(victim\)') {
+  throw 'queue saturation must evict only ASCII commands, never a pending theme'
+}
+if ($header -notmatch 'std::optional<ControlTask>\s+m_deferredControlTask' -or
+    $serverImpl -notmatch '_RequeueDeferredControlTask\(ControlTask task\) noexcept' -or
+    $serverImpl -notmatch 'm_deferredControlTask\s*=\s*task' -or
+    $serverImpl -match 'm_controlTasks\.push_front\(task\)') {
+  throw 'maintenance deferral must use an allocation-free, no-throw task slot'
 }
 $controlStop = $runtimeStop.IndexOf('_StopControlWorker();')
 if ($controlStop -lt 0 -or $arm -ge $controlStop -or $controlStop -ge $stopPipe) {
