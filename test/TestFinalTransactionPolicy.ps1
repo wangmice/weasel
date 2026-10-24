@@ -75,20 +75,14 @@ Assert-Policy ($installer.Contains('SetErrorLevel $DeployExitCode')) `
 Assert-Policy ($installer.Contains('$(DEPLOYFAILED)')) `
   'interactive deployment failure must have a distinct warning instead of setup rollback'
 
-# Modify-install must roll persistent/profile state back when runtime restart or
-# deployment fails, and a deployment failure must reload the restored state.
+# Before deployment begins, a failed server restart must restore registry/profile
+# state. Once deployment begins, its non-transactional data must not be rolled back.
 Assert-Policy ($setup.Contains('auto rollback_modify_state = [&]()')) `
   'modify install must define one rollback path for registry/profile state'
 Assert-Policy ($setup.Contains('if (!RestartServer(dir))')) `
   'modify install must distinguish server restart failure from deployment failure'
 Assert-Policy ($setup.Contains('const DeployerRunResult deploy_result = RunDeployer(dir);')) `
   'modify install must classify deployer completion before transactional recovery'
-Assert-Policy ($setup.Contains('DeployerRunResult::FailedStillRunning')) `
-  'modify install must distinguish a live failed deployer from a confirmed stop'
-Assert-Policy ([regex]::Matches($setup, 'rollback_modify_state\(\);').Count -ge 2) `
-  'both restart and deployment failure paths must roll back modify-install state'
-Assert-Policy ($setup.Contains('(void)RestartServer(dir);')) `
-  'deployment failure rollback must best-effort reload the restored registry state'
 
 # Missing TSF DLLs must not make uninstall permanently non-idempotent. TSF
 # unregister removes profiles/categories, while the executable must also delete

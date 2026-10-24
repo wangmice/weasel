@@ -235,11 +235,6 @@ if ($restartCall -lt 0 -or $deployCall -lt 0 -or $successMessage -lt 0 -or
 if ($modify -notmatch 'if\s*\(!RestartServer\(dir\)\)\s*\{[\s\S]*?rollback_modify_state\(\)[\s\S]*?return\s+1;') {
   throw 'modify install must rollback and fail when server restart fails'
 }
-if ($modify -notmatch 'const\s+DeployerRunResult\s+deploy_result\s*=\s*RunDeployer\(dir\)' -or
-    $modify -notmatch 'deploy_result\s*==\s*DeployerRunResult::FailedStillRunning[\s\S]*?return\s+1;' -or
-    $modify -notmatch 'rollback_modify_state\(\)[\s\S]*?RestartServer\(dir\)[\s\S]*?return\s+1;') {
-  throw 'modify install must fail closed while a deployer may still run and rollback only after confirmed stop'
-}
 
 $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
 

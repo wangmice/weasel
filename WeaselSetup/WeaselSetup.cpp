@@ -373,17 +373,10 @@ static int CustomInstall(bool installing) {
   }
   const DeployerRunResult deploy_result = RunDeployer(dir);
   if (deploy_result != DeployerRunResult::Success) {
-    if (deploy_result == DeployerRunResult::FailedStillRunning) {
-      // The deployer may still own maintenance and mutate Rime data. Do not
-      // restore registry/profile state or restart WeaselServer underneath it.
-      return 1;
-    }
-
-    (void)rollback_modify_state();
-    // The deployer is confirmed stopped. Restore the previous registry/profile
-    // state, then restart the server so its process-local paths and Rime state
-    // no longer reference the failed modification.
-    (void)RestartServer(dir);
+    // Deployment writes are not transactional. Even a deployer that exited
+    // with failure may have already changed Rime configs or dictionaries.
+    // Preserve the requested registry/TSF profile and do not restart the
+    // server, regardless of whether the deployer has exited.
     return 1;
   }
   MSG_BY_IDS(IDS_STR_MODIFY_SUCCESS_INFO, IDS_STR_MODIFY_SUCCESS_CAP,
