@@ -300,6 +300,14 @@ void WeaselPanel::_ApplyVisibility(PanelVisibility cmd, size_t millisec) {
       _RequestPaintRecovery();
     }
   }
+  // A newly shown panel must not expose an old/empty swap-chain frame while
+  // its latest layout waits behind an asynchronous redraw message.
+  // Only the hidden-to-visible transition may paint synchronously here.
+  if (cmd != PanelVisibility::Hide && !m_shown && m_layout_ready) {
+    const bool pending = m_redrawPending.exchange(false);
+    if (pending || !m_lastPaintSucceeded)
+      DoPaint();
+  }
   ::ShowWindow(m_hWnd, cmd == PanelVisibility::Hide ? SW_HIDE : SW_SHOWNA);
   m_shown = cmd != PanelVisibility::Hide;
   if (cmd == PanelVisibility::ShowWithTimeout) {
