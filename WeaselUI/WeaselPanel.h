@@ -28,6 +28,8 @@ class WeaselPanel {
   ~WeaselPanel();
   void MoveTo(RECT rc);
   void Refresh();
+  // Explicit one-shot synchronous first-frame warmup; ordinary refresh stays async.
+  bool WarmUp();
   void ApplyUpdate(const Context& ctx, const Status& status);
   void ApplyStyle(const UIStyle& style);
   bool IsShown() const { return m_shown.load(); }
@@ -168,6 +170,7 @@ class WeaselPanel {
   std::atomic<bool> m_autohide_counting{false};
   interaction_policy::PendingAutoHideState m_pending_autohide;
   bool m_layout_ready = false;
+  bool m_lastPaintSucceeded = false;
   std::atomic<bool> m_redrawPending{false};
   static constexpr BYTE MAX_PAINT_RECOVERY = 2;
   BYTE m_paint_recovery_left = MAX_PAINT_RECOVERY;

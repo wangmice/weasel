@@ -478,10 +478,11 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
     _ui->style() = _style;
     _MakeUIWindow();
     if (!_ui_warmed_up && _ui->hwnd() != nullptr) {
-      // Warm up render resources before first visible paint in TSF path.
-      _ui->Refresh();
+      // Keep first-frame warmup synchronous even though ordinary updates
+      // now coalesce asynchronous paints. Retry if the frame failed.
+      const bool warmed = _ui->WarmUp();
       _ui->Hide();
-      _ui_warmed_up = true;
+      _ui_warmed_up = warmed;
     }
   }
 }

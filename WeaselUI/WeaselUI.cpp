@@ -15,6 +15,7 @@ class UIImpl {
       return;
     panel.Refresh();
   }
+  bool WarmUp() { return panel.WarmUp(); }
   void RepositionPreview() {
     if (panel.IsWindow())
       panel.RepositionPreview();
@@ -71,6 +72,9 @@ void UI::Refresh() {
   if (pimpl_) {
     pimpl_->Refresh();
   }
+}
+bool UI::WarmUp() {
+  return pimpl_ && pimpl_->WarmUp();
 }
 void UI::RepositionPreview() {
   if (pimpl_)

@@ -49,6 +49,8 @@ class UI {
   BOOL IsShown() const;
   // 重绘界面
   void Refresh();
+  // Explicit synchronous first-frame warmup for TSF candidate UI only.
+  bool WarmUp();
   // Reattach an undragged preview window to its parent dialog.
   void RepositionPreview();
   // 置输入焦点位置（光标跟随时移动候选窗）但不重绘

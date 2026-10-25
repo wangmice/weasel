@@ -498,6 +498,18 @@ void WeaselPanel::_UpdateHideCandidates() {
                     (margin_negative && !show_tips && !show_schema_menu);
 }
 
+bool WeaselPanel::WarmUp() {
+  // First-show warmup is the only path allowed to wait for Present here.
+  if (!IsWindow() || !_IsUiThread())
+    return false;
+  m_lastPaintSucceeded = false;
+  Refresh();
+  if (!IsWindow())
+    return false;
+  DoPaint();
+  return m_lastPaintSucceeded;
+}
+
 void WeaselPanel::Refresh() {
   if (!_IsUiThread()) {
     ::PostMessage(m_hWnd, WM_WEASEL_REFRESH, 0, 0);
@@ -572,8 +584,14 @@ void WeaselPanel::RedrawWindow() {
     return;
   // Some hosts (including MobaXterm) discard WM_PAINT. Post a separate paint
   // message so ordinary updates do not wait for Present; coalesce redraws.
-  if (!::PostMessage(hwnd, WM_WEASEL_REDRAW, 0, 0))
+  if (!::PostMessage(hwnd, WM_WEASEL_REDRAW, 0, 0)) {
     m_redrawPending.store(false);
+    // Never draw on an IPC worker. Only the live HWND's owner may recover
+    // a failed post synchronously; a later update retries otherwise.
+    if (m_hWnd == hwnd && ::IsWindow(hwnd) &&
+        ::GetWindowThreadProcessId(hwnd, nullptr) == ::GetCurrentThreadId())
+      DoPaint();
+  }
 }
 
 void WeaselPanel::RepositionPreview() {
@@ -623,6 +641,7 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
                       10, 10, parent, nullptr, m_windowClassModule, this);
   if (m_hWnd) {
     m_redrawPending.store(false);
+    m_lastPaintSucceeded = false;
     m_fullscreen_font_active = false;
     m_fullscreen_font_snapshot = {};
     m_layout_ready = false;
@@ -673,6 +692,7 @@ void WeaselPanel::_UpdateOffsetY(CRect& arc, CRect& prc) {
 }
 
 void WeaselPanel::DoPaint() {
+  m_lastPaintSucceeded = false;
   try {
     _DoPaint();
   } catch (...) {
@@ -770,6 +790,7 @@ void WeaselPanel::_DoPaint() {
     return;
   }
   m_octx = m_ctx;
+  m_lastPaintSucceeded = true;
   m_paint_recovery_left = MAX_PAINT_RECOVERY;
 }
 
@@ -1543,6 +1564,7 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
     case WM_NCDESTROY:
       SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
       m_redrawPending.store(false);
+      m_lastPaintSucceeded = false;
       m_pending_autohide.Reset();
       m_hWnd = nullptr;
       return DefWindowProc(hwnd, uMsg, wParam, lParam);
