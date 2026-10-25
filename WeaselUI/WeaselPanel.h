@@ -168,6 +168,7 @@ class WeaselPanel {
   std::atomic<bool> m_autohide_counting{false};
   interaction_policy::PendingAutoHideState m_pending_autohide;
   bool m_layout_ready = false;
+  std::atomic<bool> m_redrawPending{false};
   static constexpr BYTE MAX_PAINT_RECOVERY = 2;
   BYTE m_paint_recovery_left = MAX_PAINT_RECOVERY;
   struct TextFormatsSnapshot {

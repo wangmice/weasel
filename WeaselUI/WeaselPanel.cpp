@@ -567,13 +567,13 @@ void WeaselPanel::_RequestPaintRecovery() {
 }
 
 void WeaselPanel::RedrawWindow() {
-  if (!_IsUiThread()) {
-    ::PostMessage(m_hWnd, WM_WEASEL_REDRAW, 0, 0);
+  const HWND hwnd = m_hWnd;
+  if (!hwnd || m_redrawPending.exchange(true))
     return;
-  }
-  // Some hosts (including MobaXterm) discard WM_PAINT. Render immediately on
-  // the UI thread, using the composition swap chain rather than layered GDI.
-  DoPaint();
+  // Some hosts (including MobaXterm) discard WM_PAINT. Post a separate paint
+  // message so ordinary updates do not wait for Present; coalesce redraws.
+  if (!::PostMessage(hwnd, WM_WEASEL_REDRAW, 0, 0))
+    m_redrawPending.store(false);
 }
 
 void WeaselPanel::RepositionPreview() {
@@ -622,6 +622,7 @@ BOOL WeaselPanel::Create(HWND parent, bool preview_mode) {
                       WS_POPUP | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT,
                       10, 10, parent, nullptr, m_windowClassModule, this);
   if (m_hWnd) {
+    m_redrawPending.store(false);
     m_fullscreen_font_active = false;
     m_fullscreen_font_snapshot = {};
     m_layout_ready = false;
@@ -1496,7 +1497,8 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
         Refresh();
       return 0;
     case WM_WEASEL_REDRAW:
-      RedrawWindow();
+      if (m_redrawPending.exchange(false))
+        DoPaint();
       return 0;
     case WM_WEASEL_MOVETO: {
       std::unique_ptr<RECT> rc(reinterpret_cast<RECT*>(lParam));
@@ -1530,6 +1532,8 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
       RepositionPreview();
       return 0;
     case WM_PAINT:
+      // An ordinary paint also satisfies any queued coalesced redraw.
+      m_redrawPending.store(false);
       DoPaint();
       ValidateRect(hwnd, nullptr);
       return 0;
@@ -1538,6 +1542,7 @@ LRESULT WeaselPanel::MsgHandler(HWND hwnd,
       return 0;
     case WM_NCDESTROY:
       SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+      m_redrawPending.store(false);
       m_pending_autohide.Reset();
       m_hWnd = nullptr;
       return DefWindowProc(hwnd, uMsg, wParam, lParam);
