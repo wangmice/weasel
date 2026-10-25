@@ -92,8 +92,9 @@ if ($resizeStart -lt 0 -or $resizeEnd -le $resizeStart) {
   throw 'unable to isolate D2D::OnResize for recovery policy checks'
 }
 $resizeBody = $d2d.Substring($resizeStart, $resizeEnd - $resizeStart)
-if ($resizeBody -notmatch 'RecoverAfterDeviceLoss\(\)') {
-  throw 'D2D::OnResize must delegate device-loss rollover to RecoverAfterDeviceLoss'
+if ($resizeBody -notmatch 'swapChain->ResizeBuffers\([\s\S]*?\);\s*(?://[^\r\n]*\s*)*HR\(hr\);' -or
+    $resizeBody -match 'RecoverAfterDeviceLoss\(\)') {
+  throw 'D2D::OnResize must propagate resize failures to the panel for complete font and layout recovery'
 }
 if ($resizeBody -match 'RecreateAfterDeviceLoss') {
   throw 'D2D::OnResize still duplicates shared generation rollover logic'

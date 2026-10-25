@@ -376,14 +376,8 @@ void D2D::OnResize(UINT width, UINT height) {
   // Resize the swap chain
   HRESULT hr =
       swapChain->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
-  if (hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_REMOVED) {
-    DEBUG << "Device lost during ResizeBuffers: " << HRESULTToString(hr);
-    hr = RecoverAfterDeviceLoss();
-    if (FAILED(hr)) {
-      DEBUG << "shared device recovery failed: " << HRESULTToString(hr);
-    }
-    return;
-  }
+  // The panel must restore font formats and rebuild layout after device loss.
+  // Let its bounded paint-recovery path handle the entire failed frame.
   HR(hr);
   // Retrieve the new swap chain's back buffer
   HR(swapChain->GetBuffer(
