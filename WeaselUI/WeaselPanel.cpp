@@ -514,6 +514,9 @@ bool WeaselPanel::WarmUp() {
   Refresh();
   if (!IsWindow())
     return false;
+  // The synchronous Present satisfies the redraw queued by Refresh.
+  // Clear its marker before painting so a later request can still rearm it.
+  m_redrawPending.exchange(false);
   DoPaint();
   return m_lastPaintSucceeded;
 }
