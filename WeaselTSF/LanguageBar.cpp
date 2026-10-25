@@ -485,8 +485,9 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
     else
       flags &= (~TF_CONVERSIONMODE_FULLSHAPE);
     // Compare against the actual compartment value, not a previous write.
-    // Keep unrelated host-controlled bits intact and avoid redundant OnChange.
-    if (flags != actual_flags)
+    // Initialize an unset compartment even when the desired value is zero.
+    // Preserve unrelated host-controlled bits and avoid redundant OnChange.
+    if (hr == S_FALSE || flags != actual_flags)
       _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   }
 
