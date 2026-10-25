@@ -138,8 +138,8 @@ if ($listenerBody -notmatch 'ServerLifecycleLock\s+session_lifecycle' -or
     $listenerBody.IndexOf('session_lifecycle.Acquire(0)') -gt
         $listenerBody.IndexOf('std::lock_guard guard(g_api_mutex)') -or
     $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
-    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)' -or
-    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
+    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(\s*ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)' -or
+    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(\s*ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
   throw 'server command admission must enforce lifecycle-before-api lock order and monotonic lifecycle transitions'
 }
 

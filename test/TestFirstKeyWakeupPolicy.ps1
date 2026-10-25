@@ -139,7 +139,7 @@ if ($stopFlow -notmatch '_SetRuntimeLifecycle\(ServerLifecycle::Stopping\)' -or
     $runFlow -match '_Module\.RemoveMessageLoop\(\);\s*\{[\s\S]*?lock_guard\s+guard\(g_api_mutex\)') {
   throw 'server stop must publish Stopping and arm watchdog without waiting for g_api_mutex'
 }
-if ($maintenanceFlow -notmatch '_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,\s*ServerLifecycle::Ready\)') {
+if ($maintenanceFlow -notmatch '_TryTransitionRuntimeLifecycle\(\s*ServerLifecycle::Maintenance,\s*ServerLifecycle::Ready\)') {
   throw 'late maintenance cannot overwrite a Stopping server lifecycle'
 }
 $listenerStart = $serverImpl.IndexOf('auto listener = [this]')
@@ -158,8 +158,8 @@ if ($serverImpl -notmatch 'm_startupLifecycleLock\.Acquire\(kServerStartupLifecy
     $serverImpl -notmatch 'ServerLifecycle::Starting' -or
     $serverImpl -notmatch 'WaitForPrimaryPipeReady\(\)[\s\S]*?ServerLifecycle::Ready[\s\S]*?_UnlockStartupLifecycleLock\(\)' -or
     $serverImpl -notmatch 'OnStartSession[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Ready' -or
-    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)[\s\S]*?StartMaintenance\(\)' -or
-    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Maintenance[\s\S]*?EndMaintenance\(\)[\s\S]*?_TryTransitionRuntimeLifecycle\(ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
+    $serverImpl -notmatch 'OnStartMaintenance[\s\S]*?_TryTransitionRuntimeLifecycle\(\s*ServerLifecycle::Ready,[\s\S]*?ServerLifecycle::Maintenance\)[\s\S]*?StartMaintenance\(\)' -or
+    $serverImpl -notmatch 'OnEndMaintenance[\s\S]*?_RuntimeLifecycle\(\)\s*!=\s*ServerLifecycle::Maintenance[\s\S]*?EndMaintenance\(\)[\s\S]*?_TryTransitionRuntimeLifecycle\(\s*ServerLifecycle::Maintenance,[\s\S]*?ServerLifecycle::Ready\)') {
   throw 'server must own lifecycle from singleton publication through Ready and publish maintenance transitions'
 }
 $workerStart = $tsf.IndexOf('void RunServerRecoveryOnce()')
