@@ -815,8 +815,11 @@ void ServerImpl::_StopRuntime() {
     std::abort();
   }
 
-  _StopControlWorker();
+  // Stop admitting new IPC work and drain its API-lock owners first. Joining
+  // the control worker earlier could leave it waiting behind active pipe
+  // dispatch while the listener is still accepting more requests.
   _StopPipeServer();
+  _StopControlWorker();
   process_tracker.Stop();
   m_runtimeStopped = true;
 }
