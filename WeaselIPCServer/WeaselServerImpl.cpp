@@ -234,17 +234,6 @@ void ServerImpl::_OnClientProcessExit(ClientProcessToken token) {
   // the same API serialization boundary as normal pipe dispatch so Rime and
   // SessionManager state can never be mutated concurrently.
   std::lock_guard guard(g_api_mutex);
-  // Invalidate only sessions belonging to the exited process generation.
-  // Unrelated live sessions must keep their queued ASCII commands.
-  {
-    std::lock_guard<std::mutex> lock(m_controlMutex);
-    for (auto it = m_controlSessions.begin(); it != m_controlSessions.end();) {
-      if (it->second.owner && *it->second.owner == token)
-        it = m_controlSessions.erase(it);
-      else
-        ++it;
-    }
-  }
   if (m_pRequestHandler)
     session_router.RemoveClient(token);
 
@@ -288,7 +277,7 @@ LRESULT ServerImpl::OnColorChange(UINT uMsg,
       m_appliedDarkMode.load(std::memory_order_acquire) !=
           (dark_mode ? 1 : 0)) {
     m_darkMode = dark_mode;
-    _QueueControlTask({ControlTaskKind::Color, 0, dark_mode != FALSE, 0});
+    _QueueControlTask({ControlTaskKind::Color, 0, dark_mode != FALSE});
   }
   return 0;
 }
@@ -349,10 +338,9 @@ LRESULT ServerImpl::OnCommand(UINT uMsg,
   // serialized path through _HandleCommand.
   if (uID == ID_WEASELTRAY_ENABLE_ASCII || uID == ID_WEASELTRAY_DISABLE_ASCII) {
     const DWORD session_id = static_cast<DWORD>(lParam);
-    // _QueueControlTask snapshots the target's lifetime under the short
-    // control mutex without waiting on the Rime API lock.
+    // Worker validates a nonzero target under the API lock at execution.
     _QueueControlTask({ControlTaskKind::Ascii, session_id,
-                       uID == ID_WEASELTRAY_ENABLE_ASCII, 0});
+                       uID == ID_WEASELTRAY_ENABLE_ASCII});
     return 0;
   }
   return _HandleCommand(uID, lParam, bHandled);
@@ -432,8 +420,8 @@ void ServerImpl::_SetControlSuspended(bool suspended) {
 }
 
 void ServerImpl::_QueueControlTask(ControlTask task) {
-  // The window message thread never waits on g_api_mutex. A targeted command
-  // captures the current identity of *that* session only.
+  // The window message thread never waits on g_api_mutex. Targeted commands
+  // are validated against the live backend before execution.
   if (_RuntimeLifecycle() == ServerLifecycle::Stopping)
     return;
   try {
@@ -441,13 +429,6 @@ void ServerImpl::_QueueControlTask(ControlTask task) {
       std::lock_guard<std::mutex> lock(m_controlMutex);
       if (m_controlStopping)
         return;
-      if (task.kind == ControlTaskKind::Ascii && task.session_id) {
-        const auto target = m_controlSessions.find(task.session_id);
-        if (target == m_controlSessions.end())
-          return;
-        task.session_generation = target->second.generation;
-      }
-
       const auto same_target = [&task](const ControlTask& pending) {
         return pending.kind == task.kind &&
                (task.kind == ControlTaskKind::Color ||
@@ -543,21 +524,12 @@ void ServerImpl::_RunControlWorker() {
               m_appliedDarkMode.store(task.value ? 1 : 0,
                                       std::memory_order_release);
             } else {
-              bool valid_target = task.session_id == 0;
-              if (task.session_id) {
-                // IPC calls hold g_api_mutex before the control mutex. An
-                // unrelated session's creation/removal cannot invalidate this
-                // target, but removal/recreation and owner exit can.
-                std::lock_guard<std::mutex> lock(m_controlMutex);
-                const auto target = m_controlSessions.find(task.session_id);
-                valid_target = target != m_controlSessions.end() &&
-                               target->second.generation ==
-                                   task.session_generation;
-              }
-              if (valid_target &&
-                  (!task.session_id ||
-                   m_pRequestHandler->FindSession(task.session_id) ==
-                       task.session_id)) {
+              // The production backend allocates IPC session IDs
+              // monotonically. Validate under g_api_mutex so an already
+              // destroyed target cannot receive a queued option update.
+              if (!task.session_id ||
+                  m_pRequestHandler->FindSession(task.session_id) ==
+                      task.session_id) {
                 m_pRequestHandler->SetOption(task.session_id, "ascii_mode",
                                              task.value);
               }
@@ -727,8 +699,6 @@ int ServerImpl::Run() {
           dispatch = false;
         } else {
           session_router.SetCurrentOwner(SessionOwner{owner});
-          // Mirror the same process generation for targeted window commands.
-          m_dispatchProcessOwner = owner;
         }
       }
 
@@ -875,29 +845,12 @@ DWORD ServerImpl::OnStartSession(WEASEL_IPC_COMMAND uMsg,
   if (!m_pRequestHandler || _RuntimeLifecycle() != ServerLifecycle::Ready)
     return 0;
 
-  const DWORD session_id = m_pRequestHandler->AddSession(
+  return m_pRequestHandler->AddSession(
       reinterpret_cast<LPWSTR>(channel->ReceiveBuffer()),
       [this](std::wstring& msg) -> bool {
         *channel << msg;
         return true;
       });
-  if (session_id) {
-    // A START_SESSION retry may reuse its ID; refreshing the generation is
-    // conservative and also protects against backend ID recycling.
-    try {
-      std::lock_guard<std::mutex> lock(m_controlMutex);
-      std::uint64_t generation = ++m_nextControlSessionGeneration;
-      if (generation == 0)
-        generation = ++m_nextControlSessionGeneration;
-      m_controlSessions[session_id] =
-          ControlSession{generation, m_dispatchProcessOwner};
-    } catch (const std::exception& ex) {
-      // Do not turn an already-created Rime session into a failed IPC request
-      // just because auxiliary window control bookkeeping exhausted memory.
-      LOG(ERROR) << "Could not track window-control session: " << ex.what();
-    }
-  }
-  return session_id;
 }
 
 DWORD ServerImpl::OnEndSession(WEASEL_IPC_COMMAND uMsg,
@@ -905,10 +858,6 @@ DWORD ServerImpl::OnEndSession(WEASEL_IPC_COMMAND uMsg,
                                DWORD lParam) {
   if (!m_pRequestHandler)
     return 0;
-  {
-    std::lock_guard<std::mutex> lock(m_controlMutex);
-    m_controlSessions.erase(lParam);
-  }
   return m_pRequestHandler->RemoveSession(lParam);
 }
 
@@ -1004,10 +953,6 @@ DWORD ServerImpl::OnStartMaintenance(WEASEL_IPC_COMMAND uMsg,
   // Publish the owner before finalizing Rime. If it exits immediately, the
   // process tracker callback queues behind g_api_mutex and recovers this exact
   // maintenance generation after the acknowledgement path releases the lock.
-  {
-    std::lock_guard<std::mutex> lock(m_controlMutex);
-    m_controlSessions.clear();
-  }
   _SetControlSuspended(true);
   m_maintenanceOwner = m_dispatchProcessOwner;
   try {

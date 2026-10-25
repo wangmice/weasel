@@ -3,7 +3,6 @@
 #include <WeaselInteractionPolicy.h>
 #include <atomic>
 #include <condition_variable>
-#include <cstdint>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -133,11 +132,6 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
     ControlTaskKind kind = ControlTaskKind::Color;
     DWORD session_id = 0;
     bool value = false;
-    std::uint64_t session_generation = 0;
-  };
-  struct ControlSession {
-    std::uint64_t generation = 0;
-    std::optional<ClientProcessToken> owner;
   };
   static constexpr std::size_t kMaxControlTasks = 64;
   bool _StartControlWorker();
@@ -189,11 +183,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
       m_pPhysicalToLogicalPointForPerMonitorDPI;
   BOOL m_darkMode;  // Window-thread desired theme
   std::atomic<int> m_appliedDarkMode;  // Last successfully applied theme
-  // Protected by m_controlMutex; session generations are local to one ID,
-  // preventing unrelated process/session changes from dropping commands.
   std::mutex m_controlMutex;
-  std::uint64_t m_nextControlSessionGeneration = 0;
-  std::map<DWORD, ControlSession> m_controlSessions;
   std::condition_variable m_controlCv;
   std::deque<ControlTask> m_controlTasks;
   std::optional<ControlTask> m_deferredControlTask;

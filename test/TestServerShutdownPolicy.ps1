@@ -92,17 +92,16 @@ if ($header -notmatch 'kMaxControlTasks\s*=\s*64' -or
     $serverImpl -notmatch 'm_controlTasks\.pop_front\(\)') {
   throw 'control queue must be bounded, with pending tasks coalesced'
 }
-if ($header -notmatch 'std::map<DWORD,\s*ControlSession>\s+m_controlSessions' -or
-    $serverImpl -notmatch 'm_controlSessions\[session_id\]' -or
-    $serverImpl -notmatch 'target->second\.generation\s*==\s*task\.session_generation' -or
-    $serverImpl -notmatch 'm_controlSessions\.erase\(lParam\)' -or
-    $serverImpl -notmatch 'm_controlSessions\.clear\(\)' -or
-    $serverImpl -notmatch 'it->second\.owner\s*&&\s*\*it->second\.owner\s*==\s*token') {
-  throw 'targeted ASCII commands must use per-session generations and owner-exit invalidation'
+if ($header -match 'm_controlSessions|ControlSession|session_generation|m_nextControlSessionGeneration' -or
+    $serverImpl -match 'm_controlSessions|ControlSession|session_generation|m_nextControlSessionGeneration|m_sessionEpoch') {
+  throw 'window control must not keep a duplicate session-lifetime registry'
 }
-if ($serverImpl -match 'm_sessionEpoch' -or
-    $serverImpl -notmatch 'm_dispatchProcessOwner\s*=\s*owner;') {
-  throw 'unrelated sessions must not globally invalidate targeted ASCII commands'
+$workerStart = $serverImpl.IndexOf('void ServerImpl::_RunControlWorker()')
+$workerEnd = $serverImpl.IndexOf('DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND', $workerStart)
+if ($workerStart -lt 0 -or $workerEnd -le $workerStart -or
+    $serverImpl.Substring($workerStart, $workerEnd - $workerStart) -notmatch
+      'm_pRequestHandler->FindSession\(task\.session_id\)\s*==\s*task\.session_id') {
+  throw 'targeted ASCII tasks must validate the live session under the API lock'
 }
 if ($serverImpl -notmatch 'pending\.kind\s*==\s*ControlTaskKind::Ascii' -or
     $serverImpl -notmatch 'm_controlTasks\.erase\(victim\)') {

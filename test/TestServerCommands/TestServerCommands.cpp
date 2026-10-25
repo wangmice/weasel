@@ -493,9 +493,8 @@ static void test_pipe_ascii_commands() {
 
 static void test_window_ascii_commands() {
   SessionHandler handler;
-  // Exercise both the real tray's global command (lParam=0) and an explicit
-  // session-targeted command. The latter needs a live session generation,
-  // otherwise the production worker intentionally drops stale commands.
+  // Exercise global commands (lParam=0) and live session-targeted commands.
+  // The worker validates targeted IDs directly against the handler.
   handler.sessions.insert(43);
   weasel::ServerRuntimeState runtime{};
   runtime.version = weasel::kServerRuntimeStateVersion;
@@ -506,7 +505,6 @@ static void test_window_ascii_commands() {
   weasel::ServerImpl server;
   server.SetRequestHandler(&handler);
   weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
-  weasel::ServerImplTestAccess::RegisterControlSession(server, 43);
   const bool worker_started =
       weasel::ServerImplTestAccess::StartControlWorker(server);
   check(worker_started, "window control worker starts for asynchronous commands");
@@ -562,6 +560,26 @@ static void test_window_ascii_commands() {
             "window command executes asynchronously and applies the option once");
     }
   }
+
+  // A session may disappear after its window command was queued. Fence the
+  // stale command with a later global command to verify no stale application.
+  const int before_stale = handler.option_calls.load();
+  BOOL handled = TRUE;
+  {
+    std::unique_lock lock(g_api_mutex);
+    handler.sessions.erase(43);
+    server.OnCommand(WM_COMMAND, ID_WEASELTRAY_ENABLE_ASCII, 43, handled);
+    server.OnCommand(WM_COMMAND, ID_WEASELTRAY_DISABLE_ASCII, 0, handled);
+  }
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (handler.option_calls.load() == before_stale &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  check(handled && handler.option_calls.load() == before_stale + 1 &&
+            handler.last_session == 0 && handler.last_option == "ascii_mode" &&
+            !handler.last_value,
+        "stale targeted ASCII command is discarded before the global command");
 
   weasel::ServerImplTestAccess::StopControlWorker(server);
   weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
