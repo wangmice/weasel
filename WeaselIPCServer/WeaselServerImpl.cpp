@@ -383,7 +383,6 @@ LRESULT ServerImpl::OnServiceNotifyMessage(UINT uMsg,
   return 0;
 }
 
-
 bool ServerImpl::_StartControlWorker() {
   try {
     m_controlWorker = std::thread([this] { _RunControlWorker(); });
@@ -439,19 +438,19 @@ void ServerImpl::_QueueControlTask(ControlTask task) {
       if (m_deferredControlTask && same_target(*m_deferredControlTask)) {
         *m_deferredControlTask = task;
       } else {
-        const auto existing = std::find_if(
-            m_controlTasks.begin(), m_controlTasks.end(), same_target);
+        const auto existing = std::find_if(m_controlTasks.begin(),
+                                           m_controlTasks.end(), same_target);
         if (existing != m_controlTasks.end())
           m_controlTasks.erase(existing);
 
         if (m_controlTasks.size() >= kMaxControlTasks) {
           // A pending theme is a state synchronization, not a disposable
           // command. Evict an older ASCII task rather than dropping it.
-          const auto victim = std::find_if(
-              m_controlTasks.begin(), m_controlTasks.end(),
-              [](const ControlTask& pending) {
-                return pending.kind == ControlTaskKind::Ascii;
-              });
+          const auto victim =
+              std::find_if(m_controlTasks.begin(), m_controlTasks.end(),
+                           [](const ControlTask& pending) {
+                             return pending.kind == ControlTaskKind::Ascii;
+                           });
           if (victim == m_controlTasks.end())
             return;
           m_controlTasks.erase(victim);
@@ -475,13 +474,13 @@ void ServerImpl::_RequeueDeferredControlTask(ControlTask task) noexcept {
     std::lock_guard<std::mutex> lock(m_controlMutex);
     if (m_controlStopping)
       return;
-    const auto newer = std::find_if(
-        m_controlTasks.begin(), m_controlTasks.end(),
-        [&task](const ControlTask& pending) {
-          return pending.kind == task.kind &&
-                 (task.kind == ControlTaskKind::Color ||
-                  pending.session_id == task.session_id);
-        });
+    const auto newer =
+        std::find_if(m_controlTasks.begin(), m_controlTasks.end(),
+                     [&task](const ControlTask& pending) {
+                       return pending.kind == task.kind &&
+                              (task.kind == ControlTaskKind::Color ||
+                               pending.session_id == task.session_id);
+                     });
     if (newer == m_controlTasks.end())
       m_deferredControlTask = task;
   }
@@ -527,9 +526,8 @@ void ServerImpl::_RunControlWorker() {
               // The production backend allocates IPC session IDs
               // monotonically. Validate under g_api_mutex so an already
               // destroyed target cannot receive a queued option update.
-              if (!task.session_id ||
-                  m_pRequestHandler->FindSession(task.session_id) ==
-                      task.session_id) {
+              if (!task.session_id || m_pRequestHandler->FindSession(
+                                          task.session_id) == task.session_id) {
                 m_pRequestHandler->SetOption(task.session_id, "ascii_mode",
                                              task.value);
               }

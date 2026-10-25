@@ -507,7 +507,8 @@ static void test_window_ascii_commands() {
   weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
   const bool worker_started =
       weasel::ServerImplTestAccess::StartControlWorker(server);
-  check(worker_started, "window control worker starts for asynchronous commands");
+  check(worker_started,
+        "window control worker starts for asynchronous commands");
   if (!worker_started) {
     weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
     return;
@@ -531,7 +532,7 @@ static void test_window_ascii_commands() {
 
       const bool returned_without_api_lock =
           done.wait_for(std::chrono::milliseconds(500)) ==
-              std::future_status::ready;
+          std::future_status::ready;
       const bool not_applied_under_api_lock =
           handler.option_calls.load() == before;
 
@@ -556,8 +557,9 @@ static void test_window_ascii_commands() {
           handler.last_session == session_id &&
           handler.last_option == "ascii_mode" &&
           handler.last_value == (command == ID_WEASELTRAY_ENABLE_ASCII);
-      check(applied_once,
-            "window command executes asynchronously and applies the option once");
+      check(
+          applied_once,
+          "window command executes asynchronously and applies the option once");
     }
   }
 

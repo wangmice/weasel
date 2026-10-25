@@ -488,7 +488,8 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
     // Initialize an unset compartment even when the desired value is zero.
     // Preserve unrelated host-controlled bits and avoid redundant OnChange.
     if (hr == S_FALSE || flags != actual_flags)
-      _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
+      _SetCompartmentDWORD(flags,
+                           GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   }
 
   _pLangBarButton->UpdateWeaselStatus(stat, _cand->style());

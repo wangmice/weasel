@@ -28,7 +28,8 @@ class WeaselPanel {
   ~WeaselPanel();
   void MoveTo(RECT rc);
   void Refresh();
-  // Explicit one-shot synchronous first-frame warmup; ordinary refresh stays async.
+  // Explicit one-shot synchronous first-frame warmup; ordinary refresh stays
+  // async.
   bool WarmUp();
   void ApplyUpdate(const Context& ctx, const Status& status);
   void ApplyStyle(const UIStyle& style);

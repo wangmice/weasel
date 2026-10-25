@@ -181,7 +181,7 @@ class ServerImpl : public CWindowImpl<ServerImpl, CWindow, ServerWinTraits>
    * (below Win8.1), and OnUpdateInputPosition then keeps physical coords */
   PPhysicalToLogicalPointForPerMonitorDPI
       m_pPhysicalToLogicalPointForPerMonitorDPI;
-  BOOL m_darkMode;  // Window-thread desired theme
+  BOOL m_darkMode;                     // Window-thread desired theme
   std::atomic<int> m_appliedDarkMode;  // Last successfully applied theme
   std::mutex m_controlMutex;
   std::condition_variable m_controlCv;
