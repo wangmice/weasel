@@ -475,6 +475,7 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   } else {
     // hr == S_OK：读到 VT_I4；hr == S_FALSE：VT_EMPTY（从未设置），以 0 为基
     // 首次初始化，与原实现一致
+    const DWORD actual_flags = flags;
     if (stat.ascii_mode)
       flags &= (~TF_CONVERSIONMODE_NATIVE);
     else
@@ -483,15 +484,10 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
       flags |= TF_CONVERSIONMODE_FULLSHAPE;
     else
       flags &= (~TF_CONVERSIONMODE_FULLSHAPE);
-    // 与上次成功写入值相同则跳过写：同值 SetValue 不会触发 OnChange，
-    // 稳态（连打、纯 ASCII 直通）零写。读保留：宿主改写的外部位在下一次
-    // 真需要写时仍能读到并保留
-    if (!(_conversionFlagsValid && flags == _conversionFlags) &&
-        SUCCEEDED(_SetCompartmentDWORD(
-            flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION))) {
-      _conversionFlags = flags;
-      _conversionFlagsValid = true;
-    }
+    // Compare against the actual compartment value, not a previous write.
+    // Keep unrelated host-controlled bits intact and avoid redundant OnChange.
+    if (flags != actual_flags)
+      _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   }
 
   _pLangBarButton->UpdateWeaselStatus(stat, _cand->style());
