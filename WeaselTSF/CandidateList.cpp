@@ -102,13 +102,14 @@ STDMETHODIMP CCandidateList::GetGUID(GUID* pguid) {
 }
 
 STDMETHODIMP CCandidateList::Show(BOOL showCandidateWindow) {
-  if (!_tsf)
+  if (!_tsf || !_pContextDocument ||
+      (!_uiStarted && !_registration_in_progress))
     return E_UNEXPECTED;
-  if (showCandidateWindow)
-    _ui->Show();
-  else
-    _ui->Hide();
-  return S_OK;
+  _pbShow = showCandidateWindow;
+  // BeginUIElement owns registration; defer any HWND work until it returns.
+  if (_registration_in_progress)
+    return S_OK;
+  return _ApplyVisibility(true);
 }
 
 STDMETHODIMP CCandidateList::IsShown(BOOL* pIsShow) {
@@ -321,24 +322,72 @@ void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
   if (_uiStarted)
     _UpdateUIElement();
 
-  bool targetFocused = false;
-  if (_pContextDocument) {
-    com_ptr<ITfThreadMgr> pThreadMgr = _tsf->_GetThreadMgr();
-    com_ptr<ITfDocumentMgr> pDocumentMgr;
-    com_ptr<ITfContext> pContext;
-    targetFocused =
-        pThreadMgr && SUCCEEDED(pThreadMgr->GetFocus(&pDocumentMgr)) &&
-        pDocumentMgr && SUCCEEDED(pDocumentMgr->GetTop(&pContext)) &&
-        pContext == _pContextDocument;
-  }
-
-  Show(weasel::tsf::ShouldShowCandidateUI(status.composing, _pbShow != FALSE,
-                                          targetFocused));
+  UpdateVisibility(true);
 }
 
 void CCandidateList::UpdateInputPosition(RECT const& rc) {
-  if (_tsf)
+  if (_tsf) {
+    if (_pContextDocument)
+      _inputPosition = rc;
     _ui->UpdateInputPosition(rc);
+  }
+}
+
+bool CCandidateList::_IsTargetFocused() const {
+  WeaselTSF* const owner = _tsf;
+  const auto target = _pContextDocument;
+  if (!owner || !target)
+    return false;
+  com_ptr<ITfThreadMgr> pThreadMgr = owner->_GetThreadMgr();
+  com_ptr<ITfDocumentMgr> pDocumentMgr;
+  com_ptr<ITfContext> pContext;
+  return pThreadMgr && SUCCEEDED(pThreadMgr->GetFocus(&pDocumentMgr)) &&
+         pDocumentMgr && SUCCEEDED(pDocumentMgr->GetTop(&pContext)) &&
+         pContext == target && _tsf == owner && _uiStarted &&
+         _pContextDocument == target;
+}
+
+HRESULT CCandidateList::_ApplyVisibility(bool allowShow) {
+  if (!allowShow || !_tsf || !_uiStarted || !_pContextDocument) {
+    _ui->Hide();
+    return S_OK;
+  }
+  const bool targetFocused = _IsTargetFocused();
+  if (!_uiStarted ||
+      !weasel::tsf::ShouldShowCandidateUI(_ui->status().composing,
+                                          _pbShow != FALSE, targetFocused)) {
+    _ui->Hide();
+    return S_OK;
+  }
+  if (!_ui->hwnd()) {
+    try {
+      _ui->style() = _style;
+      _MakeUIWindow();
+    } catch (...) {
+      // Creation may leave a HWND behind before font initialization fails.
+      // Keep exceptions inside Show's COM boundary and allow a clean retry.
+      _ui->Destroy();
+      return E_FAIL;
+    }
+    // Resolving the owner HWND can call back into the host.
+    const bool stillFocused = _IsTargetFocused();
+    if (!_uiStarted ||
+        !weasel::tsf::ShouldShowCandidateUI(_ui->status().composing,
+                                            _pbShow != FALSE, stillFocused)) {
+      _ui->Hide();
+      return S_OK;
+    }
+    if (!_ui->hwnd())
+      return E_FAIL;
+    if (_inputPosition)
+      _ui->UpdateInputPosition(*_inputPosition);
+  }
+  _ui->Show();
+  return S_OK;
+}
+
+void CCandidateList::UpdateVisibility(bool allowShow) {
+  _ApplyVisibility(allowShow);
 }
 
 // Candidate UI lifecycle (state machine):
@@ -360,7 +409,7 @@ void CCandidateList::UpdateInputPosition(RECT const& rc) {
 //     (weasel::UI ops on a disposed window are guarded no-ops)
 void CCandidateList::Destroy() {
   EndUI();
-  Show(FALSE);
+  UpdateVisibility(false);
   _DisposeUIWindow();
 }
 
@@ -368,7 +417,7 @@ void CCandidateList::DestroyAll() {
   // End the UIElement so the UIElementMgr drops its reference; without it
   // the element outlives WeaselTSF while keeping this object alive.
   EndUI();
-  Show(FALSE);
+  UpdateVisibility(false);
   _DisposeUIWindowAll();
 }
 UIStyle& CCandidateList::style() {
@@ -490,10 +539,12 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
 void CCandidateList::EndUI() {
   _finalization_accepted = false;
   _finalization_response_serial = 0;
-  if (!_uiStarted) {
-    _pContextDocument = nullptr;
+  // Invalidate the target before EndUIElement can reenter Show.
+  _pContextDocument = nullptr;
+  _inputPosition.reset();
+  if (!_uiStarted)
     return;
-  }
+  _ui->Hide();
 
   // Host unregistration is best effort. Even if the UIElementMgr disappears
   // during a context/profile transition, the local lifetime must end so the
@@ -532,7 +583,14 @@ void CCandidateList::_DisposeUIWindowAll() {
 }
 
 void CCandidateList::_MakeUIWindow() {
+  const auto target = _pContextDocument;
   HWND p = _GetActiveWnd();
+  if (!_tsf || !_uiStarted || !_pbShow || _pContextDocument != target)
+    return;
+  if (_ui->style().inline_preedit)
+    _ui->style().client_caps |= weasel::INLINE_PREEDIT_CAPABLE;
+  else
+    _ui->style().client_caps &= ~weasel::INLINE_PREEDIT_CAPABLE;
   _ui->Create(p);
 }
 
@@ -593,11 +651,11 @@ void WeaselTSF::_RetireUnappliedCandidateFinalization(ITfContext* context,
 }
 
 void WeaselTSF::_ShowUI() {
-  _cand->Show(TRUE);
+  _cand->UpdateVisibility(true);
 }
 
 void WeaselTSF::_HideUI() {
-  _cand->Show(FALSE);
+  _cand->UpdateVisibility(false);
 }
 
 com_ptr<ITfContext> WeaselTSF::_GetUIContextDocument() {

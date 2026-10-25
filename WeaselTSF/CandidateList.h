@@ -1,6 +1,7 @@
 #pragma once
 #include <WeaselUI.h>
 #include "ctffunc.h"
+#include <optional>
 
 class WeaselTSF;
 
@@ -49,6 +50,8 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   /* Update */
   void UpdateUI(const weasel::Context& ctx, const weasel::Status& status);
   void UpdateInputPosition(RECT const& rc);
+  // Internal focus/composition updates must not change the host's Show choice.
+  void UpdateVisibility(bool allowShow);
   void Destroy();
   void DestroyAll();
   // Unlink the non-owning TIP pointer before the host's final COM Release.
@@ -88,6 +91,8 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   DllLifetimeLease _dllLifetime;
   HWND _GetActiveWnd();
   HRESULT _UpdateUIElement();
+  HRESULT _ApplyVisibility(bool allowShow);
+  bool _IsTargetFocused() const;
 
   void _DisposeUIWindow();
   void _DisposeUIWindowAll();
@@ -115,4 +120,5 @@ class CCandidateList : public ITfIntegratableCandidateListUIElement,
   // owner window must stay bound to this context even if thread focus changes
   // before an asynchronous response session actually executes.
   com_ptr<ITfContext> _pContextDocument;
+  std::optional<RECT> _inputPosition;
 };
