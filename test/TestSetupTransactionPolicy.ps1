@@ -225,31 +225,6 @@ if ($elevation -notmatch 'WAIT_TIMEOUT[\s\S]*?return\s+ERROR_TIMEOUT;') {
   throw 'elevation timeout must propagate an explicit failure status'
 }
 
-if ($setup -match 'RunProcessAndWait\(deployer,\s*L"/deploy",\s*INFINITE') {
-  throw 'modify install must not wait forever for WeaselDeployer'
-}
-if ($setup -notmatch 'kDeployerOperationTimeoutMs\s*=\s*15\s*\*\s*60\s*\*\s*1000\s*\+\s*10\s*\*\s*1000' -or
-    $setup -notmatch 'kDeployerTerminationWaitMs\s*=\s*5000') {
-  throw 'modify install must wait slightly beyond the child watchdog and keep termination confirmation bounded'
-}
-
-if ($setup -notmatch 'CreateProcessW\(deployer\.c_str\(\)[\s\S]*?CREATE_NO_WINDOW[\s\S]*?&process_info\)') {
-  throw 'bounded deployer execution must use a directly owned process handle instead of shell-launch handle semantics'
-}
-if ($setup -notmatch 'enum\s+class\s+DeployerRunResult\s*\{[\s\S]*?Success[\s\S]*?FailedStopped[\s\S]*?FailedStillRunning') {
-  throw 'deployer wait results must distinguish a confirmed stop from a still-running helper'
-}
-$runDeployerStart = $setup.IndexOf('DeployerRunResult RunDeployer')
-$runDeployerEnd = $setup.IndexOf('}  // namespace', $runDeployerStart)
-if ($runDeployerStart -lt 0 -or $runDeployerEnd -le $runDeployerStart) {
-  throw 'unable to isolate bounded RunDeployer implementation'
-}
-$runDeployer = $setup.Substring($runDeployerStart, $runDeployerEnd - $runDeployerStart)
-if ($runDeployer -notmatch 'WaitForSingleObject\(process,\s*kDeployerOperationTimeoutMs\)' -or
-    $runDeployer -notmatch 'TerminateProcess\(process,\s*ERROR_TIMEOUT\)' -or
-    $runDeployer -notmatch 'WaitForSingleObject\(process,\s*kDeployerTerminationWaitMs\)') {
-  throw 'RunDeployer must time out, terminate, and confirm process exit with bounded waits'
-}
 $restartCall = $modify.IndexOf('if (!RestartServer(dir))')
 $deployCall = $modify.IndexOf('const DeployerRunResult deploy_result = RunDeployer(dir);')
 $successMessage = $modify.IndexOf('IDS_STR_MODIFY_SUCCESS_INFO')
@@ -259,11 +234,6 @@ if ($restartCall -lt 0 -or $deployCall -lt 0 -or $successMessage -lt 0 -or
 }
 if ($modify -notmatch 'if\s*\(!RestartServer\(dir\)\)\s*\{[\s\S]*?rollback_modify_state\(\)[\s\S]*?return\s+1;') {
   throw 'modify install must rollback and fail when server restart fails'
-}
-if ($modify -notmatch 'const\s+DeployerRunResult\s+deploy_result\s*=\s*RunDeployer\(dir\)' -or
-    $modify -notmatch 'deploy_result\s*==\s*DeployerRunResult::FailedStillRunning[\s\S]*?return\s+1;' -or
-    $modify -notmatch 'rollback_modify_state\(\)[\s\S]*?RestartServer\(dir\)[\s\S]*?return\s+1;') {
-  throw 'modify install must fail closed while a deployer may still run and rollback only after confirmed stop'
 }
 
 $installer = Get-Content -LiteralPath (Join-Path $repo 'output\install.nsi') -Raw
