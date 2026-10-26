@@ -183,7 +183,8 @@ class CEndCompositionEditSession : public CEditSession {
 
 void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext,
                                 BOOL clear,
-                                BOOL endUI) {
+                                BOOL endUI,
+                                DWORD editSessionFlags) {
   com_ptr<ITfComposition> pComposition =
       _IsComposingInContext(pContext) ? _pComposition : nullptr;
 
@@ -206,7 +207,7 @@ void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext,
 
   HRESULT sessionHr = E_FAIL;
   const HRESULT requestHr = pContext->RequestEditSession(
-      _tfClientId, pEditSession, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE,
+      _tfClientId, pEditSession, editSessionFlags | TF_ES_READWRITE,
       &sessionHr);
 
   if (requestHr == TF_E_DISCONNECTED && _IsCurrentComposition(pComposition))
@@ -1002,7 +1003,9 @@ STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
   return S_OK;
 }
 
-void WeaselTSF::_AbortComposition(bool clear, DWORD clear_timeout_ms) {
+void WeaselTSF::_AbortComposition(bool clear,
+                                  DWORD clear_timeout_ms,
+                                  DWORD editSessionFlags) {
   _CancelHandoffWait();
   _InvalidatePendingUI();
   _responseApplyQueue.AdvanceEpoch();
@@ -1013,7 +1016,7 @@ void WeaselTSF::_AbortComposition(bool clear, DWORD clear_timeout_ms) {
     _responseApplyQueue.Pause();
     com_ptr<ITfContext> compositionContext =
         _pCompositionContext ? _pCompositionContext : _pEditSessionContext;
-    _EndComposition(compositionContext, clear);
+    _EndComposition(compositionContext, clear, TRUE, editSessionFlags);
   } else {
     // The host may terminate the TSF composition before focus-loss cleanup.
     // End the candidate UI even when the composition pointer is already gone.

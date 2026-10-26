@@ -1,22 +1,6 @@
 #include "stdafx.h"
 #include "WeaselTSF.h"
 
-static BOOL IsRangeCovered(TfEditCookie ec,
-                           ITfRange* pRangeTest,
-                           ITfRange* pRangeCover) {
-  LONG lResult;
-
-  if (pRangeCover->CompareStart(ec, pRangeTest, TF_ANCHOR_START, &lResult) !=
-          S_OK ||
-      lResult > 0)
-    return FALSE;
-  if (pRangeCover->CompareEnd(ec, pRangeTest, TF_ANCHOR_END, &lResult) !=
-          S_OK ||
-      lResult < 0)
-    return FALSE;
-  return TRUE;
-}
-
 STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
                                   TfEditCookie ecReadOnly,
                                   ITfEditRecord* pEditRecord) {
@@ -28,6 +12,9 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
   if (pEditRecord->GetSelectionStatus(&fSelectionChanged) == S_OK &&
       fSelectionChanged) {
     if (_IsComposingInContext(pContext)) {
+      const auto composition = _pComposition;
+      const auto engineEpoch = _responseApplyQueue.CurrentEpoch();
+      const auto uiGeneration = _pendingUIGeneration;
       /* if the caret moves out of composition range, stop the composition */
       TF_SELECTION tfSelection;
       ULONG cFetched;
@@ -35,11 +22,44 @@ STDMETHODIMP WeaselTSF::OnEndEdit(ITfContext* pContext,
       if (pContext->GetSelection(ecReadOnly, TF_DEFAULT_SELECTION, 1,
                                  &tfSelection, &cFetched) == S_OK &&
           cFetched == 1) {
-        ITfRange* pRangeComposition;
-        if (_pComposition->GetRange(&pRangeComposition) == S_OK) {
-          if (!IsRangeCovered(ecReadOnly, tfSelection.range, pRangeComposition))
-            _EndComposition(pContext, true);
-          pRangeComposition->Release();
+        com_ptr<ITfRange> pRangeComposition;
+        if (composition->GetRange(&pRangeComposition) == S_OK) {
+          LONG start = 0, end = 0;
+          if (pRangeComposition->CompareStart(ecReadOnly, tfSelection.range,
+                                              TF_ANCHOR_START,
+                                              &start) == S_OK &&
+              pRangeComposition->CompareEnd(ecReadOnly, tfSelection.range,
+                                            TF_ANCHOR_END, &end) == S_OK &&
+              (start > 0 || end < 0)) {
+            BOOL empty = TRUE, ownWrite = TRUE;
+            const auto threadMgr = _GetThreadMgr();
+            com_ptr<ITfDocumentMgr> focusedDocument;
+            com_ptr<ITfContext> focusedContext;
+            // Only a user move out of a nonempty, focused composition resets
+            // Rime. Empty bridged compositions and old-context handoffs keep
+            // their existing local-only cleanup semantics.
+            const bool abortEngine =
+                pRangeComposition->IsEmpty(ecReadOnly, &empty) == S_OK &&
+                !empty &&
+                pContext->InWriteSession(_tfClientId, &ownWrite) == S_OK &&
+                !ownWrite && threadMgr &&
+                threadMgr->GetFocus(&focusedDocument) == S_OK &&
+                focusedDocument &&
+                focusedDocument->GetTop(&focusedContext) == S_OK &&
+                focusedContext == pContext;
+            // Every host query above can reenter focus/activation or replace
+            // the composition. Never cancel a newer target on that old result.
+            if (_tfClientId != TF_CLIENTID_NULL && _pThreadMgr == threadMgr &&
+                _responseApplyQueue.CurrentEpoch() == engineEpoch &&
+                _pendingUIGeneration == uiGeneration &&
+                _IsCurrentComposition(composition) &&
+                _IsComposingInContext(pContext)) {
+              if (abortEngine)
+                _AbortComposition(true, kFocusLossClearTimeoutMs, TF_ES_ASYNC);
+              else
+                _EndComposition(pContext, true);
+            }
+          }
         }
         tfSelection.range->Release();
       }

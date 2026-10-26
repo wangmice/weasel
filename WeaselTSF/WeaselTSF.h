@@ -150,7 +150,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                                   UINT64 pendingUIGeneration = 0);
   void _EndComposition(com_ptr<ITfContext> pContext,
                        BOOL clear,
-                       BOOL endUI = TRUE);
+                       BOOL endUI = TRUE,
+                       DWORD editSessionFlags = TF_ES_ASYNCDONTCARE);
   HRESULT _EndCompositionLocked(TfEditCookie ec,
                                 com_ptr<ITfContext> pContext,
                                 com_ptr<ITfComposition> pComposition,
@@ -205,7 +206,9 @@ class WeaselTSF : public ITfTextInputProcessorEx,
                            com_ptr<ITfComposition> composition);
   void _ResumeHandoffWait();
   void _CancelHandoffWait();
-  void _AbortComposition(bool clear = true, DWORD clear_timeout_ms = 0);
+  void _AbortComposition(bool clear = true,
+                         DWORD clear_timeout_ms = 0,
+                         DWORD editSessionFlags = TF_ES_ASYNCDONTCARE);
 
   /* Language bar */
   HWND _GetFocusedContextWindow();

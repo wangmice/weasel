@@ -163,11 +163,11 @@ if ($startSessionBody -notmatch 'RemainingTransactionTime\(deadline\)[\s\S]*?WEA
 }
 
 
-# Focus loss is a synchronous host callback, not a normal state-changing
-# command. Its composition cleanup must not inherit the default 3000 ms IPC
-# wait, while all other _AbortComposition callers retain the default budget.
+# Focus loss and caret exit are synchronous host callbacks. Their composition
+# cleanup must not inherit the default 3000 ms IPC wait, while legacy callers
+# retain their default timeout and edit-session scheduling.
 if ($tsfHeader -notmatch 'kFocusLossClearTimeoutMs\s*=\s*100' -or
-    $tsfHeader -notmatch '_AbortComposition\(bool\s+clear\s*=\s*true,\s*DWORD\s+clear_timeout_ms\s*=\s*0\)') {
+    $tsfHeader -notmatch '_AbortComposition\(\s*bool\s+clear\s*=\s*true,\s*DWORD\s+clear_timeout_ms\s*=\s*0,\s*DWORD\s+editSessionFlags\s*=\s*TF_ES_ASYNCDONTCARE\)') {
   throw 'TSF focus cleanup must expose a dedicated 100 ms timeout without changing the default'
 }
 if ($clientHeader -notmatch 'bool\s+ClearComposition\(DWORD\s+timeout_ms\)' -or
@@ -177,7 +177,7 @@ if ($clientHeader -notmatch 'bool\s+ClearComposition\(DWORD\s+timeout_ms\)' -or
     $clientCpp -notmatch 'Client::ClearComposition\(DWORD\s+timeout_ms\)[\s\S]*?m_pImpl->ClearComposition\(timeout_ms\)') {
   throw 'bounded composition clear must propagate its budget without altering legacy calls'
 }
-if ($composition -notmatch 'void\s+WeaselTSF::_AbortComposition\(bool\s+clear,\s*DWORD\s+clear_timeout_ms\)' -or
+if ($composition -notmatch 'void\s+WeaselTSF::_AbortComposition\(\s*bool\s+clear,\s*DWORD\s+clear_timeout_ms,\s*DWORD\s+editSessionFlags\)' -or
     $composition -notmatch 'm_client\.ClearComposition\(clear_timeout_ms\)') {
   throw 'composition cleanup must forward the selected clear timeout'
 }
