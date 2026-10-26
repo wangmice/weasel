@@ -524,14 +524,20 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
   _uiStarted = true;
   // pUIElementMgr->UpdateUIElement(uiid);
   if (_pbShow) {
-    _ui->style() = _style;
-    _MakeUIWindow();
-    if (!_ui_warmed_up && _ui->hwnd() != nullptr) {
-      // Keep first-frame warmup synchronous even though ordinary updates
-      // now coalesce asynchronous paints. Retry if the frame failed.
-      const bool warmed = _ui->WarmUp();
-      _ui->Hide();
-      _ui_warmed_up = warmed;
+    try {
+      _ui->style() = _style;
+      _MakeUIWindow();
+      if (!_ui_warmed_up && _ui->hwnd() != nullptr) {
+        // Keep first-frame warmup synchronous even though ordinary updates
+        // now coalesce asynchronous paints. Retry if the frame failed.
+        const bool warmed = _ui->WarmUp();
+        _ui->Hide();
+        _ui_warmed_up = warmed;
+      }
+    } catch (...) {
+      // Keep native creation failures inside the TSF callback. Retain the
+      // registered UIElement and composition; a later update can retry.
+      _ui->Destroy();
     }
   }
 }
