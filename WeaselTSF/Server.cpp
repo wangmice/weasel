@@ -4,6 +4,7 @@
 #include "Register.h"
 #include "WeaselTSF.h"
 #include <VersionHelpers.hpp>
+#include <new>
 
 class CClassFactory : public IClassFactory {
  public:
@@ -68,10 +69,6 @@ STDMETHODIMP CClassFactory::LockServer(BOOL fLock) {
 
 static CClassFactory* g_classFactory = nullptr;
 
-static void BuildGlobalObjects() {
-  g_classFactory = new CClassFactory();
-}
-
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppvObject) {
   if (ppvObject == nullptr)
     return E_POINTER;
@@ -79,13 +76,14 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppvObject) {
   if (!IsEqualCLSID(rclsid, c_clsidTextService))
     return CLASS_E_CLASSNOTAVAILABLE;
 
-  if (g_classFactory == nullptr) {
-    EnterCriticalSection(&g_cs);
-    if (g_classFactory == nullptr)
-      BuildGlobalObjects();
-    LeaveCriticalSection(&g_cs);
-  }
-  return g_classFactory->QueryInterface(riid, ppvObject);
+  EnterCriticalSection(&g_cs);
+  if (g_classFactory == nullptr)
+    g_classFactory = new (std::nothrow) CClassFactory();
+  CClassFactory* factory = g_classFactory;
+  LeaveCriticalSection(&g_cs);
+  if (factory == nullptr)
+    return E_OUTOFMEMORY;
+  return factory->QueryInterface(riid, ppvObject);
 }
 
 STDAPI DllCanUnloadNow() {

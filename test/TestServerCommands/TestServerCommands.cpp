@@ -42,6 +42,8 @@
 CAppModule _Module;
 static int g_failures = 0;
 
+void RunClassFactoryTests();
+
 class TestChannelAccess : public weasel::PipeChannelBase {
  public:
   static void SetName(weasel::PipeChannelBase& channel,
@@ -787,7 +789,12 @@ int main() {
   HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(hr))
     return 1;
+  if (!InitializeCriticalSectionAndSpinCount(&g_cs, 0)) {
+    CoUninitialize();
+    return 1;
+  }
   g_hInst = GetModuleHandle(nullptr);
+  RunClassFactoryTests();
   test_server_recovery_coordinator_state_machine();
   test_server_lifecycle_tick_deadline();
   test_session_id_allocator_survives_maintenance_clear();
@@ -801,6 +808,7 @@ int main() {
   test_maintenance_session_recovery();
   test_panel_recreate_reapplies_window_size();
   CoUninitialize();
+  DeleteCriticalSection(&g_cs);
   std::printf("Failures: %d\n", g_failures);
   return g_failures ? 1 : 0;
 }
