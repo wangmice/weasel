@@ -34,9 +34,6 @@ $keyEventSinkSource = Get-Content -LiteralPath $KeyEventSinkPath -Raw
 if ($keyEventSinkSource -notmatch 'const\s+bool\s+suppress_simulated_caps\s*=[\s\S]*?_keyCountToSimulate\s*>\s*0[\s\S]*?ke\.keycode\s*==\s*ibus::Caps_Lock[\s\S]*?if\s*\(_keyCountToSimulate\s*&&\s*!suppress_simulated_caps\)[\s\S]*?_keyCountToSimulate\s*=\s*0') {
   throw 'TSF host-safety regression: stale CapsLock simulation must self-clear before a real non-CapsLock key'
 }
-if ($keyEventSinkSource -notmatch 'const\s+bool\s+suppress_simulated_caps\s*=[\s\S]*?_keyCountToSimulate\s*>\s*0[\s\S]*?ke\.keycode\s*==\s*ibus::Caps_Lock') {
-  throw 'TSF host-safety regression: CapsLock suppression must snapshot pre-existing simulation state'
-}
 if ($keyEventSinkSource -notmatch '_keyCountToSimulate\s*=\s*static_cast<int>\([\s\S]*?SendInput' -or
     $keyEventSinkSource -notmatch 'if\s*\(suppress_simulated_caps\s*&&\s*_keyCountToSimulate\)[\s\S]*?_keyCountToSimulate--') {
   throw 'TSF host-safety regression: only pre-existing synthetic CapsLock callbacks may consume the injected-event budget'

@@ -88,6 +88,31 @@ static void testTranslateKeycode() {
           ev.keycode == ibus::Control_R,
       "translate: extended Control -> Control_R");
 
+  check(ConvertKeyEvent(VK_MENU, mkLparam(0x38, false, false), nullState, ev) &&
+            ev.keycode == ibus::Alt_L && !(ev.mask & ibus::RELEASE_MASK),
+        "translate: generic left Alt down -> Alt_L");
+
+  check(ConvertKeyEvent(VK_MENU, mkLparam(0x38, true, false), nullState, ev) &&
+            ev.keycode == ibus::Alt_R && !(ev.mask & ibus::RELEASE_MASK),
+        "translate: generic right Alt down -> Alt_R");
+
+  check(ConvertKeyEvent(VK_MENU, mkLparam(0x38, false, true), nullState, ev) &&
+            ev.keycode == ibus::Alt_L && (ev.mask & ibus::RELEASE_MASK),
+        "translate: generic left Alt up -> Alt_L + RELEASE_MASK");
+
+  check(ConvertKeyEvent(VK_MENU, mkLparam(0x38, true, true), nullState, ev) &&
+            ev.keycode == ibus::Alt_R && (ev.mask & ibus::RELEASE_MASK),
+        "translate: generic right Alt up -> Alt_R + RELEASE_MASK");
+
+  check(
+      ConvertKeyEvent(VK_LMENU, mkLparam(0x38, false, false), nullState, ev) &&
+          ev.keycode == ibus::Alt_L,
+      "translate: explicit VK_LMENU -> Alt_L");
+
+  check(ConvertKeyEvent(VK_RMENU, mkLparam(0x38, true, false), nullState, ev) &&
+            ev.keycode == ibus::Alt_R,
+        "translate: explicit VK_RMENU -> Alt_R");
+
   check(
       ConvertKeyEvent(VK_SPACE, mkLparam(0x39, false, false), nullState, ev) &&
           ev.keycode == ibus::space,
@@ -119,6 +144,19 @@ static void testMasks() {
   check(ConvertKeyEvent(VK_SPACE, mkLparam(0x39, false, false), st, ev) &&
             (ev.mask & ibus::ALT_MASK),
         "mask: alt down -> ALT_MASK");
+  st[VK_CONTROL] = 0x80;
+  check(ConvertKeyEvent(VK_MENU, mkLparam(0x38, true, false), st, ev) &&
+            ev.keycode == ibus::Alt_R &&
+            (ev.mask & (ibus::CONTROL_MASK | ibus::ALT_MASK)) ==
+                (ibus::CONTROL_MASK | ibus::ALT_MASK),
+        "mask: right Alt with Control -> CONTROL_MASK + ALT_MASK");
+  st[VK_CONTROL] = 0;
+  check(ConvertKeyEvent(VK_MENU, mkLparam(0x38, true, true), st, ev) &&
+            ev.keycode == ibus::Alt_R &&
+            (ev.mask & (ibus::ALT_MASK | ibus::RELEASE_MASK)) ==
+                (ibus::ALT_MASK | ibus::RELEASE_MASK),
+        "mask: right Alt release retains ALT_MASK + RELEASE_MASK");
+  st[VK_CONTROL] = 0;
   st[VK_MENU] = 0;
 
   // Caps：按下事件要先还原 LOCK_MASK（rime 期望先见事件后见状态翻转）

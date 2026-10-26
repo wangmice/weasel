@@ -92,7 +92,7 @@ ibus::Keycode TranslateKeycode(UINT vkey, KeyInfo kinfo) {
         return ibus::Control_L;
     }
     case VK_MENU:
-      return ibus::Alt_L;
+      return kinfo.isExtended == 1 ? ibus::Alt_R : ibus::Alt_L;
     case VK_PAUSE:
       return ibus::Pause;
     case VK_CAPITAL:
