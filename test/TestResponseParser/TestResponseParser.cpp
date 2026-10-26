@@ -108,13 +108,14 @@ void test_4() {
   BOOST_TEST_EQ(1, c.totalPages);
 }
 
-// 截断的 cursor 值（缺 cursor 段）不得越界读，属性整体丢弃
+// start,end 是有效范围，cursor 可选；缺少必需的 end 时丢弃属性
 void test_5() {
   const WCHAR* responses[] = {
       L"action=ctx\nctx.preedit=寫作串\nctx.preedit.cursor=0,3\n",
       L"action=ctx\nctx.preedit=寫作串\nctx.preedit.cursor=2\n",
   };
-  for (auto* resp : responses) {
+  for (size_t i = 0; i < sizeof(responses) / sizeof(responses[0]); ++i) {
+    auto* resp = responses[i];
     std::vector<WCHAR> buf(resp, resp + wcslen(resp) + 1);
     std::wstring commit;
     weasel::Context ctx;
@@ -122,7 +123,16 @@ void test_5() {
     weasel::ResponseParser parser(&commit, &ctx, &status);
     parser(buf.data(), wcslen(resp));
     BOOST_TEST(ctx.preedit.str == L"寫作串");
-    BOOST_TEST(ctx.preedit.attributes.empty());
+    if (i == 0) {
+      BOOST_ASSERT(1 == ctx.preedit.attributes.size());
+      const weasel::TextAttribute& attr = ctx.preedit.attributes[0];
+      BOOST_TEST_EQ(weasel::HIGHLIGHTED, attr.type);
+      BOOST_TEST_EQ(0, attr.range.start);
+      BOOST_TEST_EQ(3, attr.range.end);
+      BOOST_TEST_EQ(-1, attr.range.cursor);
+    } else {
+      BOOST_TEST(ctx.preedit.attributes.empty());
+    }
   }
 }
 
