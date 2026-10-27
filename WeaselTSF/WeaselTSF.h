@@ -7,6 +7,7 @@
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
 #include <ResponseParser.h>
+#include <vector>
 
 class CCandidateList;
 class CLangBarItemButton;
@@ -141,6 +142,12 @@ class WeaselTSF : public ITfTextInputProcessorEx,
     UINT64 responseSerial = 0;
   };
 
+  struct RetainedComposition {
+    com_ptr<ITfContext> context;
+    com_ptr<ITfComposition> composition;
+    bool cleanup_pending = false;
+  };
+
   void _StartComposition(com_ptr<ITfContext> pContext,
                          BOOL fCUASWorkaroundEnabled,
                          UINT64 pendingUIGeneration = 0);
@@ -207,6 +214,16 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _ResumeHandoffWait();
   void _ResumeHandoffOnInput();
   void _CancelHandoffWait();
+  void _RetainComposition(com_ptr<ITfContext> context,
+                          com_ptr<ITfComposition> composition);
+  bool _OwnsRetainedComposition(
+      const std::shared_ptr<RetainedComposition>& retained) const;
+  bool _ForgetRetainedComposition(ITfComposition* composition);
+  bool _RestoreRetainedComposition(com_ptr<ITfContext> context);
+  void _ScheduleRetainedCompositionCleanup();
+  HRESULT _CleanupRetainedCompositionLocked(
+      TfEditCookie ec,
+      const std::shared_ptr<RetainedComposition>& retained);
   void _AbortComposition(bool clear = true,
                          DWORD clear_timeout_ms = 0,
                          DWORD editSessionFlags = TF_ES_ASYNCDONTCARE);
@@ -395,6 +412,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   com_ptr<ITfComposition> _pComposition;
   com_ptr<ITfContext> _pCompositionContext;
+  std::vector<std::shared_ptr<RetainedComposition>> _retainedCompositions;
   com_ptr<ITfContext> _pCandidateUIContext;
 
   com_ptr<CLangBarItemButton> _pLangBarButton;

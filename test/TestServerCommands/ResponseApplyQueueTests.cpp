@@ -111,7 +111,7 @@ struct FakeComHandoffHost {
   unsigned edit_requests = 0;
   weasel::tsf::RetryBudget retries;
   bool old_composition = true;
-  unsigned retired_compositions = 0;
+  unsigned retained_compositions = 0;
 
   bool DropAcceptedAsyncSession() {
     if (!old_composition || !fifo.BeginBarrier())
@@ -136,7 +136,7 @@ struct FakeComHandoffHost {
       ++retries.handoff_retries;
     } else {
       old_composition = false;
-      ++retired_compositions;
+      ++retained_compositions;
     }
     const auto token = waiting_token;
     waiting_token = 0;
@@ -226,10 +226,10 @@ bool NewInputRecoversWithoutOldContextNotifications() {
     return false;
 
   // Repeated abandonment cannot keep consuming keys indefinitely. Retire the
-  // old composition at the next input boundary and preserve queued commits.
+  // local composition at the next input boundary and preserve queued commits.
   host.OnInputResponse(10);
   if (!host.fifo.CanSchedule() || host.old_composition ||
-      host.retired_compositions != 1 || host.DropAcceptedAsyncSession())
+      host.retained_compositions != 1 || host.DropAcceptedAsyncSession())
     return false;
   for (int expected : {7, 8, 9, 10}) {
     auto next = host.fifo.TakeNext();
@@ -248,7 +248,7 @@ bool InputRecoveryPreservesNewerPauseAndActiveFlight() {
   const auto newerPause = host.fifo.Pause();
   host.OnInputResponse(2);
   if (!host.fifo.IsPaused() || host.fifo.PauseToken() != newerPause ||
-      host.retries.handoff_retries != 0 || host.retired_compositions != 0)
+      host.retries.handoff_retries != 0 || host.retained_compositions != 0)
     return false;
 
   host.fifo.Reset();
@@ -260,7 +260,7 @@ bool InputRecoveryPreservesNewerPauseAndActiveFlight() {
   host.OnInputResponse(4);
   return host.fifo.InFlight() && host.fifo.FlightToken() == flight &&
          host.fifo.IsPaused() && host.retries.handoff_retries == 0 &&
-         host.retired_compositions == 0;
+         host.retained_compositions == 0;
 }
 
 static_assert(

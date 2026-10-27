@@ -5,6 +5,7 @@
 #include "CandidateList.h"
 #include "AsyncUiPolicy.h"
 #include <WeaselInteractionPolicy.h>
+#include <algorithm>
 
 namespace {
 
@@ -146,21 +147,33 @@ using ResponseApplyQueue = weasel::tsf::SerialApplyQueue<
 
 class CEndCompositionEditSession : public CEditSession {
  public:
-  CEndCompositionEditSession(com_ptr<WeaselTSF> pTextService,
-                             com_ptr<ITfContext> pContext,
-                             com_ptr<ITfComposition> pComposition,
-                             BOOL clear,
-                             UINT64 pauseToken,
-                             ResponseApplyQueue* queue)
+  CEndCompositionEditSession(
+      com_ptr<WeaselTSF> pTextService,
+      com_ptr<ITfContext> pContext,
+      com_ptr<ITfComposition> pComposition,
+      BOOL clear,
+      UINT64 pauseToken,
+      ResponseApplyQueue* queue,
+      std::shared_ptr<WeaselTSF::RetainedComposition> retained = {})
       : CEditSession(pTextService, pContext),
         _pComposition(pComposition),
         _clear(clear),
         _pauseToken(pauseToken),
-        _queue(queue) {}
+        _queue(queue),
+        _retained(std::move(retained)) {}
 
-  ~CEndCompositionEditSession() override { _ReleasePause(); }
+  ~CEndCompositionEditSession() override {
+    if (_retained && !_retainedExecuted)
+      _retained->cleanup_pending = false;
+    _ReleasePause();
+  }
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
+    if (_retained) {
+      _retainedExecuted = true;
+      _retained->cleanup_pending = false;
+      return _pTextService->_CleanupRetainedCompositionLocked(ec, _retained);
+    }
     const HRESULT hr = _pTextService->_EndCompositionLocked(
         ec, _pContext, _pComposition, _clear, FALSE);
     _ReleasePause();
@@ -179,7 +192,130 @@ class CEndCompositionEditSession : public CEditSession {
   BOOL _clear;
   UINT64 _pauseToken;
   ResponseApplyQueue* _queue;
+  std::shared_ptr<WeaselTSF::RetainedComposition> _retained;
+  bool _retainedExecuted = false;
 };
+
+void WeaselTSF::_RetainComposition(com_ptr<ITfContext> context,
+                                   com_ptr<ITfComposition> composition) {
+  if (!_IsCurrentComposition(composition) || !_IsComposingInContext(context))
+    return;
+  auto retained = std::make_shared<RetainedComposition>();
+  retained->context = context;
+  retained->composition = composition;
+  _retainedCompositions.push_back(std::move(retained));
+  _InvalidatePendingUI();
+  _FinalizeComposition();
+  _EndUI();
+}
+
+bool WeaselTSF::_OwnsRetainedComposition(
+    const std::shared_ptr<RetainedComposition>& retained) const {
+  return retained &&
+         std::find(_retainedCompositions.begin(), _retainedCompositions.end(),
+                   retained) != _retainedCompositions.end();
+}
+
+bool WeaselTSF::_ForgetRetainedComposition(ITfComposition* composition) {
+  const auto found =
+      std::find_if(_retainedCompositions.begin(), _retainedCompositions.end(),
+                   [composition](const auto& retained) {
+                     return retained->composition == composition;
+                   });
+  if (found == _retainedCompositions.end())
+    return false;
+  _retainedCompositions.erase(found);
+  return true;
+}
+
+bool WeaselTSF::_RestoreRetainedComposition(com_ptr<ITfContext> context) {
+  if (_IsComposing())
+    return false;
+  const auto found =
+      std::find_if(_retainedCompositions.begin(), _retainedCompositions.end(),
+                   [&context](const auto& retained) {
+                     return retained->context == context;
+                   });
+  if (found == _retainedCompositions.end())
+    return false;
+  const auto retained = *found;
+  // Removing the owner invalidates every older cleanup callback before the
+  // composition can be used to replace preedit with newly committed text.
+  _retainedCompositions.erase(found);
+  _SetComposition(retained->composition, context);
+  return true;
+}
+
+void WeaselTSF::_ScheduleRetainedCompositionCleanup() {
+  if (_tfClientId == TF_CLIENTID_NULL || _responseApplyQueue.InFlight() ||
+      _responseApplyQueue.IsPaused())
+    return;
+  for (const auto& retained : _retainedCompositions) {
+    if (retained->cleanup_pending ||
+        _responseApplyQueue.AnyPending([&retained](const auto& request) {
+          return request && request->context == retained->context;
+        }))
+      continue;
+    // Keep a local owner across RequestEditSession and its reentrant callbacks.
+    const auto owner = retained;
+    owner->cleanup_pending = true;
+    com_ptr<CEndCompositionEditSession> session;
+    session.Attach(new CEndCompositionEditSession(this, owner->context,
+                                                  owner->composition, TRUE, 0,
+                                                  &_responseApplyQueue, owner));
+    HRESULT sessionHr = E_FAIL;
+    const HRESULT requestHr = owner->context->RequestEditSession(
+        _tfClientId, session, TF_ES_ASYNC | TF_ES_READWRITE, &sessionHr);
+    if (requestHr == TF_E_DISCONNECTED && _OwnsRetainedComposition(owner))
+      _ForgetRetainedComposition(owner->composition);
+    // At most one cleanup request per input; dropping an async request never
+    // schedules another one from its COM destructor.
+    return;
+  }
+}
+
+HRESULT WeaselTSF::_CleanupRetainedCompositionLocked(
+    TfEditCookie ec,
+    const std::shared_ptr<RetainedComposition>& retained) {
+  const auto mayClean = [&]() {
+    return _OwnsRetainedComposition(retained) &&
+           !_responseApplyQueue.AnyPending([&retained](const auto& request) {
+             return request && request->context == retained->context;
+           });
+  };
+  if (!mayClean() || !_responseApplyQueue.BeginBarrier())
+    return S_FALSE;
+  const UINT64 flight = _responseApplyQueue.FlightToken();
+  const auto ownsFlight = [&]() {
+    return _responseApplyQueue.InFlight() &&
+           _responseApplyQueue.FlightToken() == flight;
+  };
+  const auto cleanup = [&]() -> HRESULT {
+    com_ptr<ITfRange> range;
+    HRESULT hr = retained->composition->GetRange(&range);
+    if (FAILED(hr))
+      return hr;
+    if (!mayClean() || !ownsFlight())
+      return S_FALSE;
+    _ClearCompositionDisplayAttributes(ec, retained->context,
+                                       retained->composition);
+    if (!mayClean() || !ownsFlight())
+      return S_FALSE;
+    hr = range->SetText(ec, 0, L"", 0);
+    if (FAILED(hr))
+      return hr;
+    if (!mayClean() || !ownsFlight())
+      return S_FALSE;
+    hr = retained->composition->EndComposition(ec);
+    if (SUCCEEDED(hr) && _OwnsRetainedComposition(retained))
+      _ForgetRetainedComposition(retained->composition);
+    return hr;
+  };
+  const HRESULT hr = cleanup();
+  if (_responseApplyQueue.Complete(flight))
+    _ScheduleNextResponseApply(false);
+  return hr;
+}
 
 void WeaselTSF::_EndComposition(com_ptr<ITfContext> pContext,
                                 BOOL clear,
@@ -723,9 +859,8 @@ class CContextHandoffEditSession : public CEditSession {
           _queue->RequestRetry();
         return hr;
       }
-      _pTextService->_EndUI();
-      if (_pTextService->_IsCurrentComposition(_pComposition))
-        _pTextService->_FinalizeComposition();
+      if (_queue->InFlight() && _queue->FlightToken() == _flightToken)
+        _pTextService->_RetainComposition(_pContext, _pComposition);
       _CompleteFlight();
       return hr;
     }
@@ -791,19 +926,15 @@ void WeaselTSF::_ResumeHandoffOnInput() {
     return;
   }
 
-  // Match the terminal handoff failure path: release local ownership of the
-  // unresponsive old composition. Keep the FIFO and all emitted commits; no
-  // server command is replayed and no document text is cleared here.
+  // Transfer ownership before releasing the barrier. The old host composition
+  // must be ended under its own write lock, or restored if input returns there.
+  const UINT64 pauseToken = _handoffWaitPauseToken;
   const auto oldContext = _handoffWaitContext;
   const auto oldComposition = _pComposition;
-  LOG(WARNING) << "Retiring abandoned TSF handoff after bounded input retries";
-  _CancelHandoffWait();
-  if (_IsComposingInContext(oldContext) &&
-      _IsCurrentComposition(oldComposition)) {
-    _InvalidatePendingUI();
-    _FinalizeComposition();
-    _EndUI();
-  }
+  LOG(WARNING) << "Retaining old TSF composition for safe handoff cleanup";
+  _RetainComposition(oldContext, oldComposition);
+  if (_handoffWaitPauseToken == pauseToken)
+    _CancelHandoffWait();
 }
 
 void WeaselTSF::_CancelHandoffWait() {
@@ -828,6 +959,7 @@ void WeaselTSF::_EnqueueResponseApply(
   // New input is a host callback boundary, outside the abandoned session's
   // Release stack. Do not depend forever on another edit in its old context.
   _ResumeHandoffOnInput();
+  _ScheduleRetainedCompositionCleanup();
   _ScheduleNextResponseApply(true);
 }
 
@@ -895,32 +1027,28 @@ void WeaselTSF::_ScheduleNextResponseApply(bool allowSynchronous) {
         if (_responseApplyQueue.Complete(flightToken))
           _responseApplyQueue.RequestRetry();
       } else {
-        _responseApplyQueue.Complete(flightToken);
-        _EndUI();
-        if (_IsCurrentComposition(previousComposition))
-          _FinalizeComposition();
-        _ScheduleNextResponseApply(false);
+        if (_responseApplyQueue.InFlight() &&
+            _responseApplyQueue.FlightToken() == flightToken)
+          _RetainComposition(previousContext, previousComposition);
+        if (_responseApplyQueue.Complete(flightToken))
+          _ScheduleNextResponseApply(false);
       }
       return;
     }
 
     if (sessionHr == TS_E_READONLY && _responseApplyQueue.InFlight() &&
         _responseApplyQueue.FlightToken() == flightToken) {
-      _responseApplyQueue.Complete(flightToken);
-      _EndUI();
-      if (_IsCurrentComposition(previousComposition))
-        _FinalizeComposition();
-      _ScheduleNextResponseApply(false);
+      _RetainComposition(previousContext, previousComposition);
+      if (_responseApplyQueue.Complete(flightToken))
+        _ScheduleNextResponseApply(false);
       return;
     }
 
     if (sessionHr != TF_S_ASYNC && _responseApplyQueue.InFlight() &&
         _responseApplyQueue.FlightToken() == flightToken) {
-      _responseApplyQueue.Complete(flightToken);
-      _EndUI();
-      if (_IsCurrentComposition(previousComposition))
-        _FinalizeComposition();
-      _ScheduleNextResponseApply(false);
+      _RetainComposition(previousContext, previousComposition);
+      if (_responseApplyQueue.Complete(flightToken))
+        _ScheduleNextResponseApply(false);
     }
     return;
   }
@@ -1026,6 +1154,8 @@ void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext,
 /* Composition State */
 STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
                                                 ITfComposition* pComposition) {
+  if (_ForgetRetainedComposition(pComposition))
+    return S_OK;
   if (_handoffWaitPauseToken != 0 && _IsCurrentComposition(pComposition)) {
     _FinalizeComposition();
     _EndUI();

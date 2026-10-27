@@ -57,7 +57,7 @@ constexpr bool ShouldWaitForAbandonedHandoff(bool executed,
 enum class HandoffInputAction : std::uint8_t {
   KeepWaiting,
   Retry,
-  RetireComposition,
+  RetainComposition,
 };
 
 // A later input response is another safe retry boundary when the old context
@@ -69,7 +69,7 @@ constexpr HandoffInputAction ClassifyHandoffInput(bool ownsPause,
   if (!ownsPause || inFlight)
     return HandoffInputAction::KeepWaiting;
   return retries < kMaxApplyRetries ? HandoffInputAction::Retry
-                                    : HandoffInputAction::RetireComposition;
+                                    : HandoffInputAction::RetainComposition;
 }
 
 enum class ScheduleFailureAction : std::uint8_t {

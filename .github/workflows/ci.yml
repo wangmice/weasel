@@ -236,6 +236,18 @@ jobs:
             .\xbuild.bat arm64 installer
           }
 
+      - name: Run TSF command and composition regressions
+        if: matrix.variant == 'xmake'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          xmake f -c -a x64 -m debug --vs=2022 --vs_toolset=14.3 -y
+          if ($LASTEXITCODE -ne 0) { throw 'TSF regression configuration failed' }
+          xmake build -y TestServerCommands
+          if ($LASTEXITCODE -ne 0) { throw 'TSF regression build failed' }
+          xmake run TestServerCommands
+          if ($LASTEXITCODE -ne 0) { throw 'TSF command/composition regressions failed' }
+
       - name: Compress Debug Symbols
         if: matrix.variant == 'msbuild'
         shell: pwsh

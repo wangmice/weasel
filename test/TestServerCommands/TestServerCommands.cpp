@@ -43,6 +43,7 @@ CAppModule _Module;
 static int g_failures = 0;
 
 void RunClassFactoryTests();
+void RunRetainedCompositionTests();
 
 class TestChannelAccess : public weasel::PipeChannelBase {
  public:
@@ -827,6 +828,7 @@ int main() {
   }
   g_hInst = GetModuleHandle(nullptr);
   RunClassFactoryTests();
+  RunRetainedCompositionTests();
   test_server_recovery_coordinator_state_machine();
   test_server_lifecycle_tick_deadline();
   test_session_id_allocator_survives_maintenance_clear();

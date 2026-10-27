@@ -37,6 +37,8 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
   if (epochDisposition == weasel::tsf::EpochDisposition::Drop)
     return S_OK;
 
+  const bool restoredComposition = _RestoreRetainedComposition(pContext);
+
   if (_IsComposing() && !_IsComposingInContext(pContext))
     return E_UNEXPECTED;
 
@@ -90,6 +92,9 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
 
   com_ptr<ITfComposition> composition =
       hasComposition ? _pComposition : nullptr;
+
+  if (restoredComposition && status.composing && !plan.start_composition)
+    _StartUI(pContext);
 
   bool commitApplied =
       snapshot.progress == weasel::tsf::ApplyProgress::CommitApplied;
