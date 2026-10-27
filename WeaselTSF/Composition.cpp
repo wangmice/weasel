@@ -746,8 +746,8 @@ class CContextHandoffEditSession : public CEditSession {
   bool _executed = false;
 };
 
-// One outstanding old-context edit barrier; no additional edit session,
-// cooldown timer, retry counter, or second composition lifecycle.
+// One outstanding old-context edit barrier. Later input may also release it
+// using the queued response's existing handoff retry budget.
 void WeaselTSF::_WaitForHandoffEdit(com_ptr<ITfContext> context,
                                     com_ptr<ITfComposition> composition) {
   if (!context || !composition || !_IsCurrentComposition(composition) ||
@@ -765,6 +765,45 @@ void WeaselTSF::_ResumeHandoffWait() {
   _handoffWaitContext.Release();
   if (_responseApplyQueue.Resume(token))
     _ScheduleNextResponseApply(false);
+}
+
+void WeaselTSF::_ResumeHandoffOnInput() {
+  if (_handoffWaitPauseToken == 0)
+    return;
+
+  const auto request = _responseApplyQueue.PeekFront();
+  if (!request)
+    return;
+  const bool ownsPause =
+      _responseApplyQueue.IsPaused() &&
+      _responseApplyQueue.PauseToken() == _handoffWaitPauseToken;
+  const auto action = weasel::tsf::ClassifyHandoffInput(
+      ownsPause, _responseApplyQueue.InFlight(),
+      request->snapshot.retries.handoff_retries);
+  if (action == weasel::tsf::HandoffInputAction::KeepWaiting)
+    return;
+
+  if (action == weasel::tsf::HandoffInputAction::Retry) {
+    ++request->snapshot.retries.handoff_retries;
+    LOG(INFO) << "Resuming abandoned TSF handoff on input, retry="
+              << request->snapshot.retries.handoff_retries;
+    _CancelHandoffWait();
+    return;
+  }
+
+  // Match the terminal handoff failure path: release local ownership of the
+  // unresponsive old composition. Keep the FIFO and all emitted commits; no
+  // server command is replayed and no document text is cleared here.
+  const auto oldContext = _handoffWaitContext;
+  const auto oldComposition = _pComposition;
+  LOG(WARNING) << "Retiring abandoned TSF handoff after bounded input retries";
+  _CancelHandoffWait();
+  if (_IsComposingInContext(oldContext) &&
+      _IsCurrentComposition(oldComposition)) {
+    _InvalidatePendingUI();
+    _FinalizeComposition();
+    _EndUI();
+  }
 }
 
 void WeaselTSF::_CancelHandoffWait() {
@@ -786,6 +825,9 @@ void WeaselTSF::_EnqueueResponseApply(
   request->snapshot = std::move(snapshot);
   request->responseSerial = responseSerial;
   _responseApplyQueue.Push(std::move(request));
+  // New input is a host callback boundary, outside the abandoned session's
+  // Release stack. Do not depend forever on another edit in its old context.
+  _ResumeHandoffOnInput();
   _ScheduleNextResponseApply(true);
 }
 
@@ -1052,3 +1094,4 @@ BOOL WeaselTSF::_IsComposingInContext(ITfContext* pContext) {
 BOOL WeaselTSF::_IsCurrentComposition(ITfComposition* pComposition) {
   return _pComposition != nullptr && _pComposition == pComposition;
 }
+

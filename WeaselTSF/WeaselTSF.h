@@ -205,6 +205,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _WaitForHandoffEdit(com_ptr<ITfContext> context,
                            com_ptr<ITfComposition> composition);
   void _ResumeHandoffWait();
+  void _ResumeHandoffOnInput();
   void _CancelHandoffWait();
   void _AbortComposition(bool clear = true,
                          DWORD clear_timeout_ms = 0,
@@ -421,7 +422,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   UINT64 _parsedSerial = 0;
   weasel::tsf::SerialApplyQueue<std::shared_ptr<ResponseApplyRequest>>
       _responseApplyQueue;
-  // A dropped asynchronous handoff waits for an old-context edit notification.
+  // A dropped handoff resumes on an old-context edit or a later input response.
   // The barrier is not a second TSF composition or a cleanup edit session.
   UINT64 _handoffWaitPauseToken = 0;
   com_ptr<ITfContext> _handoffWaitContext;
@@ -439,3 +440,4 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   UINT64 _pendingUIGeneration = 0;
   bool _hasPendingUI = false;
 };
+

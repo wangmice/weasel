@@ -1,4 +1,5 @@
 #include "../../WeaselTSF/ResponseApplyQueue.h"
+#include "../../WeaselTSF/ResponseApplyState.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -103,14 +104,17 @@ bool ResponseApplyQueueIsSingleFlightAndFifo() {
 // Model TSF's COM behavior: RequestEditSession accepts a session, then the
 // host drops its last reference without ever calling DoEditSession. The TIP
 // must park the owning flight and never request again in the same Release
-// stack. Only the original context's OnEndEdit may release the barrier.
+// stack. An old-context notification or a later input response can release it.
 struct FakeComHandoffHost {
   weasel::tsf::SerialApplyQueue<std::shared_ptr<int>> fifo;
   std::uint64_t waiting_token = 0;
   unsigned edit_requests = 0;
+  weasel::tsf::RetryBudget retries;
+  bool old_composition = true;
+  unsigned retired_compositions = 0;
 
   bool DropAcceptedAsyncSession() {
-    if (!fifo.BeginBarrier())
+    if (!old_composition || !fifo.BeginBarrier())
       return false;
     const auto flight = fifo.FlightToken();
     ++edit_requests;
@@ -118,6 +122,25 @@ struct FakeComHandoffHost {
     // parks the queue before completing its owned flight.
     waiting_token = fifo.Pause();
     return fifo.Complete(flight);
+  }
+
+  void OnInputResponse(int value) {
+    fifo.Push(std::make_shared<int>(value));
+    const auto action = weasel::tsf::ClassifyHandoffInput(
+        waiting_token != 0 && fifo.IsPaused() &&
+            fifo.PauseToken() == waiting_token,
+        fifo.InFlight(), retries.handoff_retries);
+    if (action == weasel::tsf::HandoffInputAction::KeepWaiting)
+      return;
+    if (action == weasel::tsf::HandoffInputAction::Retry) {
+      ++retries.handoff_retries;
+    } else {
+      old_composition = false;
+      ++retired_compositions;
+    }
+    const auto token = waiting_token;
+    waiting_token = 0;
+    fifo.Resume(token);
   }
 
   void OnEndEdit(bool from_original_context) {
@@ -183,6 +206,63 @@ bool AbandonedHandoffFaultInjection() {
          !host.fifo.IsPaused() && host.fifo.PendingCount() == 0;
 }
 
+bool NewInputRecoversWithoutOldContextNotifications() {
+  FakeComHandoffHost host;
+  host.fifo.Push(std::make_shared<int>(7));
+  if (!host.DropAcceptedAsyncSession())
+    return false;
+
+  // The old context never sends an edit or composition-termination callback.
+  // New input must wake the queue without requesting inside COM destruction.
+  for (int value : {8, 9}) {
+    const auto requests = host.edit_requests;
+    host.OnInputResponse(value);
+    if (!host.fifo.CanSchedule() || host.edit_requests != requests ||
+        !host.old_composition || !host.DropAcceptedAsyncSession())
+      return false;
+  }
+  if (host.retries.handoff_retries != weasel::tsf::kMaxApplyRetries ||
+      host.edit_requests != 3)
+    return false;
+
+  // Repeated abandonment cannot keep consuming keys indefinitely. Retire the
+  // old composition at the next input boundary and preserve queued commits.
+  host.OnInputResponse(10);
+  if (!host.fifo.CanSchedule() || host.old_composition ||
+      host.retired_compositions != 1 || host.DropAcceptedAsyncSession())
+    return false;
+  for (int expected : {7, 8, 9, 10}) {
+    auto next = host.fifo.TakeNext();
+    const auto token = host.fifo.FlightToken();
+    if (!next || *next != expected || !host.fifo.Complete(token))
+      return false;
+  }
+  return host.fifo.PendingCount() == 0;
+}
+
+bool InputRecoveryPreservesNewerPauseAndActiveFlight() {
+  FakeComHandoffHost host;
+  host.fifo.Push(std::make_shared<int>(1));
+  if (!host.DropAcceptedAsyncSession())
+    return false;
+  const auto newerPause = host.fifo.Pause();
+  host.OnInputResponse(2);
+  if (!host.fifo.IsPaused() || host.fifo.PauseToken() != newerPause ||
+      host.retries.handoff_retries != 0 || host.retired_compositions != 0)
+    return false;
+
+  host.fifo.Reset();
+  host.fifo.Push(std::make_shared<int>(3));
+  if (!host.fifo.BeginBarrier())
+    return false;
+  const auto flight = host.fifo.FlightToken();
+  host.waiting_token = host.fifo.Pause();
+  host.OnInputResponse(4);
+  return host.fifo.InFlight() && host.fifo.FlightToken() == flight &&
+         host.fifo.IsPaused() && host.retries.handoff_retries == 0 &&
+         host.retired_compositions == 0;
+}
+
 static_assert(
     weasel::tsf::ShouldEndCandidateUIForContextHandoff(true, false),
     "cross-context composition handoff must end the old candidate UI");
@@ -196,7 +276,9 @@ static_assert(!weasel::tsf::ShouldHandleCompositionContextEvent(true, false),
 struct ResponseApplyQueueRegressionGuard {
   ResponseApplyQueueRegressionGuard() {
     if (!ResponseApplyQueueIsSingleFlightAndFifo() ||
-        !AbandonedHandoffFaultInjection()) {
+        !AbandonedHandoffFaultInjection() ||
+        !NewInputRecoversWithoutOldContextNotifications() ||
+        !InputRecoveryPreservesNewerPauseAndActiveFlight()) {
       std::fputs("ordered response apply queue regression\n", stderr);
       std::abort();
     }
@@ -206,3 +288,4 @@ struct ResponseApplyQueueRegressionGuard {
 ResponseApplyQueueRegressionGuard g_response_apply_queue_regression_guard;
 
 }  // namespace
+
