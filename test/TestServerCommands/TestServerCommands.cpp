@@ -796,16 +796,15 @@ static void test_new_input_wakes_abandoned_handoff() {
   for (unsigned retry = 1; retry <= weasel::tsf::kMaxApplyRetries; ++retry) {
     WeaselTSFTestAccess::PauseAbandonedHandoff(tsf);
     WeaselTSFTestAccess::EnqueueInputResponse(tsf, L"next");
-    check(queue.CanSchedule() &&
-              first->snapshot.retries.handoff_retries == retry,
-          "new input wakes an abandoned handoff within its retry budget");
+    check(
+        queue.CanSchedule() && first->snapshot.retries.handoff_retries == retry,
+        "new input wakes an abandoned handoff within its retry budget");
   }
 
   WeaselTSFTestAccess::PauseAbandonedHandoff(tsf);
   WeaselTSFTestAccess::EnqueueInputResponse(tsf, L"last");
-  check(queue.CanSchedule() &&
-            first->snapshot.retries.handoff_retries ==
-                weasel::tsf::kMaxApplyRetries,
+  check(queue.CanSchedule() && first->snapshot.retries.handoff_retries ==
+                                   weasel::tsf::kMaxApplyRetries,
         "exhausted handoff retries cannot keep later input paused");
   for (const wchar_t* expected : {L"first", L"next", L"next", L"last"}) {
     auto response = queue.TakeNext();
@@ -846,4 +845,3 @@ int main() {
   std::printf("Failures: %d\n", g_failures);
   return g_failures ? 1 : 0;
 }
-

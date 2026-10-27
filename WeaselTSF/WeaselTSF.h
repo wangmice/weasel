@@ -440,4 +440,3 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   UINT64 _pendingUIGeneration = 0;
   bool _hasPendingUI = false;
 };
-

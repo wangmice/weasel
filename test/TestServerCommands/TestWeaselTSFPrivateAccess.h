@@ -29,4 +29,3 @@ class WeaselTSFTestAccess {
            WeaselTSF::KeyDispatchResult::Unhandled;
   }
 };
-

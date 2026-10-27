@@ -64,13 +64,12 @@ enum class HandoffInputAction : std::uint8_t {
 // never sends OnEndEdit. A stale pause owner or an executing flight must not
 // be disturbed. Repeated abandonment shares the normal handoff retry budget.
 constexpr HandoffInputAction ClassifyHandoffInput(bool ownsPause,
-                                                 bool inFlight,
-                                                 unsigned retries) {
+                                                  bool inFlight,
+                                                  unsigned retries) {
   if (!ownsPause || inFlight)
     return HandoffInputAction::KeepWaiting;
-  return retries < kMaxApplyRetries
-             ? HandoffInputAction::Retry
-             : HandoffInputAction::RetireComposition;
+  return retries < kMaxApplyRetries ? HandoffInputAction::Retry
+                                    : HandoffInputAction::RetireComposition;
 }
 
 enum class ScheduleFailureAction : std::uint8_t {
@@ -98,4 +97,3 @@ constexpr bool ShouldPublishCandidateImmediately(bool uiLess) {
 }
 
 }  // namespace weasel::tsf
-

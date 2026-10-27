@@ -288,4 +288,3 @@ struct ResponseApplyQueueRegressionGuard {
 ResponseApplyQueueRegressionGuard g_response_apply_queue_regression_guard;
 
 }  // namespace
-

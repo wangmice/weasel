@@ -1094,4 +1094,3 @@ BOOL WeaselTSF::_IsComposingInContext(ITfContext* pContext) {
 BOOL WeaselTSF::_IsCurrentComposition(ITfComposition* pComposition) {
   return _pComposition != nullptr && _pComposition == pComposition;
 }
-
