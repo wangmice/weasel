@@ -346,6 +346,8 @@ class HostContext : public StubTfContext {
     state->length = selection_length;
     selection->range = new HostRange(this, state);
     selection->style = selection_style;
+    if (report_end_anchor)
+      selection->style.ase = TF_AE_END;
     *fetched = 1;
     return S_OK;
   }
@@ -414,6 +416,7 @@ class HostContext : public StubTfContext {
   TF_SELECTIONSTYLE selection_style{TF_AE_NONE, FALSE};
   bool set_text_moves_selection = true;
   bool partial_selection_failure = false;
+  bool report_end_anchor = false;
   unsigned selection_failures = 0;
   unsigned set_text_calls = 0;
   std::function<void()> on_set_text;
@@ -439,6 +442,7 @@ HRESULT HostRange::SetText(TfEditCookie ec,
     return E_INVALIDARG;
   ++context->set_text_calls;
   const auto old_end = range_->start + range_->length;
+  const auto selection_end = context->caret + context->selection_length;
   context->text.replace(range_->start, range_->length, text, count);
   const auto adjusted = [&](size_t position) {
     if (position >= old_end)
@@ -462,8 +466,10 @@ HRESULT HostRange::SetText(TfEditCookie ec,
     context->caret = range_->start;
     context->selection_length = count;
     context->selection_style = {TF_AE_NONE, FALSE};
-  } else if (context->caret >= old_end) {
-    context->caret = context->caret - range_->length + count;
+  } else {
+    const auto adjusted_end = adjusted(selection_end);
+    context->caret = adjusted(context->caret);
+    context->selection_length = adjusted_end - context->caret;
   }
   range_->length = count;
   if (context->on_set_text)
@@ -821,6 +827,40 @@ void FailedCleanupRepairsSelectionBeforeReturningInput() {
       "returning input must repair a partially completed background cleanup");
 }
 
+void AnUnchangedSelectionNeedsNoHostWrite() {
+  for (bool background : {false, true}) {
+    Fixture fixture(L"ni|body");
+    fixture.AbandonHandoff(HostContext::Delivery::Hold);
+    fixture.old_context->set_text_moves_selection = false;
+    fixture.old_context->selection_failures = 32;
+    fixture.old_context->delivery = HostContext::Delivery::Grant;
+    if (background)
+      fixture.old_context->GrantOne();
+    WeaselTSFTestAccess::EnqueueContextResponse(fixture.service,
+                                                fixture.old_context, L"X");
+    fixture.old_context->GrantAll();
+    Require(
+        fixture.old_context->text == L"|bodyX" &&
+            fixture.old_context->selection_failures == 32 &&
+            fixture.composition->end_calls == 1 &&
+            fixture.old_context->invalid_writes == 0,
+        "an unchanged selection must not depend on SetSelection succeeding");
+  }
+  Fixture interim;
+  interim.AbandonHandoff(HostContext::Delivery::Hold);
+  interim.old_context->caret = 0;
+  interim.old_context->selection_length = 1;
+  interim.old_context->selection_style.fInterimChar = TRUE;
+  interim.old_context->report_end_anchor = true;
+  interim.old_context->selection_failures = 32;
+  interim.old_context->GrantOne();
+  Require(
+      interim.old_context->text.empty() &&
+          interim.old_context->selection_failures == 32 &&
+          WeaselTSFTestAccess::RetainedCompositionCount(interim.service) == 0,
+      "an empty selection's active-end convention needs no host write");
+}
+
 void ANewUserSelectionOverridesFailedCleanupRecovery() {
   for (bool selected : {false, true}) {
     Fixture fixture(L"ni|body");
@@ -1035,6 +1075,7 @@ void RunRetainedCompositionTests() {
   ReturningCommitSurvivesASelectionRestoreFailure();
   DelayedCleanupPreservesTheCurrentSelection();
   FailedCleanupRepairsSelectionBeforeReturningInput();
+  AnUnchangedSelectionNeedsNoHostWrite();
   ANewUserSelectionOverridesFailedCleanupRecovery();
   ResetDuringDeletionKeepsRecoverableSelection();
   FailedEndDoesNotRepeatDeletion();

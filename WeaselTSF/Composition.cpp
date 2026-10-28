@@ -268,6 +268,33 @@ HRESULT WeaselTSF::_DiscardRetainedCompositionLocked(
         retained->saved_selection_style.ase = TF_AE_NONE;
       }
     }
+    TF_SELECTION existing{};
+    com_ptr<ITfRange> existingRange;
+    if (SUCCEEDED(getSelection(existing, existingRange))) {
+      LONG start = 0, end = 0;
+      HRESULT compareHr = existingRange->CompareStart(
+          ec, retained->saved_selection, TF_ANCHOR_START, &start);
+      if (SUCCEEDED(compareHr))
+        compareHr = existingRange->CompareEnd(ec, retained->saved_selection,
+                                              TF_ANCHOR_END, &end);
+      if (!current())
+        return E_ABORT;
+      bool sameActiveEnd =
+          existing.style.ase == retained->saved_selection_style.ase;
+      if (!sameActiveEnd && SUCCEEDED(compareHr) && start == 0 && end == 0) {
+        BOOL empty = FALSE;
+        sameActiveEnd = SUCCEEDED(existingRange->IsEmpty(ec, &empty)) && empty;
+        if (!current())
+          return E_ABORT;
+      }
+      // An already correct selection needs no further host write.
+      if (SUCCEEDED(compareHr) && start == 0 && end == 0 && sameActiveEnd &&
+          existing.style.fInterimChar ==
+              retained->saved_selection_style.fInterimChar)
+        return S_OK;
+    } else if (!current()) {
+      return E_ABORT;
+    }
     TF_SELECTION selection{retained->saved_selection,
                            retained->saved_selection_style};
     const HRESULT hr = retained->context->SetSelection(ec, 1, &selection);
