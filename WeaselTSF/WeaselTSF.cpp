@@ -282,6 +282,8 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
     _CancelHandoffWait();
     _InvalidatePendingUI();
     _responseApplyQueue.Reset();
+    // The new epoch invalidates cleanup callbacks, not ownership of a host
+    // composition that may still be live when the profile is reactivated.
     _pendingCommit.clear();
     _DeleteCandidateList();
     _ShowLanguageBar(FALSE);

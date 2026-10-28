@@ -43,6 +43,7 @@ CAppModule _Module;
 static int g_failures = 0;
 
 void RunClassFactoryTests();
+void RunRetainedCompositionTests();
 
 class TestChannelAccess : public weasel::PipeChannelBase {
  public:
@@ -785,6 +786,38 @@ static void test_maintenance_session_recovery() {
   weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
+static void test_new_input_wakes_abandoned_handoff() {
+  WeaselTSF tsf;
+  auto& queue = WeaselTSFTestAccess::ResponseQueue(tsf);
+  WeaselTSFTestAccess::EnqueueInputResponse(tsf, L"first");
+  const auto first = queue.PeekFront();
+
+  // No old-context notification is delivered. Each real input response goes
+  // through the production enqueue method and wakes the abandoned barrier.
+  for (unsigned retry = 1; retry <= weasel::tsf::kMaxApplyRetries; ++retry) {
+    WeaselTSFTestAccess::PauseAbandonedHandoff(tsf);
+    WeaselTSFTestAccess::EnqueueInputResponse(tsf, L"next");
+    check(
+        queue.CanSchedule() && first->snapshot.retries.handoff_retries == retry,
+        "new input wakes an abandoned handoff within its retry budget");
+  }
+
+  WeaselTSFTestAccess::PauseAbandonedHandoff(tsf);
+  WeaselTSFTestAccess::EnqueueInputResponse(tsf, L"last");
+  check(queue.CanSchedule() && first->snapshot.retries.handoff_retries ==
+                                   weasel::tsf::kMaxApplyRetries,
+        "exhausted handoff retries cannot keep later input paused");
+  for (const wchar_t* expected : {L"first", L"next", L"next", L"last"}) {
+    auto response = queue.TakeNext();
+    const auto token = queue.FlightToken();
+    check(response && response->snapshot.commit == expected &&
+              queue.Complete(token),
+          "handoff input recovery preserves committed responses in FIFO order");
+  }
+  check(queue.PendingCount() == 0,
+        "handoff input recovery neither duplicates nor leaves committed text");
+}
+
 int main() {
   HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(hr))
@@ -795,10 +828,12 @@ int main() {
   }
   g_hInst = GetModuleHandle(nullptr);
   RunClassFactoryTests();
+  RunRetainedCompositionTests();
   test_server_recovery_coordinator_state_machine();
   test_server_lifecycle_tick_deadline();
   test_session_id_allocator_survives_maintenance_clear();
   test_pending_ui_generation_rejects_stale_extent();
+  test_new_input_wakes_abandoned_handoff();
   test_server_runtime_state_tracks_maintenance();
   test_candidate_selection_acknowledgement();
   test_pipe_ascii_commands();

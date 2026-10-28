@@ -7,6 +7,7 @@
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
 #include <ResponseParser.h>
+#include <vector>
 
 class CCandidateList;
 class CLangBarItemButton;
@@ -141,6 +142,19 @@ class WeaselTSF : public ITfTextInputProcessorEx,
     UINT64 responseSerial = 0;
   };
 
+  struct RetainedComposition {
+    com_ptr<ITfContext> context;
+    com_ptr<ITfComposition> composition;
+    UINT64 cleanup_epoch = 0;
+    bool discarding = false;
+    bool text_cleared = false;
+    bool ended = false;
+    com_ptr<ITfRange> saved_selection;
+    com_ptr<ITfRange> changed_selection;
+    TF_SELECTIONSTYLE saved_selection_style{};
+    TF_SELECTIONSTYLE changed_selection_style{};
+  };
+
   void _StartComposition(com_ptr<ITfContext> pContext,
                          BOOL fCUASWorkaroundEnabled,
                          UINT64 pendingUIGeneration = 0);
@@ -205,7 +219,23 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   void _WaitForHandoffEdit(com_ptr<ITfContext> context,
                            com_ptr<ITfComposition> composition);
   void _ResumeHandoffWait();
+  void _ResumeHandoffOnInput();
   void _CancelHandoffWait();
+  void _RetainComposition(com_ptr<ITfContext> context,
+                          com_ptr<ITfComposition> composition);
+  bool _OwnsRetainedComposition(
+      const std::shared_ptr<RetainedComposition>& retained) const;
+  bool _ForgetRetainedComposition(ITfComposition* composition);
+  HRESULT _RestoreRetainedComposition(TfEditCookie ec,
+                                      com_ptr<ITfContext> context);
+  HRESULT _DiscardRetainedCompositionLocked(
+      TfEditCookie ec,
+      const std::shared_ptr<RetainedComposition>& retained,
+      bool background);
+  void _ScheduleRetainedCompositionCleanup();
+  HRESULT _CleanupRetainedCompositionLocked(
+      TfEditCookie ec,
+      const std::shared_ptr<RetainedComposition>& retained);
   void _AbortComposition(bool clear = true,
                          DWORD clear_timeout_ms = 0,
                          DWORD editSessionFlags = TF_ES_ASYNCDONTCARE);
@@ -394,6 +424,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   com_ptr<ITfComposition> _pComposition;
   com_ptr<ITfContext> _pCompositionContext;
+  std::vector<std::shared_ptr<RetainedComposition>> _retainedCompositions;
   com_ptr<ITfContext> _pCandidateUIContext;
 
   com_ptr<CLangBarItemButton> _pLangBarButton;
@@ -421,7 +452,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   UINT64 _parsedSerial = 0;
   weasel::tsf::SerialApplyQueue<std::shared_ptr<ResponseApplyRequest>>
       _responseApplyQueue;
-  // A dropped asynchronous handoff waits for an old-context edit notification.
+  // A dropped handoff resumes on an old-context edit or a later input response.
   // The barrier is not a second TSF composition or a cleanup edit session.
   UINT64 _handoffWaitPauseToken = 0;
   com_ptr<ITfContext> _handoffWaitContext;

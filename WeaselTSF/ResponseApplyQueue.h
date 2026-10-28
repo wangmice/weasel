@@ -24,6 +24,15 @@ class SerialApplyQueue {
   std::size_t PendingCount() const { return pending_.size(); }
   T PeekFront() const { return pending_.empty() ? T{} : pending_.front(); }
 
+  template <typename Predicate>
+  bool AnyPending(Predicate predicate) const {
+    for (const auto& item : pending_) {
+      if (predicate(item))
+        return true;
+    }
+    return false;
+  }
+
   bool MarkSerialEnqueued(std::uint64_t serial) {
     if (serial == 0 || serial == last_enqueued_serial_)
       return false;
