@@ -146,6 +146,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
     com_ptr<ITfContext> context;
     com_ptr<ITfComposition> composition;
     UINT64 cleanup_epoch = 0;
+    bool discarding = false;
+    bool text_cleared = false;
+    bool ended = false;
+    com_ptr<ITfRange> saved_selection;
+    com_ptr<ITfRange> changed_selection;
+    TF_SELECTIONSTYLE saved_selection_style{};
+    TF_SELECTIONSTYLE changed_selection_style{};
   };
 
   void _StartComposition(com_ptr<ITfContext> pContext,
@@ -221,6 +228,10 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   bool _ForgetRetainedComposition(ITfComposition* composition);
   HRESULT _RestoreRetainedComposition(TfEditCookie ec,
                                       com_ptr<ITfContext> context);
+  HRESULT _DiscardRetainedCompositionLocked(
+      TfEditCookie ec,
+      const std::shared_ptr<RetainedComposition>& retained,
+      bool background);
   void _ScheduleRetainedCompositionCleanup();
   HRESULT _CleanupRetainedCompositionLocked(
       TfEditCookie ec,

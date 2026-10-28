@@ -234,6 +234,153 @@ bool WeaselTSF::_ForgetRetainedComposition(ITfComposition* composition) {
   return true;
 }
 
+HRESULT WeaselTSF::_DiscardRetainedCompositionLocked(
+    TfEditCookie ec,
+    const std::shared_ptr<RetainedComposition>& retained,
+    bool background) {
+  const UINT64 epoch = _responseApplyQueue.CurrentEpoch();
+  const UINT64 flight = _responseApplyQueue.FlightToken();
+  const auto current = [&]() {
+    return _OwnsRetainedComposition(retained) &&
+           _responseApplyQueue.CurrentEpoch() == epoch &&
+           _responseApplyQueue.FlightToken() == flight;
+  };
+  const auto getSelection = [&](TF_SELECTION& selection,
+                                com_ptr<ITfRange>& range) -> HRESULT {
+    ULONG fetched = 0;
+    const HRESULT hr = retained->context->GetSelection(ec, TF_DEFAULT_SELECTION,
+                                                       1, &selection, &fetched);
+    range.Attach(selection.range);
+    if (!current())
+      return E_ABORT;
+    if (FAILED(hr))
+      return hr;
+    return fetched == 1 && range ? S_OK : E_FAIL;
+  };
+  const auto restoreSelection = [&]() -> HRESULT {
+    if (retained->saved_selection_style.fInterimChar) {
+      BOOL empty = FALSE;
+      const HRESULT hr = retained->saved_selection->IsEmpty(ec, &empty);
+      if (FAILED(hr) || !current())
+        return FAILED(hr) ? hr : E_ABORT;
+      if (empty) {
+        retained->saved_selection_style.fInterimChar = FALSE;
+        retained->saved_selection_style.ase = TF_AE_NONE;
+      }
+    }
+    TF_SELECTION selection{retained->saved_selection,
+                           retained->saved_selection_style};
+    const HRESULT hr = retained->context->SetSelection(ec, 1, &selection);
+    if (FAILED(hr) && current()) {
+      TF_SELECTION changed{};
+      com_ptr<ITfRange> changedRange;
+      if (SUCCEEDED(getSelection(changed, changedRange))) {
+        retained->changed_selection = changedRange;
+        retained->changed_selection_style = changed.style;
+      }
+    }
+    return current() ? hr : E_ABORT;
+  };
+  TF_SELECTION selection{};
+  com_ptr<ITfRange> selectedRange;
+  HRESULT hr = getSelection(selection, selectedRange);
+  if (FAILED(hr))
+    return hr;
+
+  if (retained->saved_selection) {
+    LONG start = 0, end = 0;
+    hr = selectedRange->CompareStart(ec, retained->changed_selection,
+                                     TF_ANCHOR_START, &start);
+    if (SUCCEEDED(hr))
+      hr = selectedRange->CompareEnd(ec, retained->changed_selection,
+                                     TF_ANCHOR_END, &end);
+    if (FAILED(hr) || !current())
+      return FAILED(hr) ? hr : E_ABORT;
+    // Repair a selection changed by our own partial cleanup. A subsequent user
+    // selection takes precedence over the earlier saved insertion point.
+    if (start == 0 && end == 0 &&
+        selection.style.ase == retained->changed_selection_style.ase &&
+        selection.style.fInterimChar ==
+            retained->changed_selection_style.fInterimChar) {
+      hr = restoreSelection();
+      if (FAILED(hr))
+        return hr;
+      selectedRange = retained->saved_selection;
+      selection.range = selectedRange;
+      selection.style = retained->saved_selection_style;
+    }
+    retained->saved_selection = nullptr;
+    retained->changed_selection = nullptr;
+  }
+  if (retained->ended) {
+    _ForgetRetainedComposition(retained->composition);
+    return S_OK;
+  }
+
+  com_ptr<ITfRange> range;
+  if (!retained->text_cleared) {
+    hr = retained->composition->GetRange(&range);
+    if (FAILED(hr) || !current())
+      return FAILED(hr) ? hr : E_ABORT;
+  }
+  const auto waitingForInput = [&]() {
+    return background && !retained->discarding &&
+           _responseApplyQueue.AnyPending([&](const auto& request) {
+             return request && request->context == retained->context;
+           });
+  };
+  if (waitingForInput())
+    return S_FALSE;
+  if (!retained->text_cleared) {
+    _ClearCompositionDisplayAttributes(ec, retained->context,
+                                       retained->composition);
+    if (!current())
+      return E_ABORT;
+  }
+  if (waitingForInput())
+    return S_FALSE;
+
+  retained->saved_selection = selectedRange;
+  retained->saved_selection_style = selection.style;
+  retained->changed_selection = range ? range : selectedRange;
+  retained->changed_selection_style = {};
+  retained->discarding = true;
+  if (!retained->text_cleared) {
+    hr = range->SetText(ec, 0, L"", 0);
+    if (SUCCEEDED(hr))
+      retained->text_cleared = true;
+    if (!current())
+      return E_ABORT;
+  }
+  if (SUCCEEDED(hr) && !retained->ended) {
+    hr = retained->composition->EndComposition(ec);
+    if (SUCCEEDED(hr))
+      retained->ended = true;
+    if (!current())
+      return E_ABORT;
+  }
+
+  // Keep both anchored ranges until restoration succeeds, even if the host has
+  // already ended the composition. A retry must not clear or end it twice.
+  TF_SELECTION changed{};
+  com_ptr<ITfRange> changedRange;
+  const HRESULT changedHr = getSelection(changed, changedRange);
+  if (!current())
+    return E_ABORT;
+  if (SUCCEEDED(changedHr)) {
+    retained->changed_selection = changedRange;
+    retained->changed_selection_style = changed.style;
+  }
+  const HRESULT selectionHr = restoreSelection();
+  if (SUCCEEDED(selectionHr)) {
+    retained->saved_selection = nullptr;
+    retained->changed_selection = nullptr;
+    if (retained->ended)
+      _ForgetRetainedComposition(retained->composition);
+  }
+  return FAILED(hr) ? hr : selectionHr;
+}
+
 HRESULT WeaselTSF::_RestoreRetainedComposition(TfEditCookie ec,
                                                com_ptr<ITfContext> context) {
   if (_IsComposing())
@@ -246,6 +393,10 @@ HRESULT WeaselTSF::_RestoreRetainedComposition(TfEditCookie ec,
   if (found == _retainedCompositions.end())
     return S_FALSE;
   const auto retained = *found;
+  if (retained->discarding) {
+    const HRESULT hr = _DiscardRetainedCompositionLocked(ec, retained, false);
+    return FAILED(hr) ? hr : S_FALSE;
+  }
   const UINT64 epoch = _responseApplyQueue.CurrentEpoch();
   const UINT64 flight = _responseApplyQueue.FlightToken();
   const auto stillCurrent = [&]() {
@@ -275,23 +426,7 @@ HRESULT WeaselTSF::_RestoreRetainedComposition(TfEditCookie ec,
     return E_ABORT;
 
   if (start > 0 || end < 0) {
-    // A caret move ends the old preedit rather than reclaiming its insertion
-    // point. Keep the selection range anchored across deletion of that preedit.
-    _ClearCompositionDisplayAttributes(ec, context, retained->composition);
-    if (!stillCurrent())
-      return E_ABORT;
-    hr = range->SetText(ec, 0, L"", 0);
-    if (FAILED(hr) || !stillCurrent())
-      return FAILED(hr) ? hr : E_ABORT;
-    hr = context->SetSelection(ec, 1, &selection);
-    if (FAILED(hr) || !stillCurrent())
-      return FAILED(hr) ? hr : E_ABORT;
-    hr = retained->composition->EndComposition(ec);
-    if (SUCCEEDED(hr) && _OwnsRetainedComposition(retained))
-      _ForgetRetainedComposition(retained->composition);
-    if (_responseApplyQueue.CurrentEpoch() != epoch ||
-        _responseApplyQueue.FlightToken() != flight)
-      return E_ABORT;
+    hr = _DiscardRetainedCompositionLocked(ec, retained, false);
     return FAILED(hr) ? hr : S_FALSE;
   }
 
@@ -345,32 +480,7 @@ HRESULT WeaselTSF::_CleanupRetainedCompositionLocked(
   if (!mayClean() || !_responseApplyQueue.BeginBarrier())
     return S_FALSE;
   const UINT64 flight = _responseApplyQueue.FlightToken();
-  const auto ownsFlight = [&]() {
-    return _responseApplyQueue.InFlight() &&
-           _responseApplyQueue.FlightToken() == flight;
-  };
-  const auto cleanup = [&]() -> HRESULT {
-    com_ptr<ITfRange> range;
-    HRESULT hr = retained->composition->GetRange(&range);
-    if (FAILED(hr))
-      return hr;
-    if (!mayClean() || !ownsFlight())
-      return S_FALSE;
-    _ClearCompositionDisplayAttributes(ec, retained->context,
-                                       retained->composition);
-    if (!mayClean() || !ownsFlight())
-      return S_FALSE;
-    hr = range->SetText(ec, 0, L"", 0);
-    if (FAILED(hr))
-      return hr;
-    if (!mayClean() || !ownsFlight())
-      return S_FALSE;
-    hr = retained->composition->EndComposition(ec);
-    if (SUCCEEDED(hr) && _OwnsRetainedComposition(retained))
-      _ForgetRetainedComposition(retained->composition);
-    return hr;
-  };
-  const HRESULT hr = cleanup();
+  const HRESULT hr = _DiscardRetainedCompositionLocked(ec, retained, true);
   if (_responseApplyQueue.Complete(flight))
     _ScheduleNextResponseApply(false);
   return hr;
@@ -1213,8 +1323,17 @@ void WeaselTSF::_UpdateComposition(com_ptr<ITfContext> pContext,
 /* Composition State */
 STDMETHODIMP WeaselTSF::OnCompositionTerminated(TfEditCookie ecWrite,
                                                 ITfComposition* pComposition) {
-  if (_ForgetRetainedComposition(pComposition))
+  const auto retained =
+      std::find_if(_retainedCompositions.begin(), _retainedCompositions.end(),
+                   [pComposition](const auto& owner) {
+                     return owner->composition == pComposition;
+                   });
+  if (retained != _retainedCompositions.end()) {
+    (*retained)->ended = true;
+    if (!(*retained)->saved_selection)
+      _ForgetRetainedComposition(pComposition);
     return S_OK;
+  }
   if (_handoffWaitPauseToken != 0 && _IsCurrentComposition(pComposition)) {
     _FinalizeComposition();
     _EndUI();
