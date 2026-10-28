@@ -265,8 +265,17 @@ class HostRange : public StubTfRange {
                        const WCHAR* text,
                        LONG count) override;
   STDMETHODIMP Collapse(TfEditCookie ec, TfAnchor anchor) override;
+  STDMETHODIMP CompareStart(TfEditCookie ec,
+                            ITfRange* other,
+                            TfAnchor anchor,
+                            LONG* result) override;
+  STDMETHODIMP CompareEnd(TfEditCookie ec,
+                          ITfRange* other,
+                          TfAnchor anchor,
+                          LONG* result) override;
   STDMETHODIMP GetContext(ITfContext** context) override;
   size_t Start() const { return range_->start; }
+  size_t End() const { return range_->start + range_->length; }
 
  private:
   com_ptr<ITfContext> context_;
@@ -322,6 +331,24 @@ class HostContext : public StubTfContext {
     *writing = write_depth != 0;
     return S_OK;
   }
+  STDMETHODIMP GetSelection(TfEditCookie ec,
+                            ULONG,
+                            ULONG,
+                            TF_SELECTION* selection,
+                            ULONG* fetched) override {
+    if (!Writable(ec))
+      return TF_E_NOLOCK;
+    if (FAILED(selection_result))
+      return selection_result;
+    auto state = std::make_shared<RangeState>();
+    state->start = caret;
+    state->length = selection_length;
+    selection->range = new HostRange(this, state);
+    selection->style.ase = TF_AE_NONE;
+    selection->style.fInterimChar = FALSE;
+    *fetched = 1;
+    return S_OK;
+  }
   STDMETHODIMP SetSelection(TfEditCookie ec,
                             ULONG count,
                             const TF_SELECTION* selection) override {
@@ -330,7 +357,15 @@ class HostContext : public StubTfContext {
     if (count != 1)
       return E_INVALIDARG;
     caret = static_cast<HostRange*>(selection->range)->Start();
+    selection_length = static_cast<HostRange*>(selection->range)->End() - caret;
     return S_OK;
+  }
+  void TrackRange(const std::shared_ptr<RangeState>& state) {
+    for (const auto& range : ranges) {
+      if (range.lock() == state)
+        return;
+    }
+    ranges.push_back(state);
   }
   HRESULT Grant(ITfEditSession* session) {
     ++write_depth;
@@ -361,13 +396,18 @@ class HostContext : public StubTfContext {
   Delivery delivery = Delivery::Grant;
   std::wstring text;
   size_t caret;
+  size_t selection_length = 0;
+  HRESULT selection_result = S_OK;
   unsigned write_depth = 0;
   unsigned invalid_writes = 0;
   std::deque<com_ptr<ITfEditSession>> pending;
+  std::vector<std::weak_ptr<RangeState>> ranges;
 };
 
 HostRange::HostRange(HostContext* context, std::shared_ptr<RangeState> range)
-    : context_(context), range_(std::move(range)) {}
+    : context_(context), range_(std::move(range)) {
+  context->TrackRange(range_);
+}
 
 HRESULT HostRange::SetText(TfEditCookie ec,
                            DWORD,
@@ -380,6 +420,24 @@ HRESULT HostRange::SetText(TfEditCookie ec,
     return E_INVALIDARG;
   const auto old_end = range_->start + range_->length;
   context->text.replace(range_->start, range_->length, text, count);
+  const auto adjusted = [&](size_t position) {
+    if (position >= old_end)
+      return position - range_->length + count;
+    return position > range_->start ? range_->start + count : position;
+  };
+  for (auto it = context->ranges.begin(); it != context->ranges.end();) {
+    const auto state = it->lock();
+    if (!state) {
+      it = context->ranges.erase(it);
+      continue;
+    }
+    if (state != range_) {
+      const auto end = adjusted(state->start + state->length);
+      state->start = adjusted(state->start);
+      state->length = end - state->start;
+    }
+    ++it;
+  }
   if (context->caret >= old_end)
     context->caret = context->caret - range_->length + count;
   range_->length = count;
@@ -394,6 +452,35 @@ HRESULT HostRange::Collapse(TfEditCookie ec, TfAnchor anchor) {
   if (anchor == TF_ANCHOR_END)
     range_->start += range_->length;
   range_->length = 0;
+  context->TrackRange(range_);
+  return S_OK;
+}
+
+HRESULT HostRange::CompareStart(TfEditCookie ec,
+                                ITfRange* other,
+                                TfAnchor anchor,
+                                LONG* result) {
+  auto* context = static_cast<HostContext*>(context_.p);
+  if (!context->Writable(ec))
+    return TF_E_NOLOCK;
+  const auto* range = static_cast<HostRange*>(other);
+  const auto position =
+      anchor == TF_ANCHOR_START ? range->Start() : range->End();
+  *result = (Start() > position) - (Start() < position);
+  return S_OK;
+}
+
+HRESULT HostRange::CompareEnd(TfEditCookie ec,
+                              ITfRange* other,
+                              TfAnchor anchor,
+                              LONG* result) {
+  auto* context = static_cast<HostContext*>(context_.p);
+  if (!context->Writable(ec))
+    return TF_E_NOLOCK;
+  const auto* range = static_cast<HostRange*>(other);
+  const auto position =
+      anchor == TF_ANCHOR_START ? range->Start() : range->End();
+  *result = (End() > position) - (End() < position);
   return S_OK;
 }
 
@@ -421,11 +508,16 @@ HRESULT HostInsert::InsertTextAtSelection(TfEditCookie ec,
 
 class HostComposition : public StubTfComposition {
  public:
-  HostComposition(HostContext* context, WeaselTSF* service)
+  HostComposition(HostContext* context,
+                  WeaselTSF* service,
+                  size_t start = 0,
+                  size_t length = std::wstring::npos)
       : context_(context),
         service_(service),
         range_(std::make_shared<RangeState>()) {
-    range_->length = context->text.size();
+    range_->start = start;
+    range_->length =
+        length == std::wstring::npos ? context->text.size() - start : length;
   }
   STDMETHODIMP GetRange(ITfRange** range) override {
     if (!active)
@@ -460,10 +552,13 @@ struct Fixture {
   com_ptr<HostContext> old_context;
   com_ptr<HostContext> next_context;
   com_ptr<HostComposition> composition;
-  Fixture() {
-    old_context.Attach(new HostContext(L"ni"));
+  explicit Fixture(std::wstring text = L"ni",
+                   size_t start = 0,
+                   size_t length = 2) {
+    old_context.Attach(new HostContext(std::move(text)));
     next_context.Attach(new HostContext(L""));
-    composition.Attach(new HostComposition(old_context, &service));
+    composition.Attach(
+        new HostComposition(old_context, &service, start, length));
     WeaselTSFTestAccess::SetComposition(service, old_context, composition);
   }
   ~Fixture() {
@@ -541,13 +636,94 @@ void CleanupCannotCrossAReset() {
   Fixture fixture;
   fixture.AbandonHandoff(HostContext::Delivery::Hold);
   fixture.composition->on_get_range = [&] {
-    WeaselTSFTestAccess::ResetCompositionState(fixture.service);
+    fixture.service.OnActivated(c_clsidTextService, GUID_NULL, FALSE);
   };
   fixture.old_context->GrantOne();
-  Require(fixture.old_context->text == L"ni" && fixture.composition->active &&
-              fixture.composition->end_calls == 0,
-          "a reset during GetRange must invalidate the old cleanup before it "
-          "writes");
+  Require(
+      fixture.old_context->text == L"ni" && fixture.composition->active &&
+          fixture.composition->end_calls == 0 &&
+          WeaselTSFTestAccess::RetainedCompositionCount(fixture.service) == 1,
+      "a reset during GetRange must invalidate the old cleanup before it "
+      "writes");
+}
+
+void ProfileResetKeepsTheOriginalComposition() {
+  Fixture fixture;
+  fixture.AbandonHandoff(HostContext::Delivery::Hold);
+  fixture.service.OnActivated(c_clsidTextService, GUID_NULL, FALSE);
+  fixture.service.OnActivated(c_clsidTextService, GUID_NULL, TRUE);
+  fixture.old_context->GrantOne();
+  Require(
+      fixture.old_context->text == L"ni" && fixture.composition->active &&
+          WeaselTSFTestAccess::RetainedCompositionCount(fixture.service) == 1,
+      "profile reset must invalidate the callback without losing its owner");
+  fixture.old_context->delivery = HostContext::Delivery::Grant;
+  WeaselTSFTestAccess::EnqueueContextResponse(fixture.service,
+                                              fixture.old_context, L"\x4f60");
+  Require(
+      fixture.old_context->text == L"\x4f60" &&
+          fixture.composition->end_calls == 1 &&
+          fixture.old_context->invalid_writes == 0,
+      "returning after reactivation must still replace the original preedit");
+}
+
+void OldCleanupDisposalCannotCancelANewEpochRequest() {
+  Fixture fixture;
+  fixture.AbandonHandoff(HostContext::Delivery::Hold);
+  fixture.service.OnActivated(c_clsidTextService, GUID_NULL, FALSE);
+  fixture.service.OnActivated(c_clsidTextService, GUID_NULL, TRUE);
+  WeaselTSFTestAccess::EnqueueContextResponse(fixture.service,
+                                              fixture.next_context, L"F");
+  Require(fixture.old_context->pending.size() == 2,
+          "the new epoch may schedule cleanup despite an old held request");
+  fixture.old_context->pending.pop_front();
+  fixture.next_context->GrantAll();
+  WeaselTSFTestAccess::EnqueueContextResponse(fixture.service,
+                                              fixture.next_context, L"G");
+  Require(fixture.old_context->pending.size() == 1,
+          "disposing the old request must not clear the new request's epoch");
+  fixture.old_context->GrantAll();
+  fixture.next_context->GrantAll();
+  Require(!fixture.composition->active && fixture.composition->end_calls == 1 &&
+              fixture.next_context->text == L"BCDEFG",
+          "new cleanup and committed input must both finish exactly once");
+}
+
+void ReturningInputUsesTheMovedCaret() {
+  for (bool before : {false, true}) {
+    Fixture fixture(before ? L"body|ni" : L"ni|body", before ? 5 : 0);
+    fixture.AbandonHandoff(HostContext::Delivery::Hold);
+    fixture.old_context->caret = before ? 0 : fixture.old_context->text.size();
+    fixture.old_context->delivery = HostContext::Delivery::Grant;
+    WeaselTSFTestAccess::EnqueueContextResponse(fixture.service,
+                                                fixture.old_context, L"X");
+    fixture.old_context->GrantAll();
+    Require(fixture.old_context->text == (before ? L"Xbody|" : L"|bodyX") &&
+                fixture.old_context->caret == (before ? 1 : 6) &&
+                fixture.composition->end_calls == 1 &&
+                fixture.old_context->invalid_writes == 0,
+            "returning input must cancel old preedit and use the moved caret");
+  }
+}
+
+void FailedSelectionQueryDoesNotGuessTheInsertionRange() {
+  Fixture fixture;
+  fixture.AbandonHandoff(HostContext::Delivery::Hold);
+  fixture.old_context->delivery = HostContext::Delivery::Grant;
+  fixture.old_context->selection_result = E_FAIL;
+  WeaselTSFTestAccess::EnqueueContextResponse(fixture.service,
+                                              fixture.old_context, L"\x4f60");
+  Require(
+      fixture.old_context->text == L"ni" && fixture.composition->active &&
+          WeaselTSFTestAccess::RetainedCompositionCount(fixture.service) == 1,
+      "failed selection queries must keep preedit and its cleanup owner");
+  fixture.old_context->selection_result = S_OK;
+  WeaselTSFTestAccess::EnqueueContextResponse(fixture.service,
+                                              fixture.old_context, L"");
+  fixture.old_context->GrantAll();
+  Require(fixture.old_context->text == L"\x4f60" &&
+              fixture.composition->end_calls == 1,
+          "retry after a valid selection must commit exactly once");
 }
 
 void PendingReturnCannotBeClearedByAnOlderCleanup() {
@@ -613,6 +789,35 @@ void MultipleOldContextsKeepTheirOwnCompositionRanges() {
       "returning commits must replace only their own original preedit");
 }
 
+void DroppedOldestCleanupCannotStarveAnotherContext() {
+  Fixture fixture;
+  fixture.AbandonHandoff(HostContext::Delivery::Drop);
+  com_ptr<HostContext> second, third;
+  second.Attach(new HostContext(L"hao"));
+  third.Attach(new HostContext(L""));
+  com_ptr<HostComposition> composition;
+  composition.Attach(new HostComposition(second, &fixture.service));
+  WeaselTSFTestAccess::SetComposition(fixture.service, second, composition);
+  second->delivery = HostContext::Delivery::Drop;
+  for (const wchar_t* commit : {L"X", L"Y", L"Z", L"W"})
+    WeaselTSFTestAccess::EnqueueContextResponse(fixture.service, third, commit);
+  third->GrantAll();
+  Require(WeaselTSFTestAccess::RetainedCompositionCount(fixture.service) == 2,
+          "both abandoned compositions must retain their own cleanup owner");
+  second->delivery = HostContext::Delivery::Grant;
+  for (const wchar_t* commit : {L"1", L"2"}) {
+    WeaselTSFTestAccess::EnqueueContextResponse(fixture.service, third, commit);
+    third->GrantAll();
+    second->GrantAll();
+  }
+  Require(
+      fixture.composition->active && !composition->active &&
+          composition->end_calls == 1 && second->text.empty() &&
+          second->invalid_writes == 0 && third->text == L"XYZW12" &&
+          WeaselTSFTestAccess::RetainedCompositionCount(fixture.service) == 1,
+      "round-robin cleanup must reach the ready context within two inputs");
+}
+
 }  // namespace
 
 void RunRetainedCompositionTests() {
@@ -620,10 +825,15 @@ void RunRetainedCompositionTests() {
   ReturningInputReplacesPreeditAndInvalidatesLateCleanup();
   DroppedCleanupKeepsOwnershipForReturningInput();
   CleanupCannotCrossAReset();
+  ProfileResetKeepsTheOriginalComposition();
+  OldCleanupDisposalCannotCancelANewEpochRequest();
+  ReturningInputUsesTheMovedCaret();
+  FailedSelectionQueryDoesNotGuessTheInsertionRange();
   PendingReturnCannotBeClearedByAnOlderCleanup();
   DisconnectedContextDoesNotKeepCleanupOwnership();
   MultipleOldContextsKeepTheirOwnCompositionRanges();
+  DroppedOldestCleanupCannotStarveAnotherContext();
   std::puts(
-      "[ok] retained composition write locks, returning commits and stale "
-      "cleanup");
+      "[ok] retained composition write locks, profile epochs, moved carets and "
+      "fair cleanup");
 }

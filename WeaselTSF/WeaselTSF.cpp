@@ -102,7 +102,6 @@ STDMETHODIMP WeaselTSF::Deactivate() {
   _CancelHandoffWait();
   _InvalidatePendingUI();
   _responseApplyQueue.Reset();
-  _retainedCompositions.clear();
   _pendingCommit.clear();
   m_client.EndSession();
 
@@ -151,7 +150,6 @@ STDMETHODIMP WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
   // recovers cleanly from hosts that reactivate after a partial teardown.
   _CancelHandoffWait();
   _responseApplyQueue.Reset();
-  _retainedCompositions.clear();
   _pendingCommit.clear();
   _pCandidateUIContext = nullptr;
 
@@ -284,7 +282,8 @@ STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,
     _CancelHandoffWait();
     _InvalidatePendingUI();
     _responseApplyQueue.Reset();
-    _retainedCompositions.clear();
+    // The new epoch invalidates cleanup callbacks, not ownership of a host
+    // composition that may still be live when the profile is reactivated.
     _pendingCommit.clear();
     _DeleteCandidateList();
     _ShowLanguageBar(FALSE);

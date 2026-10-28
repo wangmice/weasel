@@ -145,7 +145,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   struct RetainedComposition {
     com_ptr<ITfContext> context;
     com_ptr<ITfComposition> composition;
-    bool cleanup_pending = false;
+    UINT64 cleanup_epoch = 0;
   };
 
   void _StartComposition(com_ptr<ITfContext> pContext,
@@ -219,7 +219,8 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   bool _OwnsRetainedComposition(
       const std::shared_ptr<RetainedComposition>& retained) const;
   bool _ForgetRetainedComposition(ITfComposition* composition);
-  bool _RestoreRetainedComposition(com_ptr<ITfContext> context);
+  HRESULT _RestoreRetainedComposition(TfEditCookie ec,
+                                      com_ptr<ITfContext> context);
   void _ScheduleRetainedCompositionCleanup();
   HRESULT _CleanupRetainedCompositionLocked(
       TfEditCookie ec,

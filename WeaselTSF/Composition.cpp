@@ -160,18 +160,23 @@ class CEndCompositionEditSession : public CEditSession {
         _clear(clear),
         _pauseToken(pauseToken),
         _queue(queue),
-        _retained(std::move(retained)) {}
+        _retained(std::move(retained)),
+        _retainedEpoch(queue ? queue->CurrentEpoch() : 0) {}
 
   ~CEndCompositionEditSession() override {
-    if (_retained && !_retainedExecuted)
-      _retained->cleanup_pending = false;
+    if (_retained && !_retainedExecuted &&
+        _retained->cleanup_epoch == _retainedEpoch)
+      _retained->cleanup_epoch = 0;
     _ReleasePause();
   }
 
   STDMETHODIMP DoEditSession(TfEditCookie ec) override {
     if (_retained) {
       _retainedExecuted = true;
-      _retained->cleanup_pending = false;
+      if (!_queue || _queue->CurrentEpoch() != _retainedEpoch ||
+          _retained->cleanup_epoch != _retainedEpoch)
+        return S_FALSE;
+      _retained->cleanup_epoch = 0;
       return _pTextService->_CleanupRetainedCompositionLocked(ec, _retained);
     }
     const HRESULT hr = _pTextService->_EndCompositionLocked(
@@ -193,6 +198,7 @@ class CEndCompositionEditSession : public CEditSession {
   UINT64 _pauseToken;
   ResponseApplyQueue* _queue;
   std::shared_ptr<WeaselTSF::RetainedComposition> _retained;
+  UINT64 _retainedEpoch;
   bool _retainedExecuted = false;
 };
 
@@ -228,37 +234,90 @@ bool WeaselTSF::_ForgetRetainedComposition(ITfComposition* composition) {
   return true;
 }
 
-bool WeaselTSF::_RestoreRetainedComposition(com_ptr<ITfContext> context) {
+HRESULT WeaselTSF::_RestoreRetainedComposition(TfEditCookie ec,
+                                               com_ptr<ITfContext> context) {
   if (_IsComposing())
-    return false;
+    return S_FALSE;
   const auto found =
       std::find_if(_retainedCompositions.begin(), _retainedCompositions.end(),
                    [&context](const auto& retained) {
                      return retained->context == context;
                    });
   if (found == _retainedCompositions.end())
-    return false;
+    return S_FALSE;
   const auto retained = *found;
+  const UINT64 epoch = _responseApplyQueue.CurrentEpoch();
+  const UINT64 flight = _responseApplyQueue.FlightToken();
+  const auto stillCurrent = [&]() {
+    return _OwnsRetainedComposition(retained) && !_IsComposing() &&
+           _responseApplyQueue.CurrentEpoch() == epoch &&
+           _responseApplyQueue.FlightToken() == flight;
+  };
+  TF_SELECTION selection{};
+  ULONG fetched = 0;
+  HRESULT hr =
+      context->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+  com_ptr<ITfRange> selectedRange;
+  selectedRange.Attach(selection.range);
+  if (FAILED(hr) || fetched != 1 || !selectedRange)
+    return FAILED(hr) ? hr : E_FAIL;
+  com_ptr<ITfRange> range;
+  hr = retained->composition->GetRange(&range);
+  if (FAILED(hr))
+    return hr;
+  LONG start = 0, end = 0;
+  hr = range->CompareStart(ec, selectedRange, TF_ANCHOR_START, &start);
+  if (SUCCEEDED(hr))
+    hr = range->CompareEnd(ec, selectedRange, TF_ANCHOR_END, &end);
+  if (FAILED(hr))
+    return hr;
+  if (!stillCurrent())
+    return E_ABORT;
+
+  if (start > 0 || end < 0) {
+    // A caret move ends the old preedit rather than reclaiming its insertion
+    // point. Keep the selection range anchored across deletion of that preedit.
+    _ClearCompositionDisplayAttributes(ec, context, retained->composition);
+    if (!stillCurrent())
+      return E_ABORT;
+    hr = range->SetText(ec, 0, L"", 0);
+    if (FAILED(hr) || !stillCurrent())
+      return FAILED(hr) ? hr : E_ABORT;
+    hr = context->SetSelection(ec, 1, &selection);
+    if (FAILED(hr) || !stillCurrent())
+      return FAILED(hr) ? hr : E_ABORT;
+    hr = retained->composition->EndComposition(ec);
+    if (SUCCEEDED(hr) && _OwnsRetainedComposition(retained))
+      _ForgetRetainedComposition(retained->composition);
+    if (_responseApplyQueue.CurrentEpoch() != epoch ||
+        _responseApplyQueue.FlightToken() != flight)
+      return E_ABORT;
+    return FAILED(hr) ? hr : S_FALSE;
+  }
+
   // Removing the owner invalidates every older cleanup callback before the
   // composition can be used to replace preedit with newly committed text.
-  _retainedCompositions.erase(found);
+  _ForgetRetainedComposition(retained->composition);
   _SetComposition(retained->composition, context);
-  return true;
+  return S_OK;
 }
 
 void WeaselTSF::_ScheduleRetainedCompositionCleanup() {
   if (_tfClientId == TF_CLIENTID_NULL || _responseApplyQueue.InFlight() ||
       _responseApplyQueue.IsPaused())
     return;
-  for (const auto& retained : _retainedCompositions) {
-    if (retained->cleanup_pending ||
-        _responseApplyQueue.AnyPending([&retained](const auto& request) {
-          return request && request->context == retained->context;
+  for (auto it = _retainedCompositions.begin();
+       it != _retainedCompositions.end(); ++it) {
+    const auto owner = *it;
+    if (owner->cleanup_epoch == _responseApplyQueue.CurrentEpoch() ||
+        _responseApplyQueue.AnyPending([&owner](const auto& request) {
+          return request && request->context == owner->context;
         }))
       continue;
-    // Keep a local owner across RequestEditSession and its reentrant callbacks.
-    const auto owner = retained;
-    owner->cleanup_pending = true;
+    // Rotate before calling the host: disposal or reentry must not starve the
+    // other contexts or invalidate an iterator that we still need to use.
+    std::rotate(it, it + 1, _retainedCompositions.end());
+    owner->cleanup_epoch = _responseApplyQueue.CurrentEpoch();
     com_ptr<CEndCompositionEditSession> session;
     session.Attach(new CEndCompositionEditSession(this, owner->context,
                                                   owner->composition, TRUE, 0,

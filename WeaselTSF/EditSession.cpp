@@ -37,7 +37,10 @@ HRESULT WeaselTSF::_ApplyResponseSnapshot(
   if (epochDisposition == weasel::tsf::EpochDisposition::Drop)
     return S_OK;
 
-  const bool restoredComposition = _RestoreRetainedComposition(pContext);
+  const HRESULT restoreHr = _RestoreRetainedComposition(ec, pContext);
+  if (FAILED(restoreHr))
+    return restoreHr;
+  const bool restoredComposition = restoreHr == S_OK;
 
   if (_IsComposing() && !_IsComposingInContext(pContext))
     return E_UNEXPECTED;
