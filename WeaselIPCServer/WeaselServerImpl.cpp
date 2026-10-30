@@ -680,15 +680,6 @@ int ServerImpl::Run() {
       std::lock_guard guard(g_api_mutex);
       bool dispatch = lifecycle_admitted;
 
-      // The primary pipe intentionally becomes reachable before Rime/UI/shell
-      // startup work completes. While lifecycle is still Starting, keep that
-      // backend completely private: only shutdown belongs to the control plane
-      // and is safe before initialization has finished.
-      if (_RuntimeLifecycle() == ServerLifecycle::Starting &&
-          msg.Msg != WEASEL_IPC_SHUTDOWN_SERVER) {
-        dispatch = false;
-      }
-
       if (starting && dispatch) {
         // Lifecycle may have reached Stopping before this request acquired the
         // API lock. Recheck under serialization before creating any session.
@@ -1085,6 +1076,18 @@ DWORD ServerImpl::OnChangePage(WEASEL_IPC_COMMAND uMsg,
   }
 template <typename _Resp>
 void ServerImpl::HandlePipeMessage(PipeMessage pipe_msg, _Resp resp) {
+  // Shutdown may publish Stopping before the startup callback returns. Keep
+  // the backend private in both states, at the final dispatch boundary, so
+  // that requesting shutdown can never reopen the data plane. Maintenance
+  // retains its existing handlers, including the command that resumes Rime.
+  const ServerLifecycle lifecycle = _RuntimeLifecycle();
+  if ((lifecycle == ServerLifecycle::Starting ||
+       lifecycle == ServerLifecycle::Stopping) &&
+      pipe_msg.Msg != WEASEL_IPC_SHUTDOWN_SERVER) {
+    resp(0);
+    return;
+  }
+
   DWORD result;
 
   MAP_PIPE_MSG_HANDLE(pipe_msg.Msg, pipe_msg.wParam, pipe_msg.lParam)

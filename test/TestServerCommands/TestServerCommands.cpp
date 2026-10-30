@@ -465,10 +465,89 @@ static void test_server_runtime_state_tracks_maintenance() {
   weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
-static void test_pipe_ascii_commands() {
+static void test_pipe_dispatch_rejects_starting_and_stopping() {
   SessionHandler handler;
+  handler.sessions.insert(7);
+  weasel::ServerRuntimeState runtime{};
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Starting);
   weasel::ServerImpl server;
   server.SetRequestHandler(&handler);
+  weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
+
+  // A private message-only window lets the real shutdown handler post its
+  // quit message without publishing a server window, singleton, or IPC pipe.
+  HWND window = CreateWindowExW(0, L"STATIC", L"StartupAdmissionTest", 0,
+                                0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr,
+                                nullptr);
+  check(window != nullptr, "startup admission creates a private stop target");
+  if (!window) {
+    weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
+    return;
+  }
+  server.Attach(window);
+
+  auto dispatch = [&](weasel::PipeMessage message) {
+    unsigned replies = 0;
+    DWORD result = 0;
+    std::lock_guard guard(g_api_mutex);
+    weasel::ServerImplTestAccess::HandlePipeMessage(
+        server, message, [&](DWORD reply) {
+          ++replies;
+          result = reply;
+        });
+    check(replies == 1, "lifecycle admission always replies exactly once");
+    return result;
+  };
+  auto rejects_business = [&] {
+    const int echoes = handler.echo_calls;
+    const int options = handler.option_calls;
+    check(dispatch({WEASEL_IPC_ECHO, 0, 7}) == 0 &&
+              handler.echo_calls == echoes,
+          "non-ready startup/stop does not enter the backend for Echo");
+    dispatch({WEASEL_IPC_TRAY_COMMAND, ID_WEASELTRAY_ENABLE_ASCII, 7});
+    check(handler.option_calls == options,
+          "non-ready startup/stop does not enter the backend for ASCII");
+  };
+
+  rejects_business();
+  dispatch({WEASEL_IPC_SHUTDOWN_SERVER, 0, 0});
+  check(runtime.lifecycle ==
+            static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+        "shutdown remains reachable before backend initialization finishes");
+  MSG quit{};
+  check(PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE) != FALSE,
+        "startup shutdown posts its quit message");
+  rejects_business();
+  dispatch({WEASEL_IPC_SHUTDOWN_SERVER, 0, 0});
+  check(runtime.lifecycle ==
+            static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+        "repeated shutdown remains reachable while Stopping");
+  check(PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE) != FALSE,
+        "repeated shutdown still executes the stop handler");
+
+  for (const auto state : {weasel::ServerLifecycle::Ready,
+                           weasel::ServerLifecycle::Maintenance}) {
+    runtime.lifecycle = static_cast<LONG>(state);
+    const int echoes = handler.echo_calls;
+    check(dispatch({WEASEL_IPC_ECHO, 0, 7}) == 7 &&
+              handler.echo_calls == echoes + 1,
+          "Ready and Maintenance retain their existing dispatch behavior");
+  }
+
+  server.Detach();
+  while (PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {
+  }
+  DestroyWindow(window);
+  weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
+}
+
+static void test_pipe_ascii_commands() {
+  SessionHandler handler;
+  weasel::ServerRuntimeState runtime{};
+  runtime.lifecycle = static_cast<LONG>(weasel::ServerLifecycle::Ready);
+  weasel::ServerImpl server;
+  server.SetRequestHandler(&handler);
+  weasel::ServerImplTestAccess::SetRuntimeState(server, &runtime);
   for (UINT command :
        {ID_WEASELTRAY_ENABLE_ASCII, ID_WEASELTRAY_DISABLE_ASCII}) {
     bool replied = false;
@@ -492,6 +571,7 @@ static void test_pipe_ascii_commands() {
               handler.last_value == (command == ID_WEASELTRAY_ENABLE_ASCII),
           "pipe command sets the requested option exactly once");
   }
+  weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
 }
 
 static void test_window_ascii_commands() {
@@ -836,6 +916,7 @@ int main() {
   test_new_input_wakes_abandoned_handoff();
   test_server_runtime_state_tracks_maintenance();
   test_candidate_selection_acknowledgement();
+  test_pipe_dispatch_rejects_starting_and_stopping();
   test_pipe_ascii_commands();
   test_window_ascii_commands();
   test_unavailable_private_server_stays_isolated();
