@@ -2,6 +2,7 @@
 
 #include "../../WeaselTSF/WeaselTSF.h"
 #include "../../WeaselTSF/LanguageBar.h"
+#include "../../WeaselTSF/CandidateList.h"
 
 class WeaselTSFTestAccess {
  public:
@@ -17,6 +18,16 @@ class WeaselTSFTestAccess {
 
   static void UpdateLanguageBar(WeaselTSF& tsf, weasel::Status status) {
     tsf._UpdateLanguageBar(status);
+  }
+
+  static com_ptr<CCandidateList> Candidate(WeaselTSF& tsf) {
+    return tsf._cand;
+  }
+
+  static void RenewCandidateUI(WeaselTSF& tsf, weasel::Status status) {
+    // Exercise the production renewal without registering a host UIElement.
+    // StartUI(nullptr) leaves the private candidate's panel uncreated.
+    tsf._RenewCandidateUI(nullptr, 0, weasel::Context{}, status);
   }
 
   static bool HasPendingUI(const WeaselTSF& tsf) { return tsf._hasPendingUI; }

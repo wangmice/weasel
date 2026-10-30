@@ -214,6 +214,61 @@ void TestReplacementDuringCompartmentCall(bool during_write, bool failed_read) {
   tsf.Deactivate();
 }
 
+void TestCandidateRenewalDuringCompartmentCall(bool during_write,
+                                               bool failed_read) {
+  WeaselTSF tsf;
+  com_ptr<ReentrantThreadManager> manager;
+  manager.Attach(new ReentrantThreadManager);
+  com_ptr<CountingLanguageBarSink> sink;
+  sink.Attach(new CountingLanguageBarSink);
+  auto button = MakeButton(tsf, sink);
+  WeaselTSFTestAccess::BindLanguageBar(tsf, manager, button);
+  auto old_candidate = WeaselTSFTestAccess::Candidate(tsf);
+  old_candidate->style().current_ascii_icon = L"private-before-renewal.ico";
+  manager->read_result = failed_read ? E_FAIL : S_OK;
+
+  weasel::Status status;
+  status.ascii_mode = true;
+  status.full_shape = true;
+  unsigned reentries = 0;
+  auto renew = [&] {
+    ++reentries;
+    // Only the candidate changes: the same language-bar registration must
+    // still receive this update. This is a private injected COM callback,
+    // not a claim that a real TSF host delivers renewal at this boundary.
+    WeaselTSFTestAccess::RenewCandidateUI(tsf, status);
+    auto candidate = WeaselTSFTestAccess::Candidate(tsf);
+    candidate->style().current_ascii_icon = L"private-after-renewal.ico";
+  };
+  if (during_write)
+    manager->on_write = renew;
+  else
+    manager->on_read = renew;
+
+  WeaselTSFTestAccess::UpdateLanguageBar(tsf, status);
+  auto candidate = WeaselTSFTestAccess::Candidate(tsf);
+  Check(reentries == 1 && candidate.p != old_candidate.p &&
+            candidate->HasOwner() && !old_candidate->HasOwner(),
+        "language-bar fixture executes a real candidate-only renewal");
+  Check(sink->updates == 1,
+        "candidate-only renewal preserves the live language-bar update");
+  const DWORD expected_flags =
+      failed_read ? (TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_ROMAN)
+                  : (TF_CONVERSIONMODE_ROMAN | TF_CONVERSIONMODE_FULLSHAPE);
+  Check(manager->flags == expected_flags &&
+            manager->writes == (failed_read ? 0u : 1u),
+        "candidate-only renewal preserves conversion writes and read failures");
+
+  // Reading the style from a pinned, retired candidate would publish the old
+  // icon and cause an extra notification on this otherwise identical update.
+  WeaselTSFTestAccess::UpdateLanguageBar(tsf, status);
+  Check(
+      sink->updates == 1 && manager->flags == expected_flags &&
+          manager->writes == (failed_read ? 0u : 1u),
+      "candidate renewal publishes the current style without a repair update");
+  tsf.Deactivate();
+}
+
 void TestDeactivationDuringCompartmentCall(bool during_write) {
   WeaselTSF tsf;
   com_ptr<ReentrantThreadManager> manager;
@@ -275,6 +330,9 @@ int RunLanguageBarReentrancyTests() {
   TestReplacementDuringCompartmentCall(false, false);
   TestReplacementDuringCompartmentCall(false, true);
   TestReplacementDuringCompartmentCall(true, false);
+  TestCandidateRenewalDuringCompartmentCall(false, false);
+  TestCandidateRenewalDuringCompartmentCall(false, true);
+  TestCandidateRenewalDuringCompartmentCall(true, false);
   // Keep the unfixed baseline diagnostic bounded: replacement assertions fail
   // first, rather than deliberately dereferencing a null member afterwards.
   if (!failures) {

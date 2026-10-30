@@ -466,15 +466,14 @@ void WeaselTSF::_UninitLanguageBar() {
 void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   // Compartment access and sink notifications may synchronously deactivate
   // or reactivate this TIP. Keep this registration alive, but never publish
-  // an old update into a replacement language bar or candidate generation.
+  // an old update into a replacement language bar.
   const com_ptr<CLangBarItemButton> button = _pLangBarButton;
   const com_ptr<ITfThreadMgr> thread_manager = _pThreadMgr;
-  const com_ptr<CCandidateList> candidate = _cand;
-  if (!button || !thread_manager || !candidate)
+  if (!button || !thread_manager)
     return;
   const auto is_current = [&] {
     return _pLangBarButton.p == button.p &&
-           _pThreadMgr.p == thread_manager.p && _cand.p == candidate.p;
+           _pThreadMgr.p == thread_manager.p;
   };
 
   DWORD flags = 0;
@@ -506,6 +505,11 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   }
 
   if (!is_current())
+    return;
+  // Candidate-only renewal does not invalidate this language-bar registration.
+  // Pin the current style after the external calls, not the retired candidate's.
+  const com_ptr<CCandidateList> candidate = _cand;
+  if (!candidate)
     return;
   button->UpdateWeaselStatus(stat, candidate->style());
 }
