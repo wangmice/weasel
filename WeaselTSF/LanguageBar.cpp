@@ -464,11 +464,24 @@ void WeaselTSF::_UninitLanguageBar() {
 }
 
 void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
-  if (!_pLangBarButton)
+  // Compartment access and sink notifications may synchronously deactivate
+  // or reactivate this TIP. Keep this registration alive, but never publish
+  // an old update into a replacement language bar or candidate generation.
+  const com_ptr<CLangBarItemButton> button = _pLangBarButton;
+  const com_ptr<ITfThreadMgr> thread_manager = _pThreadMgr;
+  const com_ptr<CCandidateList> candidate = _cand;
+  if (!button || !thread_manager || !candidate)
     return;
+  const auto is_current = [&] {
+    return _pLangBarButton.p == button.p &&
+           _pThreadMgr.p == thread_manager.p && _cand.p == candidate.p;
+  };
+
   DWORD flags = 0;
   HRESULT hr = _GetCompartmentDWORD(
       flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
+  if (!is_current())
+    return;
   if (FAILED(hr)) {
     // 读取失败：compartment 当前值未知，不回写。原实现按 flags=0 重建回写，
     // 会清掉宿主设置的 TF_CONVERSIONMODE_ROMAN/KATAKANA 等无关转换位
@@ -492,7 +505,9 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
                            GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   }
 
-  _pLangBarButton->UpdateWeaselStatus(stat, _cand->style());
+  if (!is_current())
+    return;
+  button->UpdateWeaselStatus(stat, candidate->style());
 }
 
 void WeaselTSF::_ShowLanguageBar(BOOL show) {

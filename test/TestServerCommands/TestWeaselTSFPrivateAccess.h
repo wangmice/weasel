@@ -1,10 +1,23 @@
 #pragma once
 
 #include "../../WeaselTSF/WeaselTSF.h"
+#include "../../WeaselTSF/LanguageBar.h"
 
 class WeaselTSFTestAccess {
  public:
   static weasel::Client& Client(WeaselTSF& tsf) { return tsf.m_client; }
+
+  static void BindLanguageBar(WeaselTSF& tsf,
+                               ITfThreadMgr* manager,
+                               CLangBarItemButton* button) {
+    tsf._pThreadMgr = manager;
+    tsf._tfClientId = 1;
+    tsf._pLangBarButton = button;
+  }
+
+  static void UpdateLanguageBar(WeaselTSF& tsf, weasel::Status status) {
+    tsf._UpdateLanguageBar(status);
+  }
 
   static bool HasPendingUI(const WeaselTSF& tsf) { return tsf._hasPendingUI; }
 

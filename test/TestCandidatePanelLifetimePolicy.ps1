@@ -61,7 +61,8 @@ $langBarHeader = Get-Content -LiteralPath (Join-Path $repo 'WeaselTSF\LanguageBa
 if ($langBarHeader -notmatch 'UIStyle\s+_style;' -or
     $langBarHeader -match 'UIStyle&\s+_style' -or
     $langBar -notmatch '_pLangBarButton->DetachOwner\(\)' -or
-    $langBar -notmatch 'UpdateWeaselStatus\(stat,\s*_cand->style\(\)\)') {
+    $langBar -notmatch 'com_ptr<CCandidateList>\s+candidate\s*=\s*_cand' -or
+    $langBar -notmatch 'button->UpdateWeaselStatus\(stat,\s*candidate->style\(\)\)') {
   throw 'host-retained language bar must own its style and detach from TIP'
 }
 if ($panel -match 'GetModuleHandle\(nullptr\);\s*WNDCLASS' -or
