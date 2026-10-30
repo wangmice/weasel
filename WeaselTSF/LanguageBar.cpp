@@ -472,8 +472,7 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   if (!button || !thread_manager)
     return;
   const auto is_current = [&] {
-    return _pLangBarButton.p == button.p &&
-           _pThreadMgr.p == thread_manager.p;
+    return _pLangBarButton.p == button.p && _pThreadMgr.p == thread_manager.p;
   };
 
   DWORD flags = 0;
@@ -507,7 +506,8 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   if (!is_current())
     return;
   // Candidate-only renewal does not invalidate this language-bar registration.
-  // Pin the current style after the external calls, not the retired candidate's.
+  // Pin the current style after the external calls, not the retired
+  // candidate's.
   const com_ptr<CCandidateList> candidate = _cand;
   if (!candidate)
     return;

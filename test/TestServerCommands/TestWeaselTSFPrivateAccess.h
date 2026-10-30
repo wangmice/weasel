@@ -9,8 +9,8 @@ class WeaselTSFTestAccess {
   static weasel::Client& Client(WeaselTSF& tsf) { return tsf.m_client; }
 
   static void BindLanguageBar(WeaselTSF& tsf,
-                               ITfThreadMgr* manager,
-                               CLangBarItemButton* button) {
+                              ITfThreadMgr* manager,
+                              CLangBarItemButton* button) {
     tsf._pThreadMgr = manager;
     tsf._tfClientId = 1;
     tsf._pLangBarButton = button;
@@ -20,9 +20,7 @@ class WeaselTSFTestAccess {
     tsf._UpdateLanguageBar(status);
   }
 
-  static com_ptr<CCandidateList> Candidate(WeaselTSF& tsf) {
-    return tsf._cand;
-  }
+  static com_ptr<CCandidateList> Candidate(WeaselTSF& tsf) { return tsf._cand; }
 
   static void StartCandidateUI(WeaselTSF& tsf,
                                ITfThreadMgr* manager,

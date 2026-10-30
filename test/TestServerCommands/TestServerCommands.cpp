@@ -478,9 +478,8 @@ static void test_pipe_dispatch_rejects_starting_and_stopping() {
 
   // A private message-only window lets the real shutdown handler post its
   // quit message without publishing a server window, singleton, or IPC pipe.
-  HWND window = CreateWindowExW(0, L"STATIC", L"StartupAdmissionTest", 0,
-                                0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr,
-                                nullptr);
+  HWND window = CreateWindowExW(0, L"STATIC", L"StartupAdmissionTest", 0, 0, 0,
+                                0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
   check(window != nullptr, "startup admission creates a private stop target");
   if (!window) {
     weasel::ServerImplTestAccess::SetRuntimeState(server, nullptr);
@@ -492,20 +491,20 @@ static void test_pipe_dispatch_rejects_starting_and_stopping() {
     unsigned replies = 0;
     DWORD result = 0;
     std::lock_guard guard(g_api_mutex);
-    weasel::ServerImplTestAccess::HandlePipeMessage(
-        server, message, [&](DWORD reply) {
-          ++replies;
-          result = reply;
-        });
+    weasel::ServerImplTestAccess::HandlePipeMessage(server, message,
+                                                    [&](DWORD reply) {
+                                                      ++replies;
+                                                      result = reply;
+                                                    });
     check(replies == 1, "lifecycle admission always replies exactly once");
     return result;
   };
   auto rejects_business = [&] {
     const int echoes = handler.echo_calls;
     const int options = handler.option_calls;
-    check(dispatch({WEASEL_IPC_ECHO, 0, 7}) == 0 &&
-              handler.echo_calls == echoes,
-          "non-ready startup/stop does not enter the backend for Echo");
+    check(
+        dispatch({WEASEL_IPC_ECHO, 0, 7}) == 0 && handler.echo_calls == echoes,
+        "non-ready startup/stop does not enter the backend for Echo");
     dispatch({WEASEL_IPC_TRAY_COMMAND, ID_WEASELTRAY_ENABLE_ASCII, 7});
     check(handler.option_calls == options,
           "non-ready startup/stop does not enter the backend for ASCII");
@@ -513,22 +512,22 @@ static void test_pipe_dispatch_rejects_starting_and_stopping() {
 
   rejects_business();
   dispatch({WEASEL_IPC_SHUTDOWN_SERVER, 0, 0});
-  check(runtime.lifecycle ==
-            static_cast<LONG>(weasel::ServerLifecycle::Stopping),
-        "shutdown remains reachable before backend initialization finishes");
+  check(
+      runtime.lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+      "shutdown remains reachable before backend initialization finishes");
   MSG quit{};
   check(PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE) != FALSE,
         "startup shutdown posts its quit message");
   rejects_business();
   dispatch({WEASEL_IPC_SHUTDOWN_SERVER, 0, 0});
-  check(runtime.lifecycle ==
-            static_cast<LONG>(weasel::ServerLifecycle::Stopping),
-        "repeated shutdown remains reachable while Stopping");
+  check(
+      runtime.lifecycle == static_cast<LONG>(weasel::ServerLifecycle::Stopping),
+      "repeated shutdown remains reachable while Stopping");
   check(PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE) != FALSE,
         "repeated shutdown still executes the stop handler");
 
-  for (const auto state : {weasel::ServerLifecycle::Ready,
-                           weasel::ServerLifecycle::Maintenance}) {
+  for (const auto state :
+       {weasel::ServerLifecycle::Ready, weasel::ServerLifecycle::Maintenance}) {
     runtime.lifecycle = static_cast<LONG>(state);
     const int echoes = handler.echo_calls;
     check(dispatch({WEASEL_IPC_ECHO, 0, 7}) == 7 &&
