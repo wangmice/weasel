@@ -24,6 +24,20 @@ class WeaselTSFTestAccess {
     return tsf._cand;
   }
 
+  static void StartCandidateUI(WeaselTSF& tsf,
+                               ITfThreadMgr* manager,
+                               ITfContext* context) {
+    tsf._pThreadMgr = manager;
+    tsf._tfClientId = 1;
+    tsf._StartUI(context);
+  }
+
+  static void EndCandidateUI(WeaselTSF& tsf) { tsf._EndUI(); }
+
+  static ITfContext* CandidateUIContext(const WeaselTSF& tsf) {
+    return tsf._pCandidateUIContext;
+  }
+
   static void RenewCandidateUI(WeaselTSF& tsf, weasel::Status status) {
     // Exercise the production renewal without registering a host UIElement.
     // StartUI(nullptr) leaves the private candidate's panel uncreated.

@@ -9,8 +9,10 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -1062,7 +1064,254 @@ void DroppedOldestCleanupCannotStarveAnotherContext() {
       "round-robin cleanup must reach the ready context within two inputs");
 }
 
+// Reuse the private context stub for real StartUI/EndUI calls. This manager
+// never activates a TIP or registers a system UIElement. Its BeginUIElement
+// chooses UI-less mode, so these tests create no candidate panel windows.
+class ReentrantUIElementManager : public TestComObject<ITfThreadMgr>,
+                                  public ITfUIElementMgr {
+ public:
+  STDMETHODIMP QueryInterface(REFIID iid, void** out) override {
+    if (iid != IID_ITfUIElementMgr)
+      return TestComObject<ITfThreadMgr>::QueryInterface(iid, out);
+    if (!out)
+      return E_POINTER;
+    *out = nullptr;
+    if (!expose_ui_manager)
+      return E_NOINTERFACE;
+    *out = static_cast<ITfUIElementMgr*>(this);
+    AddRef();
+    auto callback = std::move(on_query);
+    if (callback)
+      callback();
+    return S_OK;
+  }
+  STDMETHODIMP_(ULONG) AddRef() override {
+    return TestComObject<ITfThreadMgr>::AddRef();
+  }
+  STDMETHODIMP_(ULONG) Release() override {
+    return TestComObject<ITfThreadMgr>::Release();
+  }
+
+  STDMETHODIMP Activate(TfClientId*) override { return E_NOTIMPL; }
+  STDMETHODIMP Deactivate() override { return E_NOTIMPL; }
+  STDMETHODIMP CreateDocumentMgr(ITfDocumentMgr**) override {
+    return E_NOTIMPL;
+  }
+  STDMETHODIMP EnumDocumentMgrs(IEnumTfDocumentMgrs**) override {
+    return E_NOTIMPL;
+  }
+  STDMETHODIMP GetFocus(ITfDocumentMgr**) override { return E_NOTIMPL; }
+  STDMETHODIMP SetFocus(ITfDocumentMgr*) override { return E_NOTIMPL; }
+  STDMETHODIMP AssociateFocus(HWND,
+                              ITfDocumentMgr*,
+                              ITfDocumentMgr**) override {
+    return E_NOTIMPL;
+  }
+  STDMETHODIMP IsThreadFocus(BOOL*) override { return E_NOTIMPL; }
+  STDMETHODIMP GetFunctionProvider(REFCLSID, ITfFunctionProvider**) override {
+    return E_NOTIMPL;
+  }
+  STDMETHODIMP EnumFunctionProviders(IEnumTfFunctionProviders**) override {
+    return E_NOTIMPL;
+  }
+  STDMETHODIMP GetGlobalCompartment(ITfCompartmentMgr**) override {
+    return E_NOTIMPL;
+  }
+
+  STDMETHODIMP BeginUIElement(ITfUIElement* element,
+                              BOOL* show,
+                              DWORD* id) override {
+    *show = FALSE;
+    *id = ++last_id;
+    elements[*id] = element;
+    return S_OK;
+  }
+  STDMETHODIMP UpdateUIElement(DWORD) override { return S_OK; }
+  STDMETHODIMP EndUIElement(DWORD id) override {
+    ended.push_back(id);
+    if (SUCCEEDED(end_result))
+      elements.erase(id);
+    // Bound the broken implementation's recursive Abort path. Reaching this
+    // ceiling is an assertion failure, not a hung or stack-exhausted process.
+    if (on_end && ended.size() <= 8) {
+      auto callback = on_end;
+      callback();
+    }
+    return end_result;
+  }
+  STDMETHODIMP GetUIElement(DWORD, ITfUIElement**) override {
+    return E_NOTIMPL;
+  }
+  STDMETHODIMP EnumUIElements(IEnumTfUIElements**) override {
+    return E_NOTIMPL;
+  }
+
+  bool expose_ui_manager = true;
+  HRESULT end_result = S_OK;
+  DWORD last_id = 0;
+  std::map<DWORD, com_ptr<ITfUIElement>> elements;
+  std::vector<DWORD> ended;
+  std::function<void()> on_query;
+  std::function<void()> on_end;
+};
+
+int candidate_end_failures = 0;
+
+void CheckCandidateEnd(bool ok, const char* message) {
+  std::printf("[%s] %s\n", ok ? "ok" : "FAIL", message);
+  std::fflush(stdout);
+  if (!ok)
+    ++candidate_end_failures;
+}
+
+struct CandidateEndFixture {
+  WeaselTSF service;
+  com_ptr<ReentrantUIElementManager> manager;
+  com_ptr<StubTfContext> context;
+  com_ptr<CCandidateList> candidate;
+  bool deactivated = false;
+
+  CandidateEndFixture() {
+    manager.Attach(new ReentrantUIElementManager);
+    context.Attach(new StubTfContext);
+    candidate = WeaselTSFTestAccess::Candidate(service);
+    Start();
+    CheckCandidateEnd(
+        manager->last_id == 1 && candidate->IsUIless(),
+        "candidate fixture starts a real private UI registration");
+  }
+  ~CandidateEndFixture() {
+    manager->on_query = {};
+    manager->on_end = {};
+    manager->expose_ui_manager = true;
+    manager->end_result = S_OK;
+    Deactivate();
+    manager->elements.clear();
+  }
+  void Start() {
+    WeaselTSFTestAccess::StartCandidateUI(service, manager, context);
+  }
+  void End() { WeaselTSFTestAccess::EndCandidateUI(service); }
+  void Deactivate() {
+    if (!deactivated) {
+      deactivated = true;
+      service.Deactivate();
+    }
+  }
+};
+
+void CandidateEndIsIdempotent() {
+  CandidateEndFixture fixture;
+  fixture.End();
+  fixture.End();
+  CheckCandidateEnd(
+      fixture.manager->ended == std::vector<DWORD>{1} &&
+          fixture.manager->elements.empty() && !fixture.candidate->IsUIless() &&
+          !fixture.candidate->GetContextDocument() &&
+          !WeaselTSFTestAccess::CandidateUIContext(fixture.service),
+      "repeated candidate EndUI unregisters once and clears ownership");
+}
+
+void CandidateEndRejectsRecursiveUnregistration() {
+  CandidateEndFixture fixture;
+  fixture.manager->on_end = [&] { fixture.candidate->Abort(); };
+  fixture.End();
+  CheckCandidateEnd(
+      fixture.manager->ended == std::vector<DWORD>{1},
+      "host Abort during EndUIElement cannot recursively unregister");
+}
+
+void CandidateEndPreservesReentrantRegistration(bool during_query,
+                                                bool replace_candidate) {
+  CandidateEndFixture fixture;
+  bool reentered = false;
+  auto restart = [&] {
+    if (reentered)
+      return;
+    reentered = true;
+    if (replace_candidate)
+      WeaselTSFTestAccess::RenewCandidateUI(fixture.service, weasel::Status{});
+    // Deliberately reuse the context: pointer equality alone cannot detect
+    // re-registration of the same candidate on the same document.
+    fixture.Start();
+  };
+  if (during_query)
+    fixture.manager->on_query = restart;
+  else
+    fixture.manager->on_end = restart;
+
+  // The outer production _EndUI must retain the retiring object itself; do
+  // not let this fixture accidentally keep it alive through replacement.
+  if (replace_candidate)
+    fixture.candidate.Release();
+  fixture.End();
+  auto current = WeaselTSFTestAccess::Candidate(fixture.service);
+  CheckCandidateEnd(
+      reentered && fixture.manager->last_id == 2 &&
+          fixture.manager->ended == std::vector<DWORD>{1} &&
+          fixture.manager->elements.count(2) == 1 && current->IsUIless() &&
+          current->GetContextDocument() == fixture.context &&
+          WeaselTSFTestAccess::CandidateUIContext(fixture.service) ==
+              fixture.context.p,
+      "old EndUI preserves reentrant registration and its context");
+  fixture.manager->on_query = {};
+  fixture.manager->on_end = {};
+  fixture.End();
+  CheckCandidateEnd(fixture.manager->ended == std::vector<DWORD>({1, 2}) &&
+                        fixture.manager->elements.empty(),
+                    "new candidate registration remains independently endable");
+}
+
+void CandidateEndHandlesManagerFailure(bool query_failure) {
+  CandidateEndFixture fixture;
+  fixture.manager->expose_ui_manager = !query_failure;
+  fixture.manager->end_result = query_failure ? S_OK : E_FAIL;
+  fixture.End();
+  fixture.End();
+  CheckCandidateEnd(
+      !fixture.candidate->IsUIless() &&
+          !fixture.candidate->GetContextDocument() &&
+          !WeaselTSFTestAccess::CandidateUIContext(fixture.service) &&
+          fixture.manager->ended.size() == (query_failure ? 0u : 1u),
+      "failed host unregistration still ends local ownership once");
+}
+
+void CandidateEndHandlesReentrantDeactivation(bool during_query) {
+  CandidateEndFixture fixture;
+  bool reentered = false;
+  auto deactivate = [&] {
+    if (reentered)
+      return;
+    reentered = true;
+    fixture.Deactivate();
+  };
+  if (during_query)
+    fixture.manager->on_query = deactivate;
+  else
+    fixture.manager->on_end = deactivate;
+  fixture.End();
+  CheckCandidateEnd(reentered && !fixture.candidate->HasOwner() &&
+                        !fixture.candidate->IsUIless() &&
+                        fixture.manager->ended == std::vector<DWORD>{1},
+                    "candidate EndUI survives host reentrant Deactivate once");
+}
+
 }  // namespace
+
+int RunCandidateUIReentrancyTests() {
+  candidate_end_failures = 0;
+  CandidateEndIsIdempotent();
+  CandidateEndRejectsRecursiveUnregistration();
+  CandidateEndPreservesReentrantRegistration(false, false);
+  CandidateEndPreservesReentrantRegistration(true, false);
+  CandidateEndHandlesManagerFailure(false);
+  CandidateEndHandlesManagerFailure(true);
+  CandidateEndPreservesReentrantRegistration(false, true);
+  CandidateEndPreservesReentrantRegistration(true, true);
+  CandidateEndHandlesReentrantDeactivation(false);
+  CandidateEndHandlesReentrantDeactivation(true);
+  return candidate_end_failures;
+}
 
 void RunRetainedCompositionTests() {
   CleanupRequiresTheOriginalWriteLock();

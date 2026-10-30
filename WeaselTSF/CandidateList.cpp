@@ -543,27 +543,35 @@ void CCandidateList::StartUI(com_ptr<ITfContext> pContext) {
 }
 
 void CCandidateList::EndUI() {
+  // Retire the registration before any host call can reenter Abort/EndUI.
+  // Keep the old ID even if a callback starts another UI on this object.
+  const bool was_started = _uiStarted;
+  const DWORD ending_uiid = uiid;
+  _uiStarted = false;
   _finalization_accepted = false;
   _finalization_response_serial = 0;
-  // Invalidate the target before EndUIElement can reenter Show.
-  _pContextDocument = nullptr;
+  // Transfer the old reference without calling the context's Release until
+  // local retirement is complete; that Release may also reenter the TIP.
+  com_ptr<ITfContext> ending_context;
+  ending_context.Attach(_pContextDocument.Detach());
   _inputPosition.reset();
-  if (!_uiStarted)
+  if (!was_started)
     return;
+
+  com_ptr<ITfThreadMgr> pThreadMgr = _tsf ? _tsf->_GetThreadMgr() : nullptr;
   _ui->Hide();
+  if (!_uiStarted && !_registration_in_progress)
+    _DisposeUIWindow();
 
   // Host unregistration is best effort. Even if the UIElementMgr disappears
   // during a context/profile transition, the local lifetime must end so the
-  // next composition can register a fresh element and owner window.
-  com_ptr<ITfThreadMgr> pThreadMgr = _tsf ? _tsf->_GetThreadMgr() : nullptr;
+  // next composition can register a fresh element and owner window. Finish
+  // old window cleanup before these calls; never clear a reentrant new UI.
   if (pThreadMgr) {
     com_ptr<ITfUIElementMgr> emgr;
     if (SUCCEEDED(pThreadMgr->QueryInterface(&emgr)) && emgr != NULL)
-      emgr->EndUIElement(uiid);
+      emgr->EndUIElement(ending_uiid);
   }
-  _uiStarted = false;
-  _pContextDocument = nullptr;
-  _DisposeUIWindow();
 }
 
 com_ptr<ITfContext> CCandidateList::GetContextDocument() {
@@ -620,8 +628,11 @@ void WeaselTSF::_StartUI(com_ptr<ITfContext> pContext) {
 }
 
 void WeaselTSF::_EndUI() {
-  _cand->EndUI();
+  // EndUIElement can replace _cand or publish a new registration/context.
+  // Retain the retiring object and clear only the old ownership up front.
+  const com_ptr<CCandidateList> candidate = _cand;
   _pCandidateUIContext = nullptr;
+  candidate->EndUI();
 }
 
 void WeaselTSF::_RenewCandidateUI(com_ptr<ITfContext> pContext,

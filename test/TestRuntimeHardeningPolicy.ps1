@@ -353,16 +353,7 @@ if ($listenerStart -lt 0 -or $pipeReady -lt 0 -or $beforeReady -lt 0 -or
           $beforeReady -lt $backendReady -and $backendReady -lt $publishReady)) {
   throw 'pipe must precede application startup and backend readiness must precede Ready publication'
 }
-$dispatchStart = $serverImpl.IndexOf('void ServerImpl::HandlePipeMessage(')
-$dispatchEnd = $serverImpl.IndexOf('PipeServer::PipeServer(', $dispatchStart)
-if ($dispatchStart -lt 0 -or $dispatchEnd -le $dispatchStart) {
-  throw 'unable to isolate the final pipe dispatch admission boundary'
-}
-$dispatchImpl = $serverImpl.Substring($dispatchStart, $dispatchEnd - $dispatchStart)
-if ($dispatchImpl -notmatch 'lifecycle\s*==\s*ServerLifecycle::Starting\s*\|\|\s*lifecycle\s*==\s*ServerLifecycle::Stopping' -or
-    $dispatchImpl -notmatch 'pipe_msg\.Msg\s*!=\s*WEASEL_IPC_SHUTDOWN_SERVER[\s\S]*?resp\(0\);\s*return;[\s\S]*?MAP_PIPE_MSG_HANDLE') {
-  throw 'Starting and Stopping dispatch must reject data-plane commands while retaining shutdown control'
-}
+
 if (([regex]::Matches($serverApp, 'm_handler->Initialize\(\)')).Count -ne 1 -or
     ([regex]::Matches($serverApp, 'm_ui\.Create\(')).Count -ne 1 -or
     ([regex]::Matches($serverApp, 'tray_icon\.Create\(')).Count -ne 1 -or

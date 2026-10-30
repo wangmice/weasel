@@ -45,6 +45,7 @@ static int g_failures = 0;
 void RunClassFactoryTests();
 void RunRetainedCompositionTests();
 int RunLanguageBarReentrancyTests();
+int RunCandidateUIReentrancyTests();
 
 class TestChannelAccess : public weasel::PipeChannelBase {
  public:
@@ -911,6 +912,7 @@ int main() {
   RunClassFactoryTests();
   RunRetainedCompositionTests();
   g_failures += RunLanguageBarReentrancyTests();
+  g_failures += RunCandidateUIReentrancyTests();
   test_server_recovery_coordinator_state_machine();
   test_server_lifecycle_tick_deadline();
   test_session_id_allocator_survives_maintenance_clear();
